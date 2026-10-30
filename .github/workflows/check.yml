@@ -1,0 +1,67 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+    outputs:
+      version:
+        description: The version in mygo.json, which the checked build reports.
+        value: ${{ jobs.check.outputs.version }}
+
+permissions:
+  contents: read
+
+env:
+  # renovate: datasource=github-releases depName=golangci/golangci-lint
+  GOLANGCI_LINT_VERSION: v2.15.0
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: macos-26
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.app.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+      # Wrapper actions for actionlint skip the provenance check.
+      - name: Lint workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # renovate: datasource=go depName=github.com/rhysd/actionlint
+          ACTIONLINT_VERSION: v1.7.12
+        run: |
+          archive="$RUNNER_TEMP/actionlint_${ACTIONLINT_VERSION#v}_darwin_arm64.tar.gz"
+          gh release download "$ACTIONLINT_VERSION" --repo rhysd/actionlint --pattern "${archive##*/}" --output "$archive"
+          gh attestation verify "$archive" --repo rhysd/actionlint
+          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint"
+      - name: Vet and test
+        run: |
+          test "$(uname -m)" = arm64
+          go tool mygo vet .
+          go test -race ./...
+      - name: Build the app
+        id: app
+        run: |
+          go tool mygo build -skip-dmg
+          app=build/darwin-arm64/Maskey.app
+          version=$(jq -r .version mygo.json)
+          ln -s "$PWD/$app/Contents/MacOS/Maskey" "$RUNNER_TEMP/mk"
+          test "$("$RUNNER_TEMP/mk" --version)" = "mk version $version"
+          # mygo build strips symbols, so only the strings show whether the plugin is linked.
+          ! strings "$app/Contents/MacOS/Maskey" | grep -q plugins/automation
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"

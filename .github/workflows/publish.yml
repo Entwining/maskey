@@ -1,0 +1,84 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# A release in progress finishes; a second push of the same tag waits.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    uses: ./.github/workflows/check.yml
+
+  release:
+    needs: check
+    runs-on: macos-26
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Verify the tag
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: test -n "$VERSION" && test "$GITHUB_REF_NAME" = "v$VERSION"
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      # Installed apps accept only updates signed with this key, and mygo build
+      # fails unless CHANGELOG.md has the version's section, which the update
+      # window and the release page show.
+      - name: Build the signed update
+        env:
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+        run: |
+          test -n "$MYGO_UPDATER_PRIVATE_KEY"
+          go tool mygo build -skip-dmg
+          ! strings build/darwin-arm64/Maskey.app/Contents/MacOS/Maskey | grep -q plugins/automation
+          test -s build/darwin-arm64/update-darwin-arm64.json
+      - uses: actions/attest@v4.2.2
+        with:
+          subject-path: build/darwin-arm64/*.tar.gz
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Installed apps read the manifest of the latest release, so every file
+          # goes into a draft before it is published. A published release is a
+          # completed write; a draft is one that stopped before publishing.
+          if ! draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --repo "$GITHUB_REPOSITORY" \
+              --notes "$(jq -r .notes build/darwin-arm64/update-darwin-arm64.json)"
+            draft=true
+          fi
+          if [ "$draft" != true ]; then
+            printf 'Release %s is already published\n' "$GITHUB_REF_NAME"
+            exit 0
+          fi
+          # The first version has no delta updates.
+          shopt -s nullglob
+          files=(build/darwin-arm64/*.{tar.gz,delta,json} build/darwin-arm64/install.sh build/SHA256SUMS)
+          gh release upload "$GITHUB_REF_NAME" --clobber --repo "$GITHUB_REPOSITORY" "${files[@]}"
+          gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+      # Installed copies update themselves; the cask's version is what new installs get.
+      - uses: actions/create-github-app-token@v3.2.0
+        id: tap-token
+        with:
+          client-id: ${{ vars.TAP_CLIENT_ID }}
+          private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
+          owner: Entwining
+          repositories: homebrew-tap
+      - name: Ask the tap to pick up this version
+        env:
+          GH_TOKEN: ${{ steps.tap-token.outputs.token }}
+        run: gh api repos/Entwining/homebrew-tap/dispatches -f event_type=maskey-release

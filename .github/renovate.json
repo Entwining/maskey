@@ -1,0 +1,42 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>Entwining/renovate-config"],
+  "description": [
+    "semanticCommits: this repository writes Conventional Commits subjects itself, so Renovate follows the same convention."
+  ],
+  "semanticCommits": "enabled",
+  "postUpdateOptions": ["gomodTidy"],
+  "packageRules": [
+    {
+      "description": "Workflows name actions by version tag and .github/workflows/actions.lock pins each to a commit. Renovate regenerates the lockfile with its action updates and would turn the digests config:best-practices pins back into version references.",
+      "matchManagers": ["github-actions"],
+      "pinDigests": false
+    },
+    {
+      "description": "The Check workflow runs these actions and tools on the pull request itself, so their majors merge once checks pass. attest and create-github-app-token run only on a tag push, which no pull request exercises.",
+      "matchManagers": ["github-actions", "custom.regex"],
+      "matchPackageNames": ["!actions/attest", "!actions/create-github-app-token"],
+      "matchUpdateTypes": ["major"],
+      "groupName": "CI major updates",
+      "automerge": true
+    },
+    {
+      "description": "A golangci-lint or actionlint release can report new issues; in a group of their own, a failure blocks only them.",
+      "matchPackageNames": ["golangci/golangci-lint", "github.com/rhysd/actionlint"],
+      "groupName": "Linters"
+    },
+    {
+      "description": "Renovate leaves the go directive alone by default. Bumping it keeps the toolchain that setup-go installs, and that builds the release, on current security fixes.",
+      "matchDepNames": ["go"],
+      "matchDepTypes": ["golang"],
+      "rangeStrategy": "bump",
+      "groupName": "Go"
+    },
+    {
+      "description": "MyGo builds the window and the app bundle, which no check renders, and a 0.x minor can change its UI API. Upgrading it follows .agents/skills/mygo-maintenance, so it waits for review on its own.",
+      "matchPackageNames": ["github.com/egoist/mygo"],
+      "groupName": null,
+      "automerge": false
+    }
+  ]
+}

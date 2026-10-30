@@ -1,0 +1,50 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - errorlint
+    - govet
+    - ineffassign
+    - misspell
+    - nolintlint
+    - revive
+    - staticcheck
+    - unused
+  settings:
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      # Listing a rule replaces revive's defaults, so this is its only one.
+      # Agents read files in pieces past a few hundred lines; a file this
+      # long holds more than one concern to split by.
+      rules:
+        - name: file-length-limit
+          arguments:
+            - max: 600
+  exclusions:
+    presets:
+      - common-false-positives
+      - std-error-handling
+    rules:
+      # Tests assert on exact errors and ignore errors of their own setup.
+      - path: _test\.go$
+        linters:
+          - errcheck
+          - errorlint
+
+issues:
+  # File-length findings share one text, which the defaults would cut to three.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Entwining/maskey
