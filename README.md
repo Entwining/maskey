@@ -3,7 +3,7 @@
 </p>
 <h1 align="center">Maskey</h1>
 
-Maskey keeps API keys, tokens, and other credentials in iCloud Keychain and gives them to commands as environment variables. You manage entries in a macOS window; coding agents and scripts use them through the `mk` command, without the values ever appearing in a prompt, a project file, or the command's output.
+Maskey keeps API keys, tokens, and other credentials in iCloud Keychain and gives them to commands as environment variables. You manage entries in a macOS window; coding agents and scripts use them through the `mk` command, without putting the values in prompts or project files.
 
 ```sh
 mk set github/GITHUB_TOKEN          # prompts for the value without echoing it
@@ -16,7 +16,7 @@ An entry is `<namespace>/<NAME>`. The name becomes the environment variable, and
 
 `mk` has no command that prints or exports a stored value. `mk run` replaces each exact value in the command's stdout and stderr with a marker before passing the output on. Only the window shows values, when you reveal, copy, or edit one.
 
-The command you run still receives the credentials and can do anything with them. Masking does not catch a value the command encodes or transforms, writes to a file, or sends over the network. Use Maskey with commands you trust, and wrap the tool that needs the credential rather than a whole agent, whose own logs `mk` cannot mask.
+The command you run still receives the credentials and can do anything with them. Masking does not catch a value the command encodes or transforms, writes to a file, or sends over the network. A terminal program that inserts line breaks or styling within a value can also show it unmasked. Use Maskey with commands you trust, and wrap the tool that needs the credential rather than a whole agent, whose own logs `mk` cannot mask.
 
 Maskey reaches the Keychain through Apple's `/usr/bin/python3`, so any program hosted by that interpreter can reach the same items. Entries stay readable after the Mac's first unlock since startup, so unattended jobs keep working while the screen is locked.
 
@@ -89,6 +89,8 @@ The value editor accepts multiple lines but refuses to paste CRLF line endings, 
 
 From a terminal, `mk run -n <namespace> -- <command>` sets every entry of the namespace as a variable of the same name in the command's environment, replacing an inherited one, and `-e <namespace>/<NAME>` sets one entry, which also replaces a selected namespace's entry of that name. Repeat either option for more. `mk run` starts the command without a shell, so use `sh -c '…'` for pipes or variable expansion.
 
+Interactive and full-screen programs work when `mk run` runs in the foreground of the terminal that is its input and output; Ctrl-Z suspends the command and `fg` resumes it. Captured output or selected values containing control characters use pipes instead.
+
 `mk list` prints entry references, and `mk list --json` adds each entry's kind and modification time; neither shows values or notes. `mk set`, `mk rename`, and `mk delete` manage entries. Deleting an entry removes it from every Mac on your Apple Account and cannot be undone.
 
 `mk --help` and `mk <command> --help` describe the commands, and `mk help exit-codes` the error kinds and exit statuses that scripts can rely on. With `--json`, results go to stdout and errors to stderr as JSON.
@@ -110,8 +112,6 @@ An agent sandbox that blocks direct Keychain access can let `mk` use its Keychai
 - `unavailable`: neither the Keychain nor the service is reachable. Allow the socket above, or run `mk setup` in a normal terminal if `mk doctor` shows the service is not running.
 - `uncertain`: a write may have happened. Check the entry in Maskey before repeating it; a list of names cannot show whether a new value was saved.
 - `locked`: unlock the Mac.
-
-Full-screen programs do not work under `mk run`, which passes their output through pipes.
 
 ## Development
 

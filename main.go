@@ -16,6 +16,7 @@ import (
 	"github.com/Entwining/maskey/internal/agent"
 	"github.com/Entwining/maskey/internal/cli"
 	"github.com/Entwining/maskey/internal/keychain"
+	"github.com/Entwining/maskey/internal/runner"
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -44,6 +45,13 @@ func main() {
 	args := os.Args[1:]
 	if len(args) == 0 && filepath.Base(os.Args[0]) != "mk" {
 		runGUI()
+		return
+	}
+	if len(args) > 0 && args[0] == runner.MonitorArg {
+		if err := runner.Monitor(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "mk:", err)
+			os.Exit(runner.ExitFailure)
+		}
 		return
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)

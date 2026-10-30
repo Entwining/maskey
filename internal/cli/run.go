@@ -30,8 +30,16 @@ the same signal; when mk itself fails it exits 125, 126 or 127 (see
 "mk help exit-codes").
 
 Masking covers exact values in stdout and stderr only, not encoded values,
-files, or network traffic. Programs that need a terminal for their output,
-such as full-screen programs, do not work.`,
+files, or network traffic.
+
+When mk runs in the foreground of a terminal that is its stdin and stdout,
+the command gets a terminal of its own, so interactive and full-screen
+programs work and Ctrl-Z suspends them with mk; a stderr redirected
+elsewhere stays separate. A value that the program breaks up on screen, as
+by wrapping or coloring part of it, shows unmasked, and when the command
+ends, processes it leaves behind lose the terminal, which ends most of
+them. Otherwise, or when a selected value contains a control character,
+the command's stdout and stderr are pipes.`,
 		Example: `  mk run -n github -- gh auth status
   mk run -n aws -e github/GITHUB_TOKEN -- sh -c 'echo "$AWS_REGION"'`,
 		DisableFlagsInUseLine: true,

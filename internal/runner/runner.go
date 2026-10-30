@@ -1,11 +1,14 @@
 // Package runner runs a command with credentials in its environment and
 // masks their values in its output.
 //
-// The runner stays the command's parent for its whole life: it drains the
-// command's stdout and stderr through separate redactors, forwards
+// The runner stays between the command and its output for the command's
+// whole life: it passes the output on through redactors, forwards
 // interruptions, and reports the command's exit. Running the command in
 // place of the runner, or masking afterwards, would hand the raw streams to
-// whoever reads them.
+// whoever reads them. In the foreground of a terminal the command gets a
+// terminal of its own, whose output the runner masks on its way to the real
+// one, and a monitor on that terminal is the command's parent. Otherwise the
+// runner is, and the command's stdout and stderr are pipes.
 package runner
 
 import (
@@ -87,12 +90,6 @@ func Run(ctx context.Context, c Command) (Exit, error) {
 	if err != nil {
 		return Exit{}, execError(err, ExitNotFound)
 	}
-
-	// Sharing the terminal's foreground process group lets the command read
-	// the terminal and receive Ctrl-C and Ctrl-Z directly. Otherwise the
-	// command gets a group of its own, so interruptions and cleanup reach
-	// the processes it starts without touching the runner's caller.
-	ownGroup := !foreground(c.Stdin)
 	cmd := exec.Command(path, c.Args...)
 	cmd.Args[0] = c.Path
 	// exec keeps the last value of a duplicate key, so entries replace
@@ -101,27 +98,12 @@ func Run(ctx context.Context, c Command) (Exit, error) {
 	for _, entry := range c.Entries {
 		cmd.Env = append(cmd.Env, entry.Name+"="+string(entry.Value))
 	}
-	cmd.Stdin = c.Stdin
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: ownGroup}
-	cmd.WaitDelay = outputGrace
 
-	var mu sync.Mutex
-	var outputErr error
-	var killTimer *time.Timer
-	stop := func(err error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if outputErr != nil {
-			return
-		}
-		outputErr = err
-		signalCommand(cmd, ownGroup, syscall.SIGTERM)
-		killTimer = time.AfterFunc(killGrace, func() { signalCommand(cmd, ownGroup, syscall.SIGKILL) })
-	}
-	cmd.Stdout = &stoppingWriter{w: stdout, stop: stop}
-	cmd.Stderr = &stoppingWriter{w: stderr, stop: stop}
-
+	j := &job{started: make(chan struct{})}
 	interrupts := make(chan os.Signal, 4)
+	// SIGTSTP stays out: once it is notified, Go's runtime on Darwin never
+	// lets it stop the process again, and in terminal mode the runner stops
+	// itself with the signal that stopped the command, SIGTSTP for Ctrl-Z.
 	signal.Notify(interrupts, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
 	defer signal.Stop(interrupts)
 	// Without this, a write to os.Stdout or os.Stderr whose reader went away
@@ -135,19 +117,21 @@ func Run(ctx context.Context, c Command) (Exit, error) {
 		return Exit{}, err
 	}
 
-	if err := cmd.Start(); err != nil {
-		return Exit{}, execError(err, ExitFailure)
-	}
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
+		select {
+		case <-j.started:
+		case <-done:
+			return
+		}
 		for {
 			select {
 			case sig := <-interrupts:
 				// The terminal already delivered Ctrl-C and Ctrl-\ to a command
 				// in its foreground group.
-				if ownGroup || (sig != syscall.SIGINT && sig != syscall.SIGQUIT) {
-					signalCommand(cmd, ownGroup, sig.(syscall.Signal))
+				if j.group || (sig != syscall.SIGINT && sig != syscall.SIGQUIT) {
+					j.signal(sig.(syscall.Signal))
 				}
 			case <-done:
 				return
@@ -155,13 +139,16 @@ func Run(ctx context.Context, c Command) (Exit, error) {
 		}
 	}()
 
-	waitErr := cmd.Wait()
-	mu.Lock()
-	failure := outputErr
-	if killTimer != nil {
-		killTimer.Stop()
+	out := &stoppingWriter{w: stdout, stop: j.stop}
+	errOut := &stoppingWriter{w: stderr, stop: j.stop}
+	var status syscall.WaitStatus
+	if interactive(c, values) {
+		status, err = runTerminal(cmd, c, j, out, errOut)
+	} else {
+		status, err = runPipes(cmd, c.Stdin, j, out, errOut)
 	}
-	mu.Unlock()
+
+	failure := j.finish()
 	if failure == nil {
 		for _, w := range []*redact.Writer{stdout, stderr} {
 			if failure = w.Close(); failure != nil {
@@ -170,24 +157,46 @@ func Run(ctx context.Context, c Command) (Exit, error) {
 		}
 	}
 	if failure != nil {
-		if ownGroup {
+		if j.group {
 			// Processes the command started may still run in its group.
-			signalCommand(cmd, true, syscall.SIGKILL)
+			j.signal(syscall.SIGKILL)
 		}
 		return Exit{}, &Error{Code: ExitFailure, Message: "passing on the command's output failed, so the command was stopped: " + failure.Error()}
 	}
-	if cmd.ProcessState == nil {
-		// Waiting itself failed, so the command's status is unknown.
-		return Exit{}, &Error{Code: ExitFailure, Message: fmt.Sprintf("waiting for the command: %v", waitErr)}
+	if err != nil {
+		return Exit{}, err
 	}
-	status := cmd.ProcessState.Sys().(syscall.WaitStatus)
 	if status.Signaled() {
 		return Exit{Signal: status.Signal()}, nil
+	}
+	return Exit{Code: status.ExitStatus()}, nil
+}
+
+// runPipes runs cmd with the runner's stdin and its output through pipes.
+func runPipes(cmd *exec.Cmd, stdin *os.File, j *job, stdout, stderr io.Writer) (syscall.WaitStatus, error) {
+	// Sharing the terminal's foreground process group lets the command read
+	// the terminal and receive Ctrl-C and Ctrl-Z directly. Otherwise the
+	// command gets a group of its own, so interruptions and cleanup reach
+	// the processes it starts without touching the runner's caller.
+	j.group = !foreground(stdin)
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: j.group}
+	cmd.WaitDelay = outputGrace
+	if err := cmd.Start(); err != nil {
+		return 0, execError(err, ExitFailure)
+	}
+	j.start(cmd.Process.Pid)
+	waitErr := cmd.Wait()
+	if cmd.ProcessState == nil {
+		// Waiting itself failed, so the command's status is unknown.
+		return 0, &Error{Code: ExitFailure, Message: fmt.Sprintf("waiting for the command: %v", waitErr)}
 	}
 	// errors.Is(waitErr, exec.ErrWaitDelay): processes the command started
 	// still hold its output pipes. Their later output is dropped, which
 	// exposes nothing, and the command's own status stands.
-	return Exit{Code: status.ExitStatus()}, nil
+	return cmd.ProcessState.Sys().(syscall.WaitStatus), nil
 }
 
 // execError classifies a failure to find or start the command: 127 when
@@ -203,20 +212,91 @@ func execError(err error, otherwise int) *Error {
 	return &Error{Code: code, Message: err.Error()}
 }
 
-func foreground(stdin *os.File) bool {
-	if stdin == nil {
+// foreground reports whether f is the runner's controlling terminal, by
+// whatever name, and the runner is in its foreground process group.
+func foreground(f *os.File) bool {
+	if f == nil {
 		return false
 	}
-	group, err := unix.IoctlGetInt(int(stdin.Fd()), unix.TIOCGPGRP)
+	group, err := unix.IoctlGetInt(int(f.Fd()), unix.TIOCGPGRP)
 	return err == nil && group == unix.Getpgrp()
 }
 
-func signalCommand(cmd *exec.Cmd, ownGroup bool, sig syscall.Signal) {
-	pid := cmd.Process.Pid
-	if ownGroup {
+// job is the started command as signals reach it: its process group when
+// it has one of its own, otherwise the process alone.
+type job struct {
+	group   bool
+	started chan struct{} // closed once the command runs
+
+	mu      sync.Mutex
+	pid     int
+	failure error
+	kill    *time.Timer
+}
+
+func (j *job) start(pid int) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.pid = pid
+	close(j.started)
+	if j.failure != nil {
+		j.terminate()
+	}
+}
+
+func (j *job) signal(sig syscall.Signal) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.send(sig)
+}
+
+func (j *job) send(sig syscall.Signal) {
+	// Before the command runs there is nobody to signal, and kill(0)
+	// would reach the runner's own group.
+	if j.pid == 0 {
+		return
+	}
+	pid := j.pid
+	if j.group {
 		pid = -pid
 	}
 	_ = syscall.Kill(pid, sig)
+}
+
+// stop records the first output failure and stops the command, politely
+// and then by force.
+func (j *job) stop(err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.failure != nil {
+		return
+	}
+	j.failure = err
+	if j.pid != 0 {
+		j.terminate()
+	}
+}
+
+func (j *job) terminate() {
+	j.send(syscall.SIGTERM)
+	j.kill = time.AfterFunc(killGrace, func() { j.signal(syscall.SIGKILL) })
+}
+
+// failed reports whether an output failure is stopping the command.
+func (j *job) failed() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.failure != nil
+}
+
+// finish ends stopping the command and returns the output failure, if any.
+func (j *job) finish() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.kill != nil {
+		j.kill.Stop()
+	}
+	return j.failure
 }
 
 // stoppingWriter stops the command when its output cannot be passed on,

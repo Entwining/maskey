@@ -14,7 +14,7 @@ Syntax is in `mk --help` and `mk <command> --help`; error kinds and exit statuse
 1. `mk list` prints entries as `<namespace>/<NAME>`, one per line; `mk list <namespace>` prints one namespace. The name is the environment variable the command receives.
 2. Wrap the command that needs the credential, not a shell you keep or a whole agent, and give it only the entries it needs: `mk run -e github/GITHUB_TOKEN -- gh pr list` sets that entry, and `-n github` every entry of the namespace. Repeat either option for more.
 3. `mk run` starts the command without a shell. When it needs a variable expanded, quote the script in single quotes so the variable expands in the child, where it is set: `mk run -e api/API_TOKEN -- sh -c 'curl -H "Authorization: Bearer $API_TOKEN" https://api.example.com'`. In double quotes your own shell expands it first, where it is unset or holds something else.
-4. The command's output shows each value as a marker such as `***`. Masking covers exact values on stdout and stderr only, so do not run commands that print values in another form (base64, URL-encoded, hex dumps, debug logs).
+4. The command's output shows each exact value as a marker such as `***`. Masking covers stdout and stderr only, so do not run commands that print values in another form (base64, URL-encoded, hex dumps, debug logs) or insert line breaks or styling within them on a terminal.
 
 `mk list --json` gives each entry's kind. A `pem` entry is a private key: hand it to the tool on stdin inside `sh -c`, such as `sh -c 'printf "%s\n" "$DEPLOY_KEY" | ssh-add -'`. If the tool accepts only a file path, tell the user instead of writing the key to disk.
 

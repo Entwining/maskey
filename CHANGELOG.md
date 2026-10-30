@@ -3,6 +3,7 @@
 ## 0.0.2
 
 - An entry selected with `mk run -e` replaces a same-named entry of a namespace selected with `-n`, instead of failing as a conflict: `mk run -n github -e work/GITHUB_TOKEN -- gh pr list` passes the rest of `github` with the work token. The same name selected from two namespaces otherwise is still a conflict, and `mk run --help` explains why.
+- `mk run` in the foreground of the terminal that is its stdin and stdout gives the command a terminal of its own, so interactive and full-screen programs work, with resizing and Ctrl-Z and `fg`. A stderr redirected elsewhere stays a separate masked pipe. Masking matches exact bytes, so a program that breaks a value up on screen, by wrapping or styling part of it, shows it unmasked, and a selected value with a control character keeps pipes. Processes the command leaves behind lose its terminal when it ends; most end by the hangup, but one that ignores it keeps running.
 
 ## 0.0.1
 

@@ -5,6 +5,7 @@ go 1.27.3
 tool github.com/egoist/mygo/cmd/mygo
 
 require (
+	github.com/creack/pty v1.1.24
 	github.com/ebitengine/purego v0.11.1
 	github.com/egoist/mygo v0.7.3
 	github.com/spf13/cobra v1.10.2

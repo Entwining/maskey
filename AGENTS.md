@@ -28,6 +28,8 @@ Inside a sandbox that blocks the `com.apple.securityd` Mach services, every dire
 
 No path prints, logs, or returns a stored value outside `mk run` (into the child's environment, masked in its output) and the window's Reveal, Copy, and Edit form. Do not add a get, export, or raw-output option. Values never travel in arguments, temporary files, or error messages: `store.Error` carries none, and the helper's stderr stays unread because Python can quote the request there.
 
+Keep partial-value holdback strict in terminal mode too: a timed flush can expose a value written in pieces, even if it avoids a stalled terminal display.
+
 ## Keychain helper and service
 
 `internal/keychain` runs the embedded helper as `/usr/bin/python3 -I -S -c` with only `PATH` in its environment, the request on stdin. The absolute path and the bare environment keep another interpreter, or `DEVELOPER_DIR` redirecting Apple's shim, from hosting it without Apple's `com.apple.python3` identity. The ready line printed after the host check is what separates a confirmed failure (`prerequisite`) from a write that may have happened (`uncertain`); keep both outcomes distinct.
@@ -36,7 +38,7 @@ No path prints, logs, or returns a stored value outside `mk run` (into the child
 
 ## Command line and GUI in one executable
 
-`main` dispatches to the CLI before any GUI work. Nothing on a CLI path may call `mygo.App` or `mygo.NewWindow`, because they create the GUI backend; `mk` reads its version from the embedded `mygo.json` for that reason. The error kinds, exit statuses, and output streams are a contract that agents script against: the command definitions in `internal/cli` and its `exit-codes` help topic own it, and a new kind needs its exit code and exit-codes line together, with a recovery where one helps. Agents learn the workflow from `resources/skills/maskey/SKILL.md`, which ships in the app; change it with the commands it describes.
+`main` dispatches to the CLI, and to the hidden `--run-monitor` that `mk run` starts on a terminal, before any GUI work. Nothing on a CLI path may call `mygo.App` or `mygo.NewWindow`, because they create the GUI backend; `mk` reads its version from the embedded `mygo.json` for that reason. The error kinds, exit statuses, and output streams are a contract that agents script against: the command definitions in `internal/cli` and its `exit-codes` help topic own it, and a new kind needs its exit code and exit-codes line together, with a recovery where one helps. Agents learn the workflow from `resources/skills/maskey/SKILL.md`, which ships in the app; change it with the commands it describes.
 
 ## Release builds
 
