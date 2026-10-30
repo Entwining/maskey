@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -96,7 +95,12 @@ func Run(ctx context.Context, c Command) (Exit, error) {
 	ownGroup := !foreground(c.Stdin)
 	cmd := exec.Command(path, c.Args...)
 	cmd.Args[0] = c.Path
-	cmd.Env = environment(os.Environ(), c.Entries)
+	// exec keeps the last value of a duplicate key, so entries replace
+	// inherited variables of the same names.
+	cmd.Env = os.Environ()
+	for _, entry := range c.Entries {
+		cmd.Env = append(cmd.Env, entry.Name+"="+string(entry.Value))
+	}
 	cmd.Stdin = c.Stdin
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: ownGroup}
 	cmd.WaitDelay = outputGrace
@@ -197,26 +201,6 @@ func execError(err error, otherwise int) *Error {
 		code = ExitNotExecutable
 	}
 	return &Error{Code: code, Message: err.Error()}
-}
-
-// environment returns the inherited environment with the entries replacing
-// any variables of the same names.
-func environment(inherited []string, entries []store.Entry) []string {
-	selected := map[string]bool{}
-	for _, entry := range entries {
-		selected[entry.Name] = true
-	}
-	env := make([]string, 0, len(inherited)+len(entries))
-	for _, kv := range inherited {
-		name, _, _ := strings.Cut(kv, "=")
-		if !selected[name] {
-			env = append(env, kv)
-		}
-	}
-	for _, entry := range entries {
-		env = append(env, entry.Name+"="+string(entry.Value))
-	}
-	return env
 }
 
 func foreground(stdin *os.File) bool {

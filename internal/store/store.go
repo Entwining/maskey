@@ -267,10 +267,11 @@ func (s *Store) Value(ctx context.Context, ref Ref) ([]byte, error) {
 	return entries[0].Value, nil
 }
 
-// Values reads every credential of the namespaces, and the credentials refs
-// name. A namespace without entries or a missing entry is an error, and so is
-// a name selected from more than one namespace: neither may silently change
-// what a command receives.
+// Values reads the credentials refs name, and every credential of the
+// namespaces whose name no ref names, as an explicit import shadows a glob
+// import. A namespace without entries, a missing entry, and a name that two
+// namespaces or two refs supply are errors: none may silently change what a
+// command receives.
 func (s *Store) Values(ctx context.Context, namespaces []string, refs []Ref) ([]Entry, error) {
 	if len(namespaces) == 0 && len(refs) == 0 {
 		return nil, &Error{Kind: KindInvalid, Message: "no namespace or entry selected"}
@@ -280,10 +281,12 @@ func (s *Store) Values(ctx context.Context, namespaces []string, refs []Ref) ([]
 			return nil, err
 		}
 	}
+	named := map[string]bool{}
 	for _, ref := range refs {
 		if err := ValidateRef(ref); err != nil {
 			return nil, err
 		}
+		named[ref.Name] = true
 	}
 	all, _, err := s.list(ctx)
 	if err != nil {
@@ -309,6 +312,9 @@ func (s *Store) Values(ctx context.Context, namespaces []string, refs []Ref) ([]
 				continue
 			}
 			found = true
+			if named[ref.Name] {
+				continue
+			}
 			if err := add(ref); err != nil {
 				return nil, err
 			}

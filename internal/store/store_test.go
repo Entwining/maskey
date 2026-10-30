@@ -324,6 +324,8 @@ func TestValuesSelection(t *testing.T) {
 		{nil, []store.Ref{ref("other", "TOKEN"), ref("db", "PASSWORD")}, []string{"TOKEN=o", "PASSWORD=p"}},
 		// An entry of a selected namespace is selected once.
 		{[]string{"app"}, []store.Ref{ref("app", "URL"), ref("db", "PASSWORD")}, []string{"TOKEN=t", "URL=u", "PASSWORD=p"}},
+		// A named entry takes the place of a namespace's entry of that name.
+		{[]string{"app"}, []store.Ref{ref("other", "TOKEN")}, []string{"URL=u", "TOKEN=o"}},
 	} {
 		entries, err := s.Values(ctx, test.namespaces, test.refs)
 		if err != nil {
@@ -344,7 +346,7 @@ func TestValuesSelection(t *testing.T) {
 		want       store.Kind
 	}{
 		{[]string{"app", "other"}, nil, store.KindConflict},
-		{[]string{"app"}, []store.Ref{ref("other", "TOKEN")}, store.KindConflict},
+		{nil, []store.Ref{ref("app", "TOKEN"), ref("other", "TOKEN")}, store.KindConflict},
 		{[]string{"app", "missing"}, nil, store.KindNotFound},
 		{[]string{"app"}, []store.Ref{ref("db", "MISSING")}, store.KindNotFound},
 		{nil, nil, store.KindInvalid},

@@ -19,10 +19,15 @@ func runCommand(env *Env) *cobra.Command {
 namespace -n selects, and each entry -e names. Each of their values is
 replaced in the command's stdout and stderr with a marker, usually ***.
 
+Each entry becomes a variable named NAME alone: the command's environment
+has no namespaces. An entry selected with -e replaces same-named entries
+from namespaces selected with -n. Otherwise, selecting the same name from
+two namespaces is a conflict, because mk does not choose between values.
+
 The command runs without a shell: to expand variables or use pipes, run
-sh -c '...' as the command. A name selected from two namespaces is a
-conflict. mk exits with the command's status, or ends by the same signal;
-when mk itself fails it exits 125, 126 or 127 (see "mk help exit-codes").
+sh -c '...' as the command. mk exits with the command's status, or ends by
+the same signal; when mk itself fails it exits 125, 126 or 127 (see
+"mk help exit-codes").
 
 Masking covers exact values in stdout and stderr only, not encoded values,
 files, or network traffic. Programs that need a terminal for their output,

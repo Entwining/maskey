@@ -139,7 +139,7 @@ func report(env *Env, cmd *cobra.Command, err error) Outcome {
 	case e.Kind == store.KindNotFound && e.Ref != nil:
 		recovery = "run mk list " + e.Ref.Namespace + " to see its entries"
 	case e.Kind == store.KindConflict && cmd.Name() == "run":
-		recovery = "select namespaces and entries whose names do not overlap"
+		recovery = "drop one of the namespaces or entries that share the name, or select only the entry you want with -e"
 	case e.Kind == store.KindExists && cmd.Name() == "install":
 		recovery = "move it away, then run mk skill install again"
 	}

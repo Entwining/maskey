@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.2
+
+- An entry selected with `mk run -e` replaces a same-named entry of a namespace selected with `-n`, instead of failing as a conflict: `mk run -n github -e work/GITHUB_TOKEN -- gh pr list` passes the rest of `github` with the work token. The same name selected from two namespaces otherwise is still a conflict, and `mk run --help` explains why.
+
 ## 0.0.1
 
 The first release of Maskey: a macOS window and the `mk` command for credentials kept in iCloud Keychain. Manage entries yourself, and let scripts and coding agents use them as environment variables, with exact values masked in the command's output.

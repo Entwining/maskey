@@ -87,7 +87,7 @@ In the window, click + or choose File → New Entry, and enter a name such as `G
 
 The value editor accepts multiple lines but refuses to paste CRLF line endings, which it would change to LF. An entry whose value contains carriage returns keeps that value when you edit it; replace it with `mk set --stdin`, which stores its input byte for byte.
 
-From a terminal, `mk run -n <namespace> -- <command>` sets every entry of the namespace in the command's environment, and `-e <namespace>/<NAME>` sets one entry, replacing inherited variables of the same name. Repeat either option for more; a name selected from two namespaces is a conflict. `mk run` starts the command without a shell, so use `sh -c '…'` for pipes or variable expansion.
+From a terminal, `mk run -n <namespace> -- <command>` sets every entry of the namespace as a variable of the same name in the command's environment, replacing an inherited one, and `-e <namespace>/<NAME>` sets one entry, which also replaces a selected namespace's entry of that name. Repeat either option for more. `mk run` starts the command without a shell, so use `sh -c '…'` for pipes or variable expansion.
 
 `mk list` prints entry references, and `mk list --json` adds each entry's kind and modification time; neither shows values or notes. `mk set`, `mk rename`, and `mk delete` manage entries. Deleting an entry removes it from every Mac on your Apple Account and cannot be undone.
 
