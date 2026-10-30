@@ -83,7 +83,9 @@ With Homebrew, run `brew uninstall --cask maskey` in place of removing the app.
 
 ## Use
 
-In the window, click + or choose File → New Entry, and enter a name such as `GITHUB_TOKEN`, a namespace, and the value. Kind describes the value and sets the entry's icon; Maskey suggests one from the name until you choose one. Notes are plain text shown with the entry, so keep secrets in the value. The search field (⌘F) matches entry and namespace names across every namespace.
+In the window, click + or choose File → New Entry, and enter a name such as `GITHUB_TOKEN`, a namespace, and the value. Kind describes the value and sets the entry's icon; Maskey suggests one from the name until you choose one. Notes are plain text shown with the entry, so keep secrets in the value. The toolbar's search field (⌘F) matches entry and namespace names across every namespace and stays usable while you edit.
+
+Before you switch entries or namespaces, close the window, or quit, Maskey asks whether to save, discard, or continue editing any unsaved changes. Saving is offered only when the form can be saved. Cancel and Escape in the editor ask before discarding unsaved changes, without offering Save; an unchanged form closes at once. Escape in the search field clears the query.
 
 The value editor accepts multiple lines but refuses to paste CRLF line endings, which it would change to LF. An entry whose value contains carriage returns keeps that value when you edit it; replace it with `mk set --stdin`, which stores its input byte for byte.
 

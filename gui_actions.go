@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,10 +15,9 @@ import (
 	"github.com/Entwining/maskey/internal/store"
 )
 
-// read loads the chosen entry's value and passes it to use unless another
-// entry was chosen meanwhile.
-func (g *gui) read(action string, use func(value []byte)) {
-	ref := g.entry
+// read loads ref's value and passes it to use unless another entry was
+// chosen meanwhile.
+func (g *gui) read(ref store.Ref, action string, use func(value []byte)) {
 	token := g.selToken
 	g.readAction = action
 	g.start(func() func() {
@@ -28,7 +28,7 @@ func (g *gui) read(action string, use func(value []byte)) {
 			}
 			g.readAction = ""
 			if err != nil {
-				g.showAlert(fmt.Sprintf("Couldn’t read “%s”", ref.Name), err)
+				g.showAlert(fmt.Sprintf("Couldn’t Read “%s”", ref.Name), err)
 				return
 			}
 			use(value)
@@ -41,39 +41,55 @@ func (g *gui) toggleReveal() {
 		g.revealed = ""
 		return
 	}
-	g.read("reveal", func(value []byte) { g.revealed = string(value) })
+	g.read(g.entry, "reveal", func(value []byte) { g.revealed = string(value) })
 }
 
-func (g *gui) copy() {
+// copy puts ref's value on the clipboard; the chosen entry's card confirms
+// it.
+func (g *gui) copy(ref store.Ref) {
 	services := g.services
+	chosen := ref == g.entry
 	g.copied = false
-	g.read("copy", func(value []byte) {
+	g.read(ref, "copy", func(value []byte) {
 		services.WriteClipboard(string(value))
-		g.copied, g.copiedUntil = true, time.Time{}
+		if chosen {
+			g.copied, g.copiedUntil = true, time.Time{}
+		}
 	})
 }
 
-// openNew opens the form for a new entry in the namespace chosen.
+// openNew opens the form for a new entry in the namespace chosen, once the
+// open form is left.
 func (g *gui) openNew() {
-	if g.form.open {
-		return
-	}
-	namespace := g.namespace
-	if namespace == allNamespaces {
-		namespace = ""
-	}
-	g.selectionChanged()
-	g.form = form{open: true, id: g.form.id + 1, namespace: namespace, kind: kindLabel(store.InferValueKind("")), inferredFrom: new(string)}
+	g.leave(func() {
+		namespace := g.namespace
+		if namespace == allNamespaces {
+			namespace = ""
+		}
+		chosenBefore := g.entry
+		g.choose(store.Ref{})
+		g.selectionChanged()
+		g.pick = store.Ref{}
+		g.form = form{open: true, id: g.form.id + 1, chosenBefore: chosenBefore, namespace: namespace, kind: kindLabel(store.InferValueKind("")), inferredFrom: new(string)}
+	})
 }
 
-// openEdit opens the form for the chosen entry and loads the value it
-// starts from.
-func (g *gui) openEdit() {
-	if g.form.open || g.entry == (store.Ref{}) || g.writing(g.entry) {
-		return
+// openEdit chooses ref and opens the form for it, once the open form is
+// left, and loads the value it starts from.
+func (g *gui) openEdit(ref store.Ref) {
+	if g.canEdit(ref) {
+		g.leave(func() { g.edit(ref) })
 	}
-	ref := g.entry
+}
+
+func (g *gui) canEdit(ref store.Ref) bool {
+	return ref != (store.Ref{}) && !g.writing(ref) && (!g.form.open || g.form.from != ref)
+}
+
+func (g *gui) edit(ref store.Ref) {
+	g.choose(ref)
 	g.selectionChanged()
+	g.pick = store.Ref{}
 	details := g.attributes[ref].Details
 	kind := kindLabel(store.ValueKindOf(ref.Name, details.Kind))
 	g.form = form{open: true, id: g.form.id + 1, from: ref, namespace: ref.Namespace, name: ref.Name,
@@ -98,13 +114,84 @@ func (g *gui) openEdit() {
 	})
 }
 
+// closeForm drops the form; a new entry's form gives the list back the entry
+// chosen before it opened, unless the listing no longer has it.
 func (g *gui) closeForm() {
+	if g.form.open && g.form.from == (store.Ref{}) && slices.Contains(g.refs, g.form.chosenBefore) {
+		g.entry = g.form.chosenBefore
+	}
 	g.form = form{id: g.form.id}
 }
 
+// submitting reports whether the open form's write is running.
+func (g *gui) submitting() bool {
+	return g.form.open && g.writeForm == g.form.id && g.writeAction == "submit"
+}
+
+// canSubmit reports whether the form's primary action is available: the
+// form would write something, and no other write runs.
+func (g *gui) canSubmit() bool { return g.form.ready() && g.writeAction == "" }
+
+// leave runs then, which replaces the form, at once or, when the form holds
+// unsaved changes, once the user has answered for them.
+func (g *gui) leave(then func()) {
+	if !g.ask(then, true) {
+		g.closeForm()
+		then()
+	}
+}
+
+// cancelForm closes the form, once the user agrees to discard its unsaved
+// changes.
+func (g *gui) cancelForm() {
+	if !g.ask(func() {}, false) {
+		g.closeForm()
+	}
+}
+
+// ask defers then, and asks about the form's unsaved changes, when it has
+// any, and reports whether it did. A write of the form already has its
+// draft, or deletes its entry, so leaving then is what Close does. A window
+// close or a quit while the question is open waits on it, leaving its
+// buttons and the action it defers as they are.
+func (g *gui) ask(then func(), offerSave bool) bool {
+	if g.confirmLeave {
+		return true
+	}
+	f := &g.form
+	if !f.open || !f.dirty() || g.submitting() || g.writing(f.from) {
+		return false
+	}
+	g.confirmLeave = true
+	p, id := g.newLeavePrompt(offerSave), f.id
+	g.message(p.alert, func(button int) {
+		g.confirmLeave = false
+		// While another alert was answered first, a delete may have closed
+		// the form or a write started; the answer was to a question that no
+		// longer holds, so the user asks again.
+		if !g.form.open || g.form.id != id {
+			return
+		}
+		switch button {
+		case p.saveAt:
+			if g.canSubmit() {
+				g.submit(then)
+			}
+		case p.discardAt:
+			g.closeForm()
+			then()
+		}
+	})
+	return true
+}
+
 // submit creates the form's entry, or gives the edited one the form's
-// namespace, name, value and details in one write.
-func (g *gui) submit() {
+// namespace, name, value and details in one write. Once the write succeeds,
+// unless the user has since chosen another entry, namespace, form, or
+// search, then runs, unless nil, or else the list follows the entry
+// written. Closing the form is not a choice: then is what the user chose
+// last.
+func (g *gui) submit(then func()) {
 	f := &g.form
 	to := store.Ref{Namespace: f.namespace, Name: f.name}
 	if err := store.ValidateName(to.Name); err != nil {
@@ -134,11 +221,12 @@ func (g *gui) submit() {
 	}
 	f.err = formError{}
 	id := f.id
-	verb, done, target := "save", "saved", from
+	verb, done, target := "Save", "Saved", from
 	if from == (store.Ref{}) {
-		verb, done, target = "add", "added", to
+		verb, done, target = "Add", "Added", to
 	}
 	g.writeAction, g.writeRef, g.writeForm = "submit", target, id
+	moves := g.moves
 	g.start(func() func() {
 		var err error
 		if from == (store.Ref{}) {
@@ -165,13 +253,34 @@ func (g *gui) submit() {
 			if sameForm {
 				g.closeForm()
 			}
-			g.follow(to)
+			switch {
+			case g.moves != moves:
+				g.refresh()
+			case then != nil:
+				then()
+				g.refresh()
+			default:
+				g.follow(to)
+			}
 		}
 	})
 }
 
+// askDelete deletes ref once the user confirms. Nothing undoes a delete,
+// so no button is the default: Return deletes nothing.
 func (g *gui) askDelete(ref store.Ref) {
-	g.confirmDelete, g.deleteRef = true, ref
+	// The window shows the entry asked about, but for another row's Delete…
+	// beside a form, which names it.
+	message := "Delete this entry?"
+	if g.form.open && g.form.from != ref {
+		message = fmt.Sprintf("Delete “%s” from %s?", ref.Name, ref.Namespace)
+	}
+	g.message(alert{message: message, detail: "You can’t undo this action.",
+		buttons: []alertButton{{title: "Delete", destructive: true}, {title: "Cancel", isCancel: true}}}, func(button int) {
+		if button == 0 {
+			g.delete(ref)
+		}
+	})
 }
 
 func (g *gui) delete(ref store.Ref) {
@@ -181,7 +290,7 @@ func (g *gui) delete(ref store.Ref) {
 		return func() {
 			g.writeAction = ""
 			if err != nil {
-				g.writeFailed(false, "delete", "deleted", ref, err)
+				g.writeFailed(false, "Delete", "Deleted", ref, err)
 				return
 			}
 			if g.form.open && g.form.from == ref {
@@ -203,20 +312,19 @@ func (g *gui) writeFailed(formOpen bool, verb, done string, ref store.Ref, err e
 	if !formOpen {
 		title := fmt.Sprintf("Couldn’t %s “%s”", verb, ref.Name)
 		if store.IsKind(err, store.KindUncertain) {
-			title = fmt.Sprintf("Couldn’t confirm that “%s” was %s", ref.Name, done)
+			title = fmt.Sprintf("Couldn’t Confirm That “%s” Was %s", ref.Name, done)
 		}
 		g.showAlert(title, err)
 	}
 	g.refresh()
 }
 
+// Report the outcome after installation; showMessage cannot update an open alert.
 func (g *gui) installCLI() {
-	g.cliOpen = true
 	if g.cliInstalling {
 		return
 	}
 	g.cliInstalling = true
-	g.cliTitle, g.cliMessage = "Installing the Command Line Tool…", "Linking mk and starting its Keychain service."
 	g.start(func() func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
@@ -232,17 +340,17 @@ func (g *gui) installCLI() {
 			err = agent.Install(ctx, executable)
 		}
 		return func() {
-			g.cliInstalling, g.cliOpen = false, true
+			g.cliInstalling = false
 			if err != nil {
-				g.cliTitle, g.cliMessage = "Couldn’t Install the Command Line Tool", sentence(err)
+				g.showAlert("Couldn’t Install the Command Line Tool", err)
 				return
 			}
 			dir := filepath.Dir(link)
 			if rest, ok := strings.CutPrefix(dir, home); ok {
 				dir = "~" + rest
 			}
-			g.cliTitle = "Command Line Tool Installed"
-			g.cliMessage = fmt.Sprintf("mk is in %s and its Keychain service is running. If your shell can’t find mk, add %s to PATH.", dir, dir)
+			g.message(alert{message: "Command Line Tool Installed",
+				detail: fmt.Sprintf("mk is in %s. If your shell can’t find it, add that directory to PATH.", dir), buttons: []alertButton{okButton}}, nil)
 		}
 	})
 }

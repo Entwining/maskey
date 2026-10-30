@@ -25,6 +25,25 @@ type harness struct {
 	g       *gui
 	tt      *ui.Tester
 	posted  chan func()
+
+	mu     sync.Mutex
+	alerts []*sheet // shown and not yet answered, oldest first
+	held   int      // operations pause holds
+	woken  chan struct{}
+}
+
+// sheet is an alert the window shows, waiting for its answer.
+type sheet struct {
+	alert
+	answer chan int
+}
+
+func (s *sheet) titles() []string {
+	titles := make([]string, len(s.buttons))
+	for i, b := range s.buttons {
+		titles[i] = b.title
+	}
+	return titles
 }
 
 // newHarness shows the window over a fake store with two namespaces. Work
@@ -41,29 +60,108 @@ func newHarness(t *testing.T) *harness {
 
 func newHarnessWith(t *testing.T, backend *storetest.Backend) *harness {
 	t.Helper()
-	h := &harness{t: t, backend: backend, g: newGUI(store.New(backend)), posted: make(chan func(), 64)}
+	h := &harness{t: t, backend: backend, g: newGUI(store.New(backend)), posted: make(chan func(), 64), woken: make(chan struct{}, 1)}
 	h.g.post = func(fn func()) { h.posted <- fn }
+	h.g.showMessage = h.showMessage
 	h.tt = ui.NewTester(h.g.view, 980, 600)
 	h.g.refresh()
 	h.settle()
 	return h
 }
 
-// settle applies posted results until no work is pending.
+// settle applies posted results until no work is pending but alerts
+// waiting for an answer and operations pause holds.
 func (h *harness) settle() {
 	h.t.Helper()
 	for {
 		h.tt.Frame()
-		if h.g.pending == 0 {
+		h.mu.Lock()
+		waiting := len(h.alerts) + h.held
+		h.mu.Unlock()
+		if h.g.pending == waiting {
 			return
 		}
 		select {
 		case fn := <-h.posted:
 			fn()
+		case <-h.woken:
 		case <-time.After(5 * time.Second):
 			h.t.Fatal("pending work never finished")
 		}
 	}
+}
+
+// wake tells settle that work began to wait.
+func (h *harness) wake() {
+	select {
+	case h.woken <- struct{}{}:
+	default:
+	}
+}
+
+// showMessage stands in for showSheet: it shows nothing, and waits for the
+// test to answer.
+func (h *harness) showMessage(a alert) (int, error) {
+	s := &sheet{a, make(chan int)}
+	h.mu.Lock()
+	h.alerts = append(h.alerts, s)
+	h.mu.Unlock()
+	h.wake()
+	return <-s.answer, nil
+}
+
+func (h *harness) openAlerts() []*sheet {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.alerts)
+}
+
+// alert returns the oldest alert open.
+func (h *harness) alert() *sheet {
+	h.t.Helper()
+	open := h.openAlerts()
+	if len(open) == 0 {
+		h.t.Fatal("no alert is open")
+	}
+	return open[0]
+}
+
+// answer clicks the button labeled label in the oldest alert open.
+func (h *harness) answer(label string) {
+	h.t.Helper()
+	a := h.alert()
+	i := slices.IndexFunc(a.buttons, func(b alertButton) bool { return b.title == label })
+	if i < 0 {
+		h.t.Fatalf("no %q in %q", label, a.titles())
+	}
+	h.press(a, i)
+}
+
+// enter and escape answer the oldest alert open as those keys do.
+func (h *harness) enter() {
+	h.t.Helper()
+	a := h.alert()
+	i := slices.IndexFunc(a.buttons, func(b alertButton) bool { return b.isDefault })
+	if i < 0 {
+		h.t.Fatalf("Return chooses nothing in %+v", a.alert)
+	}
+	h.press(a, i)
+}
+
+func (h *harness) escape() {
+	h.t.Helper()
+	a := h.alert()
+	h.press(a, a.cancelButton())
+}
+
+// press answers a with its button i, and settles.
+func (h *harness) press(a *sheet, i int) {
+	h.t.Helper()
+	h.mu.Lock()
+	h.alerts = slices.DeleteFunc(h.alerts, func(b *sheet) bool { return b == a })
+	h.mu.Unlock()
+	a.answer <- i
+	h.settle()
 }
 
 // applyPostedWhile applies posted results while cond holds.
@@ -84,12 +182,29 @@ func (h *harness) applyPostedWhile(cond func() bool) {
 func (h *harness) pause(op string) (started <-chan struct{}, release func()) {
 	h.t.Helper()
 	begun, released := make(chan struct{}), make(chan struct{})
-	var beginOnce, releaseOnce sync.Once
-	release = func() { releaseOnce.Do(func() { close(released) }) }
+	var beginOnce sync.Once
+	// done and holding, guarded by h.mu, let settle count what this pause
+	// holds; release lets it go on the test goroutine.
+	done, holding := false, 0
+	release = func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if !done {
+			done, h.held = true, h.held-holding
+			close(released)
+		}
+	}
 	h.t.Cleanup(release)
 	h.backend.Before = func(o, _ string) error {
 		if o == op {
 			beginOnce.Do(func() { close(begun) })
+			h.mu.Lock()
+			if !done {
+				holding++
+				h.held++
+			}
+			h.mu.Unlock()
+			h.wake()
 			<-released
 		}
 		return nil
@@ -321,8 +436,8 @@ func TestBackendErrorShown(t *testing.T) {
 		return nil
 	}
 	h.click("Show Value")
-	if !h.tt.HasText("The Keychain is unavailable until this Mac is unlocked (OSStatus -25308).") || h.g.revealed != "" {
-		t.Fatalf("texts %q, revealed %v", h.tt.Texts(), h.g.revealed != "")
+	if a := h.alert(); a.message != "Couldn’t Read “URL”" || a.detail != "The Keychain is unavailable until this Mac is unlocked (OSStatus -25308)." || h.g.revealed != "" {
+		t.Fatalf("alert %+v, revealed %v", a.alert, h.g.revealed != "")
 	}
 }
 

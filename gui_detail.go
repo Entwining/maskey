@@ -14,7 +14,12 @@ import (
 func (g *gui) detail(c *ui.Context) {
 	t := c.Theme()
 	f := &g.form
-	submitting := f.open && g.writeForm == f.id && g.writeAction == "submit"
+	submitting := g.submitting()
+	// Two slots of one width hold the buttons in every state, Edit's slot
+	// taking Save or Add, the empty one before it Cancel or Close, so that
+	// nothing moves as the form opens and closes, and the search field keeps
+	// its place and width.
+	slot := func() { ui.Box(c).MinWidth(toolbarButtonWidth) }
 	toolbar(c, func() {
 		ui.Box(c).Grow(1)
 		switch {
@@ -23,27 +28,31 @@ func (g *gui) detail(c *ui.Context) {
 			if f.from == (store.Ref{}) {
 				action = "Add"
 			}
-			cancel, submit := formButtons(c, action, f.ready() && g.writeAction == "", submitting)
+			cancel, submit := formButtons(c, action, g.canSubmit(), submitting)
 			if cancel {
-				g.closeForm()
+				g.cancelForm()
 			}
 			if submit {
-				g.submit()
+				g.submit(nil)
 			}
 		case g.entry != (store.Ref{}):
+			slot()
 			if ui.Button(c, "Edit").MinWidth(toolbarButtonWidth).Height(28).Disabled(g.writing(g.entry)).Clicked() {
-				g.openEdit()
+				g.openEdit(g.entry)
 			}
+		default:
+			slot()
+			slot()
 		}
-		// The form's buttons leave no room for the field at the window's
-		// minimum width, and the list it filters is disabled meanwhile.
-		if !f.open {
-			ui.SearchField(c.Key("search"), &g.query).Bind(&g.search).Label("Search entries").Width(180).Height(28).
-				Padding(0, t.Space(2)).Radius(7).Background(neutral.Alpha(0.12)).Border(1, ui.Transparent).Disabled(len(g.namespaces) == 0)
+		search := ui.SearchField(c.Key("search"), &g.query).Bind(&g.search).Label("Search entries").Width(searchWidth).MinWidth(searchMinWidth).Height(28).
+			Padding(0, t.Space(2)).Radius(7).Background(neutral.Alpha(0.12)).Border(1, ui.Transparent).Disabled(len(g.namespaces) == 0)
+		if search.Changed() {
+			g.moves++
 		}
 	})
-	if f.open && c.Shortcut(0, ui.KeyEscape) {
-		g.closeForm()
+	// Escape in the search field is the field's, which clears the query.
+	if f.open && !g.search.FocusWithin(c) && c.Shortcut(0, ui.KeyEscape) {
+		g.cancelForm()
 	}
 	if !f.open && g.entry == (store.Ref{}) {
 		if g.loaded && len(g.namespaces) > 0 {
@@ -69,8 +78,12 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 	kind := g.kind(ref)
 	heading(c, ref.Name, monospace, ref.Namespace, kind)
 	v, h := inputPadding(t)
+	// A value stays on one line, as in Passwords, so that a name never
+	// breaks into what reads as two; its tooltip shows what the line cuts.
 	text := func(s string, font string) func() {
-		return func() { ui.Text(c, s).Font(font).TextColor(t.Text).Wrap().Selectable().Padding(v+1, h+1) }
+		return func() {
+			ui.Text(c, s).Font(font).TextColor(t.Text).SingleLine().Tooltip(s).Selectable().Padding(v+1, h+1)
+		}
 	}
 	attributes := g.attributes[ref]
 	fields := []func(){
@@ -81,7 +94,11 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 			cardField(c, "Value", func() {
 				ui.Row(c).Gap(4).AlignItems(ui.Start).Padding(v+1, h+1).Children(func() {
 					if g.showing(ref) {
-						ui.Text(c, g.revealed).Font(monospace).TextColor(t.Text).Wrap().Grow(1).MinWidth(0).Selectable()
+						// The value's own lines stay whole, and scroll where they
+						// are wider than the card.
+						ui.ScrollHorizontal(c).Grow(1).MinWidth(0).Children(func() {
+							ui.Text(c, g.revealed).Font(monospace).TextColor(t.Text).NoWrap().Selectable()
+						})
 					} else {
 						ui.Text(c, hiddenValue).TextColor(t.Text).Grow(1).MinWidth(0).SingleLine()
 					}
@@ -97,14 +114,16 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 						copyLabel, copySVG = "Copied", checkIcon
 					}
 					if iconButton(c.Key("copy"), copySVG, copyLabel, 22, g.readAction == "copy", !g.canCopy(ref)).Clicked() {
-						g.copy()
+						g.copy(ref)
 					}
 				})
 			})
 		},
 	}
 	if attributes.Notes != "" {
-		fields = append(fields, func() { cardField(c, "Notes", text(attributes.Notes, "")) })
+		fields = append(fields, func() {
+			cardField(c, "Notes", func() { ui.Text(c, attributes.Notes).TextColor(t.Text).Selectable().Padding(v+1, h+1) })
+		})
 	}
 	if !attributes.Modified.IsZero() {
 		modified := attributes.Modified.Local().Format(time.DateTime)
@@ -155,7 +174,7 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 				for i, k := range kinds {
 					labels[i] = k.label
 				}
-				ui.Select(c.Key("kind"), &f.kind, labels).Padding(inputPadding(t))
+				input(ui.Select(c.Key("kind"), &f.kind, labels))
 			})
 		},
 		func() {
@@ -164,7 +183,7 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 				case f.loading:
 					ui.Spinner(c).Size(16, 16).Margin(4, 0).Label("Loading value")
 				case f.keepValue:
-					ui.Text(c, "This value contains carriage returns, which this editor would change, so it stays as it is. Replace it with mk set --stdin.").TextColor(t.TextMuted).Wrap()
+					ui.Text(c, "This value contains carriage returns, which this editor would change, so it stays as it is. Replace it with mk set --stdin.").TextColor(t.TextMuted)
 				case f.from == (store.Ref{}) || f.original != "":
 					edited(valueEditor(c, input(ui.TextArea(c.Key("value"), &f.value)), &f.err, &g.valueField, f.from != (store.Ref{})))
 				}
@@ -177,7 +196,7 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 		},
 	).Disabled(submitting)
 	if f.err.field == "" && f.err.message != "" {
-		ui.Text(c, f.err.message).TextColor(t.Danger).Wrap()
+		ui.Text(c, f.err.message).TextColor(t.Danger)
 	}
 	if f.from != (store.Ref{}) {
 		if ui.Button(c, "Delete").AlignSelf(ui.End).TextColor(t.Danger).Disabled(g.writeAction != "").Clicked() {

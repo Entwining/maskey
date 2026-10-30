@@ -8,8 +8,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/egoist/mygo/ui"
-
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -206,7 +204,7 @@ func TestKind(t *testing.T) {
 	}
 	h.choose("DEPLOY_URL", "Edit")
 	h.click("Identifier")
-	h.click("Setting")
+	h.click("Other")
 	h.click("Save")
 	if got := h.attributes("app/DEPLOY_URL").Kind; got != store.ValueSetting {
 		t.Fatalf("kind %q after the edit", got)
@@ -250,13 +248,13 @@ func TestEditDeletedEntryKeepsForm(t *testing.T) {
 func TestDeleteNeedsConfirmation(t *testing.T) {
 	h := newHarness(t)
 	h.choose("URL", "Delete…")
-	h.click("Cancel")
+	h.answer("Cancel")
 	if _, ok := h.value("app/URL"); !ok {
 		t.Fatal("canceling deleted the entry")
 	}
 	h.choose("URL", "Delete…")
 	started, release := h.pause("delete")
-	h.clickWithoutSettling("Delete")
+	h.answer("Delete")
 	h.waitFor(started)
 	h.tt.Frame()
 	// The delete's progress shows in the entry's row.
@@ -277,17 +275,18 @@ func TestDeleteNeedsConfirmation(t *testing.T) {
 	}
 }
 
-// The form's Delete asks first, then deletes the entry edited and closes
-// the form.
+// The form's Delete asks first, with no button for Return, then deletes the
+// entry edited and closes the form.
 func TestDeleteFromForm(t *testing.T) {
 	h := newHarness(t)
 	h.choose("URL", "Edit")
 	h.click("Delete")
-	if !h.g.confirmDelete || h.g.deleteRef != (store.Ref{Namespace: "app", Name: "URL"}) {
-		t.Fatalf("Delete asked %v about %s", h.g.confirmDelete, h.g.deleteRef)
+	if a := h.alert(); a.message != "Delete this entry?" || a.detail != "You can’t undo this action." || !slices.Equal(a.buttons, []alertButton{
+		{title: "Delete", destructive: true}, {title: "Cancel", isCancel: true},
+	}) {
+		t.Fatalf("Delete asks %+v", a.alert)
 	}
-	h.tt.Key(0, ui.KeyEnter)
-	h.settle()
+	h.answer("Delete")
 	if _, ok := h.value("app/URL"); ok || h.g.form.open {
 		t.Fatalf("after confirming: entry present %v, form open %v", ok, h.g.form.open)
 	}
@@ -299,7 +298,7 @@ func TestDeletingLastEntryLeavesNamespace(t *testing.T) {
 	h := newHarness(t)
 	h.click("db")
 	h.choose("PASSWORD", "Delete…")
-	h.click("Delete")
+	h.answer("Delete")
 	if slices.Contains(h.tt.Texts(), "db") || h.g.namespace != allNamespaces || !h.tt.HasText("API_TOKEN") {
 		t.Fatalf("namespace %q, texts %q", h.g.namespace, h.tt.Texts())
 	}
@@ -308,36 +307,48 @@ func TestDeletingLastEntryLeavesNamespace(t *testing.T) {
 // A write's outcome shows even when another entry was chosen meanwhile.
 func TestDeleteOutcomeShownAfterSelectionChanges(t *testing.T) {
 	h := newHarness(t)
-	release := make(chan struct{})
+	_, release := h.pause("delete")
+	held := h.backend.Before
 	h.backend.Before = func(op, account string) error {
-		if op == "delete" {
-			<-release
-			return &store.Error{Kind: store.KindUncertain, Message: "synthetic uncertain delete"}
+		if err := held(op, account); err != nil || op != "delete" {
+			return err
 		}
-		return nil
+		return &store.Error{Kind: store.KindUncertain, Message: "synthetic uncertain delete"}
 	}
 	h.choose("URL", "Delete…")
-	h.clickWithoutSettling("Delete")
-	h.clickWithoutSettling("API_TOKEN")
-	close(release)
+	h.answer("Delete")
+	h.click("API_TOKEN")
+	release()
 	h.settle()
-	if !h.tt.HasText("Couldn’t confirm that “URL” was deleted") || !h.tt.HasText("Synthetic uncertain delete.") {
-		t.Fatalf("the uncertain outcome was not shown: %q", h.tt.Texts())
+	if a := h.alert(); a.message != "Couldn’t Confirm That “URL” Was Deleted" || a.detail != "Synthetic uncertain delete." {
+		t.Fatalf("the uncertain outcome was not shown: %+v", a.alert)
 	}
 }
 
-// The editor keeps the entry it was opened for when a refresh chooses
-// another: here the entry just created, as its names arrive.
+// A form opened while the names of an entry just created load keeps its
+// own entry chosen, none for a new one, when they arrive.
 func TestEditKeepsItsEntry(t *testing.T) {
 	h := newHarness(t)
 	_, release := h.addWhileNamesLoad("NEW_KEY")
 	h.chooseWithoutSettling("URL", "Edit")
 	release()
 	h.settle()
+	if h.g.entry != urlRef {
+		t.Fatalf("beside the form for URL, %s is chosen", h.g.entry)
+	}
 	h.typeValue("synthetic-url-new")
 	h.click("Save")
 	if v, _ := h.value("app/URL"); v != "synthetic-url-new" {
 		t.Fatalf("app/URL holds %q", v)
+	}
+
+	h = newHarness(t)
+	_, release = h.addWhileNamesLoad("NEW_KEY")
+	h.clickWithoutSettling("New Entry")
+	release()
+	h.settle()
+	if !h.g.form.open || h.g.form.from != (store.Ref{}) || h.g.entry != (store.Ref{}) {
+		t.Fatalf("form open %v for %s, entry %s", h.g.form.open, h.g.form.from, h.g.entry)
 	}
 }
 
@@ -352,39 +363,6 @@ func TestNamespaceSwitchDropsPendingChoice(t *testing.T) {
 	h.click("app")
 	if h.g.namespace != "app" || h.g.entry != (store.Ref{}) {
 		t.Fatalf("selection %s in %s after switching away and back", h.g.entry, h.g.namespace)
-	}
-}
-
-// A click outside the form keeps its draft; Cancel and Escape close it and
-// clear the draft.
-func TestFormDraftDismissal(t *testing.T) {
-	for _, opening := range []string{"New Entry", "Edit"} {
-		for _, dismiss := range []string{"Cancel", "Escape"} {
-			t.Run(opening+"/"+dismiss, func(t *testing.T) {
-				h := newHarness(t)
-				if opening == "Edit" {
-					h.choose("URL", opening)
-				} else {
-					h.click(opening)
-				}
-				h.typeValue("synthetic-draft")
-				h.click("PASSWORD")
-				if !h.g.form.open || h.g.form.value != "synthetic-draft" {
-					t.Fatal("a click on the list discarded the draft")
-				}
-				// Escape works from the field being typed in.
-				h.g.valueField.Focus()
-				h.tt.Frame()
-				if dismiss == "Cancel" {
-					h.click("Cancel")
-				} else {
-					h.tt.Key(0, ui.KeyEscape)
-				}
-				if h.g.form.open || h.g.form.value+h.g.form.original != "" {
-					t.Fatal("the form stayed open or kept its value")
-				}
-			})
-		}
 	}
 }
 

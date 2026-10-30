@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"slices"
 	"strings"
@@ -24,11 +23,17 @@ const (
 	titleBarHeight = 52
 	sidebarWidth   = 200
 	listWidth      = 280
-	// toolbarButtonWidth fits every label of the detail's buttons, so that
-	// none moves when Cancel becomes Close.
+	// toolbarButtonWidth fits Edit, Save, Add, Cancel, and Close, which take
+	// turns in the detail's two button slots, so that opening, saving, and
+	// closing a form move nothing in its toolbar.
 	toolbarButtonWidth = 80
-	monospace          = "monospace"
-	hiddenValue        = "••••••••••••"
+	// The search field shrinks from searchWidth to searchMinWidth as the
+	// window narrows to its minimum width; searchMinWidth still holds the
+	// icon, some text, and the clear button.
+	searchWidth    = 220
+	searchMinWidth = 124
+	monospace      = "monospace"
+	hiddenValue    = "••••••••••••"
 	// allNamespaces is the sidebar's item for every entry. It cannot name a
 	// namespace, so it never stands for one.
 	allNamespaces = "*"
@@ -39,10 +44,12 @@ func runGUI() {
 	mygo.Use(native.Plugin)
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
-			Title:     "Maskey",
-			Width:     980,
-			Height:    600,
-			MinWidth:  800,
+			Title:  "Maskey",
+			Width:  980,
+			Height: 600,
+			// The toolbar's two button slots and the search field at its
+			// minimum width fit beside the sidebar and the list.
+			MinWidth:  820,
 			MinHeight: 420,
 			StateKey:  "main",
 			// The window controls sit over the sidebar, as in Finder and Notes.
@@ -52,15 +59,13 @@ func runGUI() {
 			Content:        ui.View(g.view),
 		})
 		g.post = win.Update
-		do := func(fn func()) func(*mygo.MenuItem, *mygo.Window) {
-			return func(*mygo.MenuItem, *mygo.Window) { win.Update(fn) }
-		}
+		g.showMessage = func(a alert) (int, error) { return showSheet(win, a) }
 		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 			{Role: mygo.RoleAppMenu, Submenu: []*mygo.MenuItem{
 				{Role: mygo.RoleAbout},
 				updater.MenuItem(),
 				mygo.Separator(),
-				{Label: "Install Command Line Tool…", Click: do(g.installCLI)},
+				{Label: "Install Command Line Tool…", Click: g.onMenu(g.installCLI)},
 				mygo.Separator(),
 				{Role: mygo.RoleServices},
 				mygo.Separator(),
@@ -71,13 +76,31 @@ func runGUI() {
 				{Role: mygo.RoleQuit},
 			}},
 			{Role: mygo.RoleFileMenu, Submenu: []*mygo.MenuItem{
-				{Label: "New Entry", Accelerator: "CmdOrCtrl+N", Click: do(g.openNew)},
+				{Label: "New Entry", Accelerator: "CmdOrCtrl+N", Click: g.onMenu(g.openNew)},
 				mygo.Separator(),
 				{Role: mygo.RoleClose},
 			}},
-			{Role: mygo.RoleEditMenu},
+			// MyGo's standard Edit menu, with the entry's Delete… in place of
+			// Delete, which MyGo gives the list no way to take, and without
+			// Speech: only NSTextView and NSTextField start speaking, and
+			// MyGo's text is neither.
+			{Role: mygo.RoleEditMenu, Submenu: []*mygo.MenuItem{
+				{Role: mygo.RoleUndo},
+				{Role: mygo.RoleRedo},
+				mygo.Separator(),
+				{Role: mygo.RoleCut},
+				{Role: mygo.RoleCopy},
+				{Role: mygo.RolePaste},
+				{Role: mygo.RolePasteAndMatchStyle},
+				g.entryItems.delete,
+				{Role: mygo.RoleSelectAll},
+				mygo.Separator(),
+				g.entryItems.edit,
+			}},
 			{Role: mygo.RoleViewMenu, Submenu: []*mygo.MenuItem{
-				{Label: "Reload", Accelerator: "CmdOrCtrl+R", Click: do(g.refresh)},
+				g.entryItems.reveal,
+				mygo.Separator(),
+				{Label: "Reload", Accelerator: "CmdOrCtrl+R", Click: g.onMenu(g.refresh)},
 				mygo.Separator(),
 				{Role: mygo.RoleToggleFullScreen},
 			}},
@@ -85,6 +108,19 @@ func runGUI() {
 		}))
 		// Edits made with mk show up when the window comes back.
 		win.OnFocus(g.refresh)
+		// Closing the window or quitting waits for an answer about unsaved
+		// changes. Both events arrive on the UI thread.
+		g.closeWindow, g.quitApp = win.Close, mygo.App.Quit
+		win.OnClose(func(e *mygo.CloseEvent) {
+			if g.ask(g.closeWindow, true) {
+				e.PreventDefault()
+			}
+		})
+		mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
+			if g.ask(g.quit, true) {
+				e.PreventDefault()
+			}
+		})
 		win.OnClosed(g.close)
 		g.refresh()
 	})
@@ -101,6 +137,13 @@ type gui struct {
 	services ui.Services
 	closed   bool
 	pending  int
+	// closeWindow closes the window at once; quitApp starts a quit, which
+	// runs later.
+	closeWindow, quitApp func()
+	// showMessage shows an alert and waits for the index of the button
+	// chosen.
+	showMessage func(alert) (int, error)
+	entryItems  entryItems
 
 	namespaces []store.Namespace
 	refs       []store.Ref // every entry, sorted by namespace and name
@@ -119,8 +162,14 @@ type gui struct {
 	valueField     ui.Handle
 	list           ui.ListState
 	row            int
-	entry          store.Ref // the entry chosen, zero for none
-	pick           store.Ref // the entry to choose once the list includes it
+	// entry is the entry chosen, zero for none; while a form is open, the
+	// form's entry while the listing has it, zero for a new one.
+	entry store.Ref
+	pick  store.Ref // the entry to choose once the list includes it
+	// moves counts the user's choices of entry, namespace, form, and
+	// search, so that a write landing later can tell whether the user has
+	// moved on.
+	moves int
 
 	// At most one value shows, the chosen entry's; choosing another hides it.
 	selToken    int
@@ -134,32 +183,27 @@ type gui struct {
 	writeForm   int
 
 	form form
+	// confirmLeave holds while the question about the form's unsaved
+	// changes is open.
+	confirmLeave bool
 
-	confirmDelete bool
-	deleteRef     store.Ref
-
-	alertOpen    bool
-	alertTitle   string
-	alertMessage string
-
-	cliOpen       bool
-	cliTitle      string
-	cliMessage    string
 	cliInstalling bool
 }
 
 // form is the detail pane's editor, of a new entry or of the entry from.
-// It stays bound to from when the list chooses another entry.
 type form struct {
-	open      bool
-	id        int
-	from      store.Ref // zero for a new entry
-	namespace string
-	name      string
-	value     string
-	original  string // the stored value, once loaded
-	kind      string // a label of kinds
-	notes     string
+	open bool
+	id   int
+	from store.Ref // zero for a new entry
+	// chosenBefore is the entry chosen before a new entry's form opened,
+	// chosen again when it closes.
+	chosenBefore store.Ref
+	namespace    string
+	name         string
+	value        string
+	original     string // the stored value, once loaded
+	kind         string // a label of kinds
+	notes        string
 	// kindFrom and notesFrom are what the form showed when it opened; the
 	// form writes the details only when they differ.
 	kindFrom  string
@@ -186,6 +230,16 @@ func (f *form) ready() bool {
 }
 
 func (f *form) detailsChanged() bool { return f.kind != f.kindFrom || f.notes != f.notesFrom }
+
+// dirty reports whether the form holds anything the user typed. A value
+// still loading or kept as stored is not, and neither, in a new entry's
+// form, are its namespace and kind.
+func (f *form) dirty() bool {
+	if f.from == (store.Ref{}) {
+		return f.name != "" || f.value != "" || f.notes != ""
+	}
+	return f.namespace != f.from.Namespace || f.name != f.from.Name || f.value != f.original || f.detailsChanged()
+}
 
 // followName infers the kind from the name, unless the user picked a kind
 // other than the one inferred.
@@ -216,20 +270,28 @@ func (e formError) on(field string) string {
 }
 
 func newGUI(s *store.Store) *gui {
-	return &gui{store: s, namespace: allNamespaces}
+	g := &gui{store: s, namespace: allNamespaces}
+	g.entryItems = newEntryItems(g)
+	return g
+}
+
+// onMenu runs fn when a menu item is chosen, through post, so that the
+// window redraws after it.
+func (g *gui) onMenu(fn func()) func(*mygo.MenuItem, *mygo.Window) {
+	return func(*mygo.MenuItem, *mygo.Window) { g.post(fn) }
 }
 
 func (g *gui) showing(ref store.Ref) bool { return ref == g.entry && g.revealed != "" }
 
 // The value's buttons, the row's menu, and the list's keys share these
 // rules: no value is shown or copied while one is read, and none while it
-// is written, when it cannot be edited either; a shown value can always be
-// hidden.
+// is written, when it cannot be edited either; none is shown while a form
+// has its place; a shown value can always be hidden.
 func (g *gui) writing(ref store.Ref) bool { return g.writeAction != "" && g.writeRef == ref }
 
 func (g *gui) canCopy(ref store.Ref) bool { return g.readAction == "" && !g.writing(ref) }
 
-func (g *gui) canReveal(ref store.Ref) bool { return g.showing(ref) || g.canCopy(ref) }
+func (g *gui) canReveal(ref store.Ref) bool { return g.showing(ref) || !g.form.open && g.canCopy(ref) }
 
 // selectionChanged invalidates the work started for the old selection.
 func (g *gui) selectionChanged() {
@@ -241,9 +303,9 @@ func (g *gui) selectionChanged() {
 
 // choose makes ref the chosen entry, for an action on its row.
 func (g *gui) choose(ref store.Ref) {
+	g.moves++
 	if ref != g.entry {
 		g.entry = ref
-		g.row = slices.Index(g.rows(), ref)
 		g.selectionChanged()
 	}
 }
@@ -251,6 +313,7 @@ func (g *gui) choose(ref store.Ref) {
 // showNamespace shows a namespace's entries, or every entry, ending a
 // search.
 func (g *gui) showNamespace(namespace string) {
+	g.moves++
 	g.namespace, g.query = namespace, ""
 	g.entry, g.pick = store.Ref{}, store.Ref{}
 	g.selectionChanged()
@@ -271,6 +334,15 @@ func (g *gui) close() {
 	g.closed = true
 	g.selectionChanged()
 	g.form.value, g.form.original = "", ""
+}
+
+// quit closes the window first, so that no work starts after it, then quits
+// the app, which another window, such as the updater's, keeps running
+// otherwise. Closing the last window quits as well; a second quit is
+// harmless.
+func (g *gui) quit() {
+	g.closeWindow()
+	g.quitApp()
 }
 
 // refresh reloads the namespaces and the names of every entry; it never
@@ -310,9 +382,12 @@ func (g *gui) refresh() {
 	})
 }
 
-// start runs work off the UI thread and applies its result unless the
-// window closed.
+// start runs work off the UI thread and applies its result. Once the window
+// has closed, it starts none and drops results.
 func (g *gui) start(work func() func()) {
+	if g.closed {
+		return
+	}
 	g.pending++
 	go func() {
 		apply := work()
@@ -325,8 +400,28 @@ func (g *gui) start(work func() func()) {
 	}()
 }
 
+// message shows an alert off the UI thread, since it waits for an answer,
+// and passes the index of the button chosen to answer, unless nil, on the
+// UI thread. An alert that can't show, as while the app quits, answers
+// with its cancel button.
+func (g *gui) message(a alert, answer func(button int)) {
+	g.start(func() func() {
+		button, err := g.showMessage(a)
+		if err != nil {
+			button = a.cancelButton()
+		}
+		return func() {
+			if answer != nil {
+				answer(button)
+			}
+		}
+	})
+}
+
+var okButton = alertButton{title: "OK", isDefault: true, isCancel: true}
+
 func (g *gui) showAlert(title string, err error) {
-	g.alertOpen, g.alertTitle, g.alertMessage = true, title, sentence(err)
+	g.message(alert{message: title, detail: sentence(err), buttons: []alertButton{okButton}}, nil)
 }
 
 // sentence writes an error as a sentence for the window. A store error's
@@ -376,7 +471,7 @@ func (g *gui) view(c *ui.Context) {
 			g.copied = false
 		}
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyF) && !g.form.open {
+	if c.Shortcut(ui.Cmd, ui.KeyF) {
 		g.search.Focus(c)
 	}
 	vibrant := c.Vibrancy()
@@ -394,7 +489,7 @@ func (g *gui) view(c *ui.Context) {
 		ui.Box(c).Width(1).Background(t.Border)
 		ui.Column(c).Grow(1).MinWidth(0).Background(t.Background).Children(func() { g.detail(c) })
 	})
-	g.dialogs(c)
+	g.updateEntryItems(g.list.Focused(c))
 }
 
 // kind is the kind of value the entry holds.
@@ -402,11 +497,43 @@ func (g *gui) kind(ref store.Ref) store.ValueKind {
 	return store.ValueKindOf(ref.Name, g.attributes[ref].Kind)
 }
 
-func (g *gui) dialogs(c *ui.Context) {
-	if ui.AlertDialog(c.Key("delete"), &g.confirmDelete, fmt.Sprintf("Delete “%s” from %s?", g.deleteRef.Name, g.deleteRef.Namespace),
-		"It will be removed from every Mac that uses this iCloud Keychain. You can’t undo this.", "Cancel", "Delete") == 1 {
-		g.delete(g.deleteRef)
+// leavePrompt is the question about a form's unsaved changes, and the
+// indexes of its Save and discard buttons; saveAt is -1 when it offers no
+// Save.
+type leavePrompt struct {
+	alert
+	saveAt, discardAt int
+}
+
+// newLeavePrompt asks, as Passwords does, what becomes of the form's unsaved
+// changes, of the entry that the window shows beneath it. Leaving the form
+// for something else offers to save only what the form's own button would,
+// and makes that the default, so that Cmd-Enter in the form and Return here
+// agree. Cancel never offers Save, which it has just declined. AppKit puts
+// the first button rightmost, the second beside it, and a third at the far
+// left.
+func (g *gui) newLeavePrompt(offerSave bool) leavePrompt {
+	f := &g.form
+	edit := f.from != (store.Ref{})
+	continueEditing := alertButton{title: "Continue Editing", isCancel: true}
+	discard := alertButton{title: "Discard", destructive: true}
+	switch {
+	case offerSave && g.canSubmit() && edit:
+		return leavePrompt{alert{message: "Save changes to this entry?",
+			buttons: []alertButton{{title: "Save", isDefault: true}, continueEditing, {title: "Don’t Save", destructive: true}}}, 0, 2}
+	case offerSave && g.canSubmit():
+		return leavePrompt{alert{message: "Add the new entry?",
+			buttons: []alertButton{{title: "Add", isDefault: true}, continueEditing, discard}}, 0, 2}
 	}
-	ui.AlertDialog(c.Key("alert"), &g.alertOpen, g.alertTitle, g.alertMessage, "OK")
-	ui.AlertDialog(c.Key("cli"), &g.cliOpen, g.cliTitle, g.cliMessage, "OK")
+	p := leavePrompt{alert{message: "Discard the new entry?"}, -1, 1}
+	if edit {
+		p.message = "Discard changes to this entry?"
+	}
+	continueEditing.isDefault = true
+	p.buttons = []alertButton{continueEditing, discard}
+	if offerSave && f.ready() {
+		// The form would save but for the other write.
+		p.detail = "Another change is still in progress."
+	}
+	return p
 }

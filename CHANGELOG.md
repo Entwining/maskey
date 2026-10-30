@@ -4,6 +4,8 @@
 
 - An entry selected with `mk run -e` replaces a same-named entry of a namespace selected with `-n`, instead of failing as a conflict: `mk run -n github -e work/GITHUB_TOKEN -- gh pr list` passes the rest of `github` with the work token. The same name selected from two namespaces otherwise is still a conflict, and `mk run --help` explains why.
 - `mk run` in the foreground of the terminal that is its stdin and stdout gives the command a terminal of its own, so interactive and full-screen programs work, with resizing and Ctrl-Z and `fg`. A stderr redirected elsewhere stays a separate masked pipe. Masking matches exact bytes, so a program that breaks a value up on screen, by wrapping or styling part of it, shows it unmasked, and a selected value with a control character keeps pipes. Processes the command leaves behind lose its terminal when it ends; most end by the hangup, but one that ignores it keeps running.
+- The window keeps search usable while you edit an entry. Choosing another entry, namespace, or search result, closing the window, or quitting with unsaved changes asks whether to save them, and Cancel or Escape asks before discarding them. The toolbar's buttons keep their places.
+- The Edit menu edits (Command-L) or deletes (Command-Backspace) the entry chosen in the list, Edit → Copy copies its value, and View → Show Value (Command-Y) shows or hides it. Speech, which did nothing in Maskey, is gone from the Edit menu. Name, Namespace, and Kind stay on one line in view mode, with truncated text available in tooltips. Revealed values scroll horizontally and keep their own line breaks; notes still wrap. The kind Setting is now called Other.
 
 ## 0.0.1
 

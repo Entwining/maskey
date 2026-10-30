@@ -43,7 +43,7 @@ var kinds = []kindChoice{
 	{store.ValuePEM, "Private Key", icon("file-key")},
 	{store.ValueURL, "URL", icon("link")},
 	{store.ValueIdentifier, "Identifier", icon("id-card")},
-	{store.ValueSetting, "Setting", icon("sliders-horizontal")},
+	{store.ValueSetting, "Other", icon("ellipsis")},
 }
 
 type kindChoice struct {
@@ -64,11 +64,11 @@ func kindOf(label string) store.ValueKind {
 	return kinds[i].kind
 }
 
-// tileColors are Apple's system colors that white text reads on. A
-// namespace's name picks its tile's color among them, so the color is the
-// same on every Mac without being stored.
+// tileColors give white icons at least 3:1 contrast in either appearance.
+// A namespace's name picks its tile's color, so the color is the same on
+// every Mac without being stored.
 var tileColors = []ui.Color{
-	ui.Hex("#FF3B30"), ui.Hex("#FF9500"), ui.Hex("#34C759"), ui.Hex("#30B0C7"), ui.Hex("#007AFF"),
+	ui.Hex("#FF3B30"), ui.Hex("#D97F00"), ui.Hex("#2DAA4C"), ui.Hex("#2CA2B8"), ui.Hex("#007AFF"),
 	ui.Hex("#5856D6"), ui.Hex("#AF52DE"), ui.Hex("#FF2D55"), ui.Hex("#A2845E"),
 }
 
@@ -141,7 +141,7 @@ func emptyState(c *ui.Context, svg *ui.SVG, title, message, action string, run f
 	ui.Column(c).Grow(1).Center().Gap(8).Padding(24).Children(func() {
 		ui.Icon(c, svg).Size(32, 32).TextColor(t.TextMuted).Margin(0, 0, 4, 0)
 		ui.Text(c, title).FontSize(t.FontSize + 2).Bold()
-		ui.Text(c, message).TextColor(t.TextMuted).Wrap().MaxWidth(340).TextAlign(ui.Center)
+		ui.Text(c, message).TextColor(t.TextMuted).MaxWidth(340).TextAlign(ui.Center)
 		if action != "" && ui.PrimaryButton(c, action).Margin(8, 0, 0, 0).Clicked() {
 			run()
 		}
