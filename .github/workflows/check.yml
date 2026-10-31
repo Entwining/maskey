@@ -22,6 +22,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Workflow lints need no macOS, and this image has shellcheck.
+  workflows:
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # Wrapper actions for actionlint skip the provenance check.
+      - name: Lint workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # renovate: datasource=go depName=github.com/rhysd/actionlint
+          ACTIONLINT_VERSION: v1.7.12
+        run: |
+          archive="$RUNNER_TEMP/actionlint_${ACTIONLINT_VERSION#v}_linux_amd64.tar.gz"
+          gh release download "$ACTIONLINT_VERSION" --repo rhysd/actionlint --pattern "${archive##*/}" --output "$archive"
+          gh attestation verify "$archive" --repo rhysd/actionlint
+          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+          # Without shellcheck, actionlint skips run scripts silently.
+          command -v shellcheck
+          "$RUNNER_TEMP/actionlint"
+      # Findings fail the job instead of going to the Security tab.
+      - uses: zizmorcore/zizmor-action@v0.8.0
+        with:
+          advanced-security: false
+
   check:
     runs-on: macos-26
     timeout-minutes: 20
@@ -37,18 +64,6 @@ jobs:
       - uses: golangci/golangci-lint-action@v9.3.0
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
-      # Wrapper actions for actionlint skip the provenance check.
-      - name: Lint workflows
-        env:
-          GH_TOKEN: ${{ github.token }}
-          # renovate: datasource=go depName=github.com/rhysd/actionlint
-          ACTIONLINT_VERSION: v1.7.12
-        run: |
-          archive="$RUNNER_TEMP/actionlint_${ACTIONLINT_VERSION#v}_darwin_arm64.tar.gz"
-          gh release download "$ACTIONLINT_VERSION" --repo rhysd/actionlint --pattern "${archive##*/}" --output "$archive"
-          gh attestation verify "$archive" --repo rhysd/actionlint
-          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint"
       - name: Vet and test
         run: |
           test "$(uname -m)" = arm64
@@ -63,5 +78,8 @@ jobs:
           ln -s "$PWD/$app/Contents/MacOS/Maskey" "$RUNNER_TEMP/mk"
           test "$("$RUNNER_TEMP/mk" --version)" = "mk version $version"
           # mygo build strips symbols, so only the strings show whether the plugin is linked.
-          ! strings "$app/Contents/MacOS/Maskey" | grep -q plugins/automation
+          if strings "$app/Contents/MacOS/Maskey" | grep -q plugins/automation; then
+            echo "::error::the automation plugin is linked"
+            exit 1
+          fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"

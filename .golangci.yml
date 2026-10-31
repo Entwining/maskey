@@ -1,17 +1,12 @@
 version: "2"
 
 linters:
-  default: none
+  default: standard
   enable:
-    - errcheck
     - errorlint
-    - govet
-    - ineffassign
     - misspell
     - nolintlint
     - revive
-    - staticcheck
-    - unused
   settings:
     nolintlint:
       require-explanation: true

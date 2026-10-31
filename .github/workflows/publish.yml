@@ -32,9 +32,11 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      # A signed release builds from its own downloads, not from a restored cache.
       - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
+          cache: false
       # Installed apps accept only updates signed with this key, and mygo build
       # fails unless CHANGELOG.md has the version's section, which the update
       # window and the release page show.
@@ -44,7 +46,10 @@ jobs:
         run: |
           test -n "$MYGO_UPDATER_PRIVATE_KEY"
           go tool mygo build -skip-dmg
-          ! strings build/darwin-arm64/Maskey.app/Contents/MacOS/Maskey | grep -q plugins/automation
+          if strings build/darwin-arm64/Maskey.app/Contents/MacOS/Maskey | grep -q plugins/automation; then
+            echo "::error::the automation plugin is linked"
+            exit 1
+          fi
           test -s build/darwin-arm64/update-darwin-arm64.json
       - uses: actions/attest@v4.2.2
         with:
@@ -78,6 +83,8 @@ jobs:
           private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
           owner: Entwining
           repositories: homebrew-tap
+          # Sending a repository dispatch needs only this.
+          permission-contents: write
       - name: Ask the tap to pick up this version
         env:
           GH_TOKEN: ${{ steps.tap-token.outputs.token }}

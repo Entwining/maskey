@@ -1,0 +1,9 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # Workflows name actions by version tag, and actions.lock pins each to a commit.
+        "*": ref-pin
+  self-repository:
+    # actionlint does not accept the `$/` form yet.
+    disable: true

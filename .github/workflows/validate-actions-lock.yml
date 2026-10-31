@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   lockfile:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     timeout-minutes: 10
     env:
       # renovate: datasource=github-releases depName=github/gh-actions-lock

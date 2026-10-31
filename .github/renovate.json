@@ -21,8 +21,8 @@
       "automerge": true
     },
     {
-      "description": "A golangci-lint or actionlint release can report new issues; in a group of their own, a failure blocks only them.",
-      "matchPackageNames": ["golangci/golangci-lint", "github.com/rhysd/actionlint"],
+      "description": "A golangci-lint, actionlint or zizmor release can report new issues; in a group of their own, a failure blocks only them.",
+      "matchPackageNames": ["golangci/golangci-lint", "github.com/rhysd/actionlint", "zizmorcore/zizmor-action"],
       "groupName": "Linters"
     },
     {
