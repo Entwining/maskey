@@ -456,6 +456,11 @@ func sentence(err error) string {
 // entry, or while searching, every entry whose name or namespace contains
 // the query, ignoring case.
 func (g *gui) rows() []store.Ref {
+	if g.query == "" && g.namespace == allNamespaces {
+		// Shared with g.refs, which refresh replaces whole: callers must not
+		// sort or filter the rows in place.
+		return g.refs
+	}
 	query := strings.ToLower(g.query)
 	var refs []store.Ref
 	for _, ref := range g.refs {

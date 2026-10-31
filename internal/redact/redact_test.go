@@ -3,6 +3,7 @@ package redact
 import (
 	"bytes"
 	"errors"
+	"io"
 	"math/rand/v2"
 	"testing"
 )
@@ -166,6 +167,18 @@ func TestOutputIsIncremental(t *testing.T) {
 	}
 	if held := len("Password: x 0123x***!") + 100*1000 - out.Len(); held != 0 {
 		t.Fatalf("%d bytes held back", held)
+	}
+}
+
+// With no match or pending prefix, output can reuse the input buffer.
+func TestUnmatchedWriteAllocatesNothing(t *testing.T) {
+	w, err := NewWriter(io.Discard, [][]byte{[]byte("synthetic-secret")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := bytes.Repeat([]byte("x"), 32*1024)
+	if allocs := testing.AllocsPerRun(100, func() { w.Write(block) }); allocs != 0 {
+		t.Fatalf("%v allocations per write, want 0", allocs)
 	}
 }
 

@@ -101,7 +101,10 @@ func (w *Writer) process(p []byte, final bool) error {
 	if w.err != nil {
 		return w.err
 	}
-	buf := append(w.pending, p...)
+	buf := p
+	if len(w.pending) > 0 {
+		buf = append(w.pending, p...)
+	}
 	// An occurrence starting before decided would otherwise leave a longer
 	// value prefix at the end of buf, so every such occurrence lies within
 	// buf and the coverage of the bytes before decided is complete.
@@ -112,12 +115,20 @@ func (w *Writer) process(p []byte, final bool) error {
 		}
 	}
 
-	ends := make([]int, decided)
+	// Keep ends nil when no bytes before decided need masking, so that
+	// output can reuse buf without a copy.
+	var ends []int
+	if w.covered > 0 {
+		ends = make([]int, decided)
+	}
 	for _, v := range w.values {
 		for start := 0; start < decided; {
 			i := bytes.Index(buf[start:], v.bytes)
 			if i < 0 || start+i >= decided {
 				break
+			}
+			if ends == nil {
+				ends = make([]int, decided)
 			}
 			at := start + i
 			ends[at] = max(ends[at], at+len(v.bytes))
@@ -127,17 +138,24 @@ func (w *Writer) process(p []byte, final bool) error {
 
 	var out []byte
 	coverEnd := w.covered
-	for i := range decided {
-		coverEnd = max(coverEnd, ends[i])
-		if i < coverEnd {
-			if !w.masking {
-				out = append(out, w.marker...)
-				w.masking = true
-			}
-			continue
+	if ends == nil {
+		out = buf[:decided]
+		if decided > 0 {
+			w.masking = false
 		}
-		out = append(out, buf[i])
-		w.masking = false
+	} else {
+		for i := range decided {
+			coverEnd = max(coverEnd, ends[i])
+			if i < coverEnd {
+				if !w.masking {
+					out = append(out, w.marker...)
+					w.masking = true
+				}
+				continue
+			}
+			out = append(out, buf[i])
+			w.masking = false
+		}
 	}
 	w.covered = max(coverEnd-decided, 0)
 	w.pending = append([]byte(nil), buf[decided:]...)
