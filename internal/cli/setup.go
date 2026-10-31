@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -14,23 +15,25 @@ import (
 
 func doctorCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "doctor",
-		Short: "Check that mk can use the Keychain here",
-		Long: `Check that mk can use the Keychain here: Apple's Python interpreter, access
-to the Keychain (directly or through the Keychain service), whether the
-service runs this build of Maskey, and the agent skill. Prints one row per
-check and exits with the status of the first failed interpreter or Keychain
-check; problems with the service or the skill are warnings.
+		Use:   "doctor [--json]",
+		Short: "Check Keychain access, interpreter, service, and agent skill",
+		Long: `Check whether mk can use the Keychain here.
 
-iCloud Keychain sync is not checked: Maskey sees only this Mac's Keychain,
-and iCloud Keychain does not report when a change reaches other devices.`,
+Check Apple's Python interpreter, Keychain access directly or through the
+service, whether the service runs this build, and the installed agent
+skill. This reads entry attributes, never values. It cannot check iCloud
+Keychain sync to other Macs.
+
+Print one row per check. The first failed interpreter or Keychain check
+determines the exit status; service and skill problems are warnings.
+Check failures stay in the stdout report, including with --json.`,
 		DisableFlagsInUseLine: true,
 		Args:                  noArgs("doctor takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return doctor(cmd, env)
 		},
 	}
-	addJSONFlag(cmd, "the checks")
+	addJSONFlag(cmd, "Write the check report as JSON")
 	return cmd
 }
 
@@ -53,7 +56,11 @@ func doctor(cmd *cobra.Command, env *Env) error {
 		if !errors.As(err, &e) {
 			e = &store.Error{Kind: store.KindKeychain, Message: err.Error()}
 		}
-		checks = append(checks, check{Check: name, Status: "error", Error: &errorBody{e, recoveries[e.Kind]}})
+		recovery, ok := doctorRecoveries[e.Kind]
+		if !ok {
+			recovery = recoveries[e.Kind]
+		}
+		checks = append(checks, check{Check: name, Status: "error", Error: &errorBody{Error: e, ExitCode: exitCodes[e.Kind], Recovery: recovery}})
 		if failure == nil {
 			failure = e
 		}
@@ -72,33 +79,34 @@ func doctor(cmd *cobra.Command, env *Env) error {
 		}
 		checks = append(checks, check{Check: "keychain", Status: "ok", Detail: fmt.Sprintf("%d entries in %d namespaces", entries, len(namespaces))})
 	}
-	// The service matters only where direct access is unavailable, and then
-	// the keychain row already fails, so the service's own row is a warning.
+	// Direct access, the keychain row, decides whether mk works; the service
+	// adds grants, revokes, and access from a sandbox, so its row is a
+	// warning.
 	if err := env.CheckService(ctx); err != nil {
 		var e *store.Error
 		detail := err.Error()
 		if errors.As(err, &e) {
 			detail = e.Message
 		}
-		checks = append(checks, check{Check: "service", Status: "warning", Detail: detail, Recovery: "run mk setup in a normal terminal so sandboxed commands can reach the Keychain"})
+		checks = append(checks, check{Check: "service", Status: "warning", Detail: detail, Recovery: "run mk setup in a normal terminal so mk grant, mk revoke, and sandboxed commands can reach the Keychain"})
 	} else {
 		checks = append(checks, check{Check: "service", Status: "ok", Detail: "running this build"})
 	}
 	checks = append(checks, skillCheck(env))
 
-	if jsonOutput(cmd) {
-		writeJSON(env.Stdout, map[string]any{"version": env.Version, "checks": checks})
-	} else {
-		for _, c := range checks {
-			detail, recovery := c.Detail, c.Recovery
-			if c.Error != nil {
-				detail, recovery = c.Error.Error.Error(), c.Error.Recovery
-			}
-			fmt.Fprintf(env.Stdout, "%-8s %-12s %s\n", c.Status, c.Check, detail)
-			if recovery != "" {
-				fmt.Fprintf(env.Stdout, "%22shint: %s\n", "", recovery)
-			}
+	var text strings.Builder
+	for _, c := range checks {
+		detail, recovery := c.Detail, c.Recovery
+		if c.Error != nil {
+			detail, recovery = c.Error.Error.Error(), c.Error.Recovery
 		}
+		fmt.Fprintf(&text, "%-8s %-12s %s\n", c.Status, c.Check, detail)
+		if recovery != "" {
+			fmt.Fprintf(&text, "%22shint: %s\n", "", recovery)
+		}
+	}
+	if err := writeResult(cmd, env, map[string]any{"version": env.Version, "checks": checks}, text.String()); err != nil {
+		return err
 	}
 	if failure != nil {
 		return &exitError{Outcome{Code: exitCodes[failure.Kind]}}
@@ -108,13 +116,20 @@ func doctor(cmd *cobra.Command, env *Env) error {
 
 func setupCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "setup",
-		Short: "Install the Keychain service for sandboxed commands",
-		Long: `Install and start the per-user Keychain service, through which commands in
-a sandbox reach the Keychain over a Unix socket. Run it in a normal
-terminal; Maskey > Install Command Line Tool installs it too, along with the
-mk link. After the app is replaced, the service restarts on the new build by
-itself.`,
+		Use:   "setup [--json]",
+		Short: "Install the Keychain service for sandboxes and program access",
+		Long: `Install and start the per-user Keychain service, which serves sandboxed
+commands and carries out mk grant and mk revoke.
+
+Run outside the agent sandbox so the service can reach the Keychain.
+The service verifies that callers are the same signed Maskey executable.
+mk falls back to the service only when direct Keychain access is
+unavailable. Commands stay in the caller's sandbox; grants and revokes
+always use the service.
+
+Maskey > Install Command Line Tool installs the service and the mk link.
+mk setup installs only the service. After an update, the service moves to
+the new build when the new mk connects.`,
 		DisableFlagsInUseLine: true,
 		Args:                  noArgs("setup takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -125,15 +140,10 @@ itself.`,
 				}
 				return err
 			}
-			if jsonOutput(cmd) {
-				writeJSON(env.Stdout, map[string]bool{"installed": true})
-			} else {
-				fmt.Fprintln(env.Stdout, "installed the Keychain service")
-			}
-			return nil
+			return writeResult(cmd, env, map[string]bool{"installed": true}, "installed the Keychain service\n")
 		},
 	}
-	addJSONFlag(cmd, "the result")
+	addJSONFlag(cmd, "Write the result or errors as JSON")
 	return cmd
 }
 
@@ -149,30 +159,37 @@ func skillLinks(home string) []string {
 
 func skillCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "skill",
-		Short: "Show or install the agent skill",
-		Long: `Show or install the agent skill that teaches coding agents to use mk. The
-skill ships inside Maskey, so it matches this version of mk.`,
+		Use:                   "skill <command>",
+		Short:                 "Show or install the agent skill",
+		Long:                  "Show or install the agent skill shipped with this version of Maskey.",
 		DisableFlagsInUseLine: true,
 	}
 	groupOfCommands(cmd)
 	cmd.AddCommand(&cobra.Command{
-		Use:                   "show",
-		Short:                 "Print the skill",
+		Use:   "show",
+		Short: "Print the skill",
+		Long: `Print the shipped agent skill as Markdown on standard output.
+
+The skill matches this installed version of mk. This command reads no
+Keychain entries and installs nothing.`,
 		DisableFlagsInUseLine: true,
 		Args:                  noArgs("skill show takes no arguments"),
 		RunE: func(*cobra.Command, []string) error {
-			_, err := env.Stdout.Write(env.Skill)
-			return err
+			if _, err := env.Stdout.Write(env.Skill); err != nil {
+				return outputError()
+			}
+			return nil
 		},
 	})
 	install := &cobra.Command{
-		Use:   "install",
+		Use:   "install [--json]",
 		Short: "Link the skill into the agent skill directories",
-		Long: `Link ~/.claude/skills/maskey and ~/.agents/skills/maskey to the skill inside
-Maskey, so agents load the version that matches the installed app. An
-existing link is replaced; a directory or file there is left alone and
-reported as existing.`,
+		Long: `Link the shipped skill into the agent skill directories.
+
+Link ~/.claude/skills/maskey and ~/.agents/skills/maskey to the skill inside
+Maskey.app. Existing links are replaced. Existing files and directories
+are left alone with an exists error. If one link succeeds and another
+fails, the completed link remains; retry after resolving the problem.`,
 		DisableFlagsInUseLine: true,
 		Args:                  noArgs("skill install takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -180,17 +197,14 @@ reported as existing.`,
 			if err != nil {
 				return err
 			}
-			if jsonOutput(cmd) {
-				writeJSON(env.Stdout, map[string]any{"links": links})
-			} else {
-				for _, link := range links {
-					fmt.Fprintln(env.Stdout, "linked", link)
-				}
+			var text strings.Builder
+			for _, link := range links {
+				fmt.Fprintln(&text, "linked", link)
 			}
-			return nil
+			return writeResult(cmd, env, map[string]any{"links": links}, text.String())
 		},
 	}
-	addJSONFlag(install, "the result")
+	addJSONFlag(install, "Write the linked paths or errors as JSON")
 	cmd.AddCommand(install)
 	return cmd
 }

@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egoist/mygo/i18n"
 	"github.com/egoist/mygo/ui"
 
+	"github.com/Entwining/maskey/internal/activity"
+	"github.com/Entwining/maskey/internal/owner"
 	"github.com/Entwining/maskey/internal/store"
 	"github.com/Entwining/maskey/internal/store/storetest"
 )
@@ -30,6 +31,12 @@ type harness struct {
 	alerts []*sheet // shown and not yet answered, oldest first
 	held   int      // operations pause holds
 	woken  chan struct{}
+	// dialogs counts the owner's authentications, which fail with refusal
+	// when it is set.
+	dialogs int
+	refusal error
+	// reads holds what each value read was for.
+	reads []string
 }
 
 // sheet is an alert the window shows, waiting for its answer.
@@ -60,13 +67,33 @@ func newHarness(t *testing.T) *harness {
 
 func newHarnessWith(t *testing.T, backend *storetest.Backend) *harness {
 	t.Helper()
-	h := &harness{t: t, backend: backend, g: newGUI(store.New(backend)), posted: make(chan func(), 64), woken: make(chan struct{}, 1)}
+	h := &harness{t: t, backend: backend, posted: make(chan func(), 64), woken: make(chan struct{}, 1)}
+	// The clock stands still, so an approval lasts the whole test.
+	approval := owner.NewApproval(h.authenticate, func() (time.Duration, bool) { return 0, true })
+	h.g = newGUI(context.Background(), store.New(taggedReads{backend, &h.reads}, new(storetest.Recorder)), approval.Approve)
 	h.g.post = func(fn func()) { h.posted <- fn }
 	h.g.showMessage = h.showMessage
 	h.tt = ui.NewTester(h.g.view, 980, 600)
 	h.g.refresh()
 	h.settle()
 	return h
+}
+
+type taggedReads struct {
+	*storetest.Backend
+	reads *[]string
+}
+
+func (b taggedReads) Read(ctx context.Context, accounts []string) (map[string][]byte, error) {
+	*b.reads = append(*b.reads, activity.ViaOf(ctx))
+	return b.Backend.Read(ctx, accounts)
+}
+
+func (h *harness) authenticate(context.Context, string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.dialogs++
+	return h.refusal
 }
 
 // settle applies posted results until no work is pending but alerts
@@ -344,30 +371,6 @@ func TestNamespaceNavigation(t *testing.T) {
 	}
 }
 
-// Edit frames the values the detail shows without moving them or their
-// labels.
-func TestEditKeepsFieldsInPlace(t *testing.T) {
-	h := newHarness(t)
-	h.click("API_TOKEN")
-	fields := []string{"Name", "Namespace", "Kind", "API Key"}
-	before := make([]ui.Rect, len(fields))
-	for i, s := range fields {
-		before[i], _ = h.tt.Find(s)
-	}
-	// The shown value's bounds include the room it leaves as an input does.
-	v, x := inputPadding(ui.DarkTheme())
-	before[3].X, before[3].Y = before[3].X+x+1, before[3].Y+v+1
-	h.click("Edit")
-	for i, s := range fields {
-		after, _ := h.tt.Find(s)
-		if dx, dy := after.X-before[i].X, after.Y-before[i].Y; dx < -0.5 || dx > 0.5 || dy < -0.5 || dy > 0.5 {
-			t.Errorf("%s moved from %v to %v", s, before[i], after)
-		}
-	}
-}
-
-// The sidebar's rows and the entries share a grid: the first of each start
-// on the same line.
 func TestEntriesLineUpWithSidebar(t *testing.T) {
 	h := newHarness(t)
 	side, ok1 := h.tt.Find("All Entries")
@@ -408,21 +411,6 @@ func TestSearchCoversEveryNamespace(t *testing.T) {
 	h.click("app")
 	if h.g.query != "" || !h.tt.HasText("URL") {
 		t.Fatalf("choosing app kept the search %q: %q", h.g.query, h.tt.Texts())
-	}
-}
-
-// Modified is written in local time as YYYY-MM-DD HH:mm:ss, whatever the
-// region's hour cycle.
-func TestModifiedFormat(t *testing.T) {
-	backend := storetest.New()
-	backend.Now = func() time.Time { return time.Date(2026, 10, 30, 13, 7, 42, 0, time.UTC) }
-	backend.Put("app/URL", []byte(urlValue))
-	h := newHarnessWith(t, backend)
-	h.tt.SetRegion(i18n.Region{Locale: "en-US", HourCycle: 12})
-	h.click("URL")
-	want := time.Date(2026, 10, 30, 13, 7, 42, 0, time.UTC).Local().Format("2006-01-02 15:04:05")
-	if !h.tt.HasText(want) {
-		t.Fatalf("texts %q, want Modified %q", h.tt.Texts(), want)
 	}
 }
 

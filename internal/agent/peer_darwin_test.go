@@ -24,7 +24,7 @@ func TestAuthenticateSameBinary(t *testing.T) {
 		}
 		defer conn.Close()
 		conn.SetDeadline(time.Now().Add(10 * time.Second))
-		if err := authenticate(conn); err != nil {
+		if _, err := authenticate(conn); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := conn.Write([]byte{1}); err != nil {
@@ -58,8 +58,9 @@ func TestAuthenticateSameBinary(t *testing.T) {
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if err := authenticate(conn); err != nil {
-		t.Fatal(err)
+	// The kernel reports the peer, whatever it claims.
+	if pid, err := authenticate(conn); err != nil || pid != cmd.Process.Pid {
+		t.Fatalf("authenticated pid %d, %v; want %d", pid, err, cmd.Process.Pid)
 	}
 	var request [1]byte
 	if _, err := io.ReadFull(conn, request[:]); err != nil || request[0] != 1 {

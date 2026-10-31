@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"bufio"
-	"context"
 	"fmt"
-	"io"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -17,31 +15,45 @@ import (
 
 func listCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:        "list [<namespace>]",
+		Use:        "list [--json] [<namespace>]",
 		SuggestFor: []string{"ls"},
-		Short:      "List entries",
-		Long: `List entries by reference, one per line, sorted. With a namespace, list only
-its entries; a namespace without entries is not found. --json adds each
-entry's kind and modification time. Values and notes are never printed.`,
+		Short:      "List entry references",
+		Long: `List entries without values, sorted by namespace and name.
+
+Print one <namespace>/<NAME> per line, with no heading. A namespace with
+no entries is not found. An empty unfiltered text list succeeds with empty
+stdout and mk: no entries on stderr.
+Values and notes are never printed.
+
+JSON adds kind, modified when known, and program_access. program_access
+means any program can get the raw value; only the owner can change it.
+The result is {"entries":[...]}; an empty result is {"entries":[]} with
+no stderr message.`,
 		Example: `  mk list
-  mk list github`,
+  mk list github
+  mk list --json github`,
 		DisableFlagsInUseLine: true,
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 1 {
-				return usageError("list takes at most one namespace")
-			}
-			if len(args) == 1 {
-				return store.ValidateNamespace(args[0])
-			}
-			return nil
-		},
-		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+		Args:                  countArgs("list takes at most one namespace", 0, 1),
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, _ string) ([]cobra.Completion, cobra.ShellCompDirective) {
 			if len(args) > 0 {
 				return nil, cobra.ShellCompDirectiveNoFileComp
 			}
-			return completeNamespaces(env)(cmd, args, toComplete)
+			namespaces, err := env.Store.Namespaces(cmd.Context())
+			if err != nil {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			names := make([]cobra.Completion, len(namespaces))
+			for i, n := range namespaces {
+				names[i] = n.Name
+			}
+			return names, cobra.ShellCompDirectiveNoFileComp
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				if err := store.ValidateNamespace(args[0]); err != nil {
+					return atArgument(err, 1)
+				}
+			}
 			_, refs, attributes, err := env.Store.Listing(cmd.Context())
 			if err != nil {
 				return err
@@ -49,209 +61,288 @@ entry's kind and modification time. Values and notes are never printed.`,
 			if len(args) == 1 {
 				refs = slices.DeleteFunc(refs, func(ref store.Ref) bool { return ref.Namespace != args[0] })
 				if len(refs) == 0 {
-					return &store.Error{Kind: store.KindNotFound, Message: fmt.Sprintf("namespace %q has no entries", args[0])}
+					return &store.Error{Kind: store.KindNotFound, Argument: 1, Message: "the namespace has no entries"}
 				}
 			}
-			if jsonOutput(cmd) {
-				type entry struct {
-					store.Ref
-					Kind     store.ValueKind `json:"kind"`
-					Modified time.Time       `json:"modified,omitzero"`
-				}
-				entries := make([]entry, len(refs))
-				for i, ref := range refs {
-					entries[i] = entry{ref, store.ValueKindOf(ref.Name, attributes[ref].Kind), attributes[ref].Modified.UTC()}
-				}
-				writeJSON(env.Stdout, map[string]any{"entries": entries})
-				return nil
+			type entry struct {
+				store.Ref
+				Kind          store.ValueKind `json:"kind"`
+				Modified      time.Time       `json:"modified,omitzero"`
+				ProgramAccess bool            `json:"program_access"`
 			}
-			if len(refs) == 0 {
+			entries := make([]entry, len(refs))
+			var text strings.Builder
+			for i, ref := range refs {
+				a := attributes[ref]
+				entries[i] = entry{ref, store.ValueKindOf(ref.Name, a.Kind), a.Modified.UTC(), a.ProgramAccess}
+				fmt.Fprintln(&text, ref)
+			}
+			if len(refs) == 0 && !jsonOutput(cmd) {
 				fmt.Fprintln(env.Stderr, "mk: no entries")
 			}
-			for _, ref := range refs {
-				fmt.Fprintln(env.Stdout, ref)
-			}
-			return nil
+			return writeResult(cmd, env, map[string]any{"entries": entries}, text.String())
 		},
 	}
-	addJSONFlag(cmd, "the entries")
+	addJSONFlag(cmd, "Write entries or errors as JSON")
 	return cmd
 }
 
 func setCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:        "set [--stdin] <namespace>/<name>",
+		Use: "set",
+		Annotations: map[string]string{usageAnnotation: `mk set [--json] <namespace>/<NAME>...
+mk set --stdin [--json] <namespace>/<NAME>`},
 		SuggestFor: []string{"add", "put", "create"},
-		Short:      "Create an entry or replace its value",
-		Long: `Create an entry or replace its value. The value comes from a hidden prompt,
-or with --stdin from standard input. It is stored byte for byte: a trailing
-newline is kept, so pipe it with printf '%s'. A new entry's kind is inferred
-from its name, such as token for GITHUB_TOKEN; change it in the Maskey window.`,
-		Example: `  mk set github/GITHUB_TOKEN
-  printf '%s' "$(gh auth token)" | mk set --stdin github/GITHUB_TOKEN`,
-		DisableFlagsInUseLine: true,
-		Args:                  entryArgs("set takes one entry, such as github/GITHUB_TOKEN; the value comes from the prompt or --stdin", 1),
-		ValidArgsFunction:     completeEntries(env),
+		Short:      "Create entries or replace their values",
+		Long: `Create entries or replace their values. By default, type one value per
+entry at a hidden prompt, in argument order. This requires terminal stdin.
+
+With --stdin, pipe or redirect one value for one entry. A one-line value
+loses its final line ending, so gh auth token | mk set --stdin
+github/GITHUB_TOKEN stores the token alone. A value of several lines,
+such as a PEM key, is stored byte for byte. Empty values and NUL bytes
+are rejected.
+
+A namespace starts with an ASCII letter or digit, followed by ASCII
+letters, digits, '.', '_' or '-'. NAME starts with an ASCII letter or
+'_', followed by ASCII letters, digits or '_'. Each reference may appear
+once.
+
+mk checks all references and reads and validates all values before
+writing. It writes in order and stops at the first failure. Earlier
+writes remain. Replacing a value preserves its kind, notes, and program
+access. New entries start without program access.`,
+		Example: `  mk set aws/AWS_ACCESS_KEY_ID aws/AWS_SECRET_ACCESS_KEY
+  gh auth token | mk set --stdin github/GITHUB_TOKEN`,
+		Args:              countArgs("set needs at least one entry", 1, -1),
+		ValidArgsFunction: completeEntries(env, -1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ref, _ := parseEntry(args[0])
+			refs, err := parseEntries(args)
+			if store.IsKind(err, kindUsage) {
+				// An operand that is no entry is likely the value itself.
+				return withHint(err, "enter the value at the hidden prompt or pipe one value to mk set --stdin <namespace>/<NAME>")
+			}
+			if err == nil {
+				err = distinct(refs)
+			}
+			if err != nil {
+				return err
+			}
 			fromStdin, _ := cmd.Flags().GetBool("stdin")
-			value, err := readValue(cmd.Context(), env, ref, fromStdin)
+			switch {
+			case fromStdin && len(refs) > 1:
+				return withHint(usageError("set --stdin takes exactly one entry"), "usage: mk set --stdin [--json] <namespace>/<NAME>")
+			case !fromStdin && !term.IsTerminal(int(env.Stdin.Fd())):
+				return withHint(usageError("standard input is not a terminal and set needs --stdin"),
+					"pipe one value to mk set --stdin <namespace>/<NAME>, or have the owner run mk set <namespace>/<NAME> in their terminal")
+			}
+			values := make([][]byte, len(refs))
+			for i, ref := range refs {
+				value, err := readValue(cmd.Context(), env, ref, i, len(refs), fromStdin)
+				if err != nil {
+					return err
+				}
+				if err := store.ValidateValue(value); err != nil {
+					return atArgument(err, i+1)
+				}
+				values[i] = value
+			}
+			return writeEach(cmd, env, refs, func(i int, ref store.Ref) (string, error) {
+				created, err := env.Store.Set(cmd.Context(), ref, values[i])
+				if created {
+					return "created", err
+				}
+				return "replaced", err
+			})
+		},
+	}
+	cmd.Flags().Bool("stdin", false, "Read one value from standard input")
+	addJSONFlag(cmd, "Write results or errors as JSON")
+	return cmd
+}
+
+func getCommand(env *Env) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:        "get [--json] <namespace>/<NAME>",
+		SuggestFor: []string{"read", "print"},
+		Short:      "Write a granted entry's raw value to non-terminal stdout",
+		Long: `Use mk run <namespace>/<NAME> -- <command> when the command accepts an
+environment variable. Use mk get for a helper that must capture stdout.
+
+Only the owner can grant an entry program access. Once granted, any
+program that can run mk with access to that Keychain can obtain the
+value. The grant applies to the entry, across consumers.
+
+get refuses terminal stdout and entries without program access. On
+success it writes the unmasked bytes exactly as stored, with no added
+newline, label, or JSON wrapper.`,
+		Annotations:           map[string]string{examplesHeadingAnnotation: "Helper command to configure:"},
+		Example:               "  mk get anthropic/ANTHROPIC_API_KEY",
+		DisableFlagsInUseLine: true,
+		Args:                  countArgs("get takes exactly one entry", 1, 1),
+		ValidArgsFunction:     completeEntries(env, 1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ref, err := parseEntry(args[0], 1)
 			if err != nil {
 				return err
 			}
-			created, err := env.Store.Set(cmd.Context(), ref, value)
-			if err != nil {
-				return err
+			// Checked before the lookup, so a refused value is never read.
+			if f, ok := env.Stdout.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+				return withHint(usageError("get cannot write a raw value to terminal stdout"),
+					"use mk run <namespace>/<NAME> -- <command>, or configure the helper to capture mk get directly. To view the value yourself, use Reveal in Maskey.")
 			}
-			if jsonOutput(cmd) {
-				writeJSON(env.Stdout, map[string]any{"namespace": ref.Namespace, "name": ref.Name, "created": created})
-			} else if created {
-				fmt.Fprintln(env.Stdout, "created", ref)
-			} else {
-				fmt.Fprintln(env.Stdout, "replaced", ref)
+			value, err := env.Store.GrantedValue(cmd.Context(), ref)
+			if err != nil {
+				return atArgument(err, 1)
+			}
+			if _, err := env.Stdout.Write(value); err != nil {
+				return outputError()
 			}
 			return nil
 		},
 	}
-	cmd.Flags().Bool("stdin", false, "read the value from standard input")
-	addJSONFlag(cmd, "the result")
+	addJSONFlag(cmd, "Write errors as JSON; the value on stdout stays raw")
 	return cmd
-}
-
-// readValue reads the value of ref from stdin, or from a hidden prompt on
-// a terminal.
-func readValue(ctx context.Context, env *Env, ref store.Ref, fromStdin bool) ([]byte, error) {
-	var read func() ([]byte, error)
-	fd := int(env.Stdin.Fd())
-	switch {
-	case fromStdin:
-		read = func() ([]byte, error) { return io.ReadAll(env.Stdin) }
-	case term.IsTerminal(fd):
-		// ReadPassword turns echo back on only when it returns, which a
-		// cancelled read never does.
-		state, err := term.GetState(fd)
-		if err != nil {
-			return nil, usageError("cannot read the value from the terminal: " + err.Error())
-		}
-		defer func() { _ = term.Restore(fd, state) }()
-		fmt.Fprintf(env.Stderr, "Value for %s (input hidden): ", ref)
-		defer fmt.Fprintln(env.Stderr)
-		read = func() ([]byte, error) { return term.ReadPassword(fd) }
-	default:
-		return nil, usageError("standard input is not a terminal; pass --stdin to read the value from it")
-	}
-	value, err := readUnlessCancelled(ctx, read)
-	if ctx.Err() != nil {
-		return nil, &store.Error{Kind: store.KindCancelled, Message: "cancelled before the value was read"}
-	}
-	if err != nil {
-		return nil, usageError("cannot read the value: " + err.Error())
-	}
-	return value, nil
-}
-
-// readUnlessCancelled returns what read returns, or nothing once ctx is
-// done: a read of a terminal or pipe does not end when the process is
-// interrupted.
-func readUnlessCancelled(ctx context.Context, read func() ([]byte, error)) ([]byte, error) {
-	type outcome struct {
-		value []byte
-		err   error
-	}
-	done := make(chan outcome, 1)
-	go func() {
-		value, err := read()
-		done <- outcome{value, err}
-	}()
-	select {
-	case o := <-done:
-		return o.value, o.err
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
 }
 
 func renameCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:        "rename <namespace>/<name> <new-namespace>/<new-name>",
+		Use:        "rename [--json] <namespace>/<NAME> <new-namespace>/<NEW_NAME>",
 		SuggestFor: []string{"mv", "move"},
 		Short:      "Rename an entry or move it to another namespace",
-		Long: `Rename an entry, move it to another namespace, or both, in one write. The
-value, kind and notes stay. Fails if the new entry already exists.`,
+		Long: `Rename an entry or move it to another namespace.
+
+Change the reference in one write. The value, kind, notes, and program
+access stay. The destination must differ and must not already exist.
+
+A namespace starts with an ASCII letter or digit, followed by ASCII
+letters, digits, '.', '_' or '-'. NAME starts with an ASCII letter or
+'_', followed by ASCII letters, digits or '_'.`,
 		Example: `  mk rename github/TOKEN github/GITHUB_TOKEN
   mk rename work/NPM_TOKEN npm/NPM_TOKEN`,
 		DisableFlagsInUseLine: true,
-		Args:                  entryArgs("rename takes the entry and its new reference, such as github/TOKEN github/GITHUB_TOKEN", 2),
-		ValidArgsFunction:     completeEntries(env),
+		Args:                  countArgs("rename takes the entry and its new reference", 2, 2),
+		ValidArgsFunction:     completeEntries(env, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			from, _ := parseEntry(args[0])
-			to, _ := parseEntry(args[1])
-			if from == to {
-				// Edit takes an unchanged entry as done without looking for it.
-				return usageError("the new reference is the entry's own")
-			}
-			if err := env.Store.Edit(cmd.Context(), from, to, nil, nil); err != nil {
+			refs, err := parseEntries(args)
+			if err != nil {
 				return err
 			}
-			if jsonOutput(cmd) {
-				writeJSON(env.Stdout, map[string]any{"from": from, "to": to})
-			} else {
-				fmt.Fprintln(env.Stdout, "renamed", from, "to", to)
+			from, to := refs[0], refs[1]
+			if from == to {
+				// Edit takes an unchanged entry as done without looking for it.
+				return withHint(usageError("the new reference is the entry's own"), "choose a different namespace or name")
 			}
-			return nil
+			if err := env.Store.Edit(cmd.Context(), from, to, nil, nil); err != nil {
+				if store.IsKind(err, store.KindExists) {
+					return atArgument(err, 2)
+				}
+				return atArgument(err, 1)
+			}
+			return writeResult(cmd, env, map[string]any{"from": from, "to": to}, fmt.Sprintf("renamed %s to %s\n", from, to))
 		},
 	}
-	addJSONFlag(cmd, "the result")
+	addJSONFlag(cmd, "Write the result or errors as JSON")
 	return cmd
 }
 
 func deleteCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:        "delete [--yes] <namespace>/<name>",
+		Use:        "delete [--yes] [--json] <namespace>/<NAME>...",
 		SuggestFor: []string{"rm", "remove"},
-		Short:      "Delete an entry",
-		Long: `Delete an entry from the Keychain of this Mac and, through iCloud Keychain,
-of every Mac on the same Apple Account. This cannot be undone. In a terminal
-mk asks first; elsewhere pass --yes.`,
-		Example: `  mk delete github/GITHUB_TOKEN
-  mk delete --yes github/GITHUB_TOKEN`,
+		Short:      "Delete entries from this Mac and Macs syncing its Keychain",
+		Long: `Delete entries from this Mac and, through iCloud Keychain, other Macs
+syncing this Keychain. Deletion cannot be undone.
+
+mk checks that every entry exists, lists the entries, and asks once.
+Type y or yes and press Return to confirm, ignoring case. Without terminal
+stdin, --yes is required. Use it only for entries the owner asked to delete.
+
+Each reference may appear once. mk deletes in argument order and stops
+at the first failure. Earlier deletions remain. An entry can change after
+the initial check.`,
+		Example: `  mk delete github/OLD_TOKEN npm/OLD_TOKEN
+  mk delete --yes --json github/OLD_TOKEN`,
 		DisableFlagsInUseLine: true,
-		Args:                  entryArgs("delete takes one entry, such as github/GITHUB_TOKEN", 1),
-		ValidArgsFunction:     completeEntries(env),
+		Args:                  countArgs("delete needs at least one entry", 1, -1),
+		ValidArgsFunction:     completeEntries(env, -1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ref, _ := parseEntry(args[0])
-			if yes, _ := cmd.Flags().GetBool("yes"); !yes {
-				if err := confirmDelete(cmd.Context(), env, ref); err != nil {
+			refs, err := parseEntries(args)
+			if err == nil {
+				err = distinct(refs)
+			}
+			if err != nil {
+				return err
+			}
+			yes, _ := cmd.Flags().GetBool("yes")
+			if !yes && !term.IsTerminal(int(env.Stdin.Fd())) {
+				return withHint(usageError("standard input is not a terminal and delete needs --yes"),
+					"use --yes only for the entries the owner asked to delete")
+			}
+			_, existing, _, err := env.Store.Listing(cmd.Context())
+			if err != nil {
+				return err
+			}
+			for i, ref := range refs {
+				if !slices.Contains(existing, ref) {
+					return &store.Error{Kind: store.KindNotFound, Argument: i + 1, Message: "the entry does not exist"}
+				}
+			}
+			if !yes {
+				if err := confirmDelete(cmd.Context(), env, refs); err != nil {
 					return err
 				}
 			}
-			if err := env.Store.Delete(cmd.Context(), ref); err != nil {
-				return err
-			}
-			if jsonOutput(cmd) {
-				writeJSON(env.Stdout, map[string]any{"namespace": ref.Namespace, "name": ref.Name, "deleted": true})
-			} else {
-				fmt.Fprintln(env.Stdout, "deleted", ref)
-			}
-			return nil
+			return writeEach(cmd, env, refs, func(_ int, ref store.Ref) (string, error) {
+				return "deleted", env.Store.Delete(cmd.Context(), ref)
+			})
 		},
 	}
-	cmd.Flags().BoolP("yes", "y", false, "delete without asking")
-	addJSONFlag(cmd, "the result")
+	cmd.Flags().BoolP("yes", "y", false, "Skip confirmation")
+	addJSONFlag(cmd, "Write results or errors as JSON")
 	return cmd
 }
 
-func confirmDelete(ctx context.Context, env *Env, ref store.Ref) error {
-	if !term.IsTerminal(int(env.Stdin.Fd())) {
-		return usageError("standard input is not a terminal; pass --yes to delete without asking")
-	}
-	fmt.Fprintf(env.Stderr, "delete %s from every Mac on this Apple Account? [y/N] ", ref)
-	answer, _ := readUnlessCancelled(ctx, func() ([]byte, error) { return bufio.NewReader(env.Stdin).ReadBytes('\n') })
-	if ctx.Err() == nil {
-		switch strings.ToLower(strings.TrimSpace(string(answer))) {
-		case "y", "yes":
-			return nil
+// result is a write of set or delete that the Keychain confirmed.
+type result struct {
+	store.Ref
+	Action string `json:"action"`
+}
+
+const outputHint = "check the output destination before continuing. Do not repeat confirmed writes."
+
+// writeEach writes refs in order, each with write, which returns the action
+// it performs, and stops at the first failure. In text, each confirmed
+// write is printed as it happens; with --json, all of them once every write
+// is done. A failure after the first write was attempted reports the
+// confirmed writes and the positions not attempted.
+func writeEach(cmd *cobra.Command, env *Env, refs []store.Ref, write func(i int, ref store.Ref) (string, error)) error {
+	completed := []result{}
+	stop := func(err error, next int) error { return stopped(err, completed, next, len(refs)) }
+	for i, ref := range refs {
+		if cmd.Context().Err() != nil {
+			cancelled := &store.Error{Kind: store.KindCancelled, Message: "cancelled before any entry was written"}
+			if i == 0 {
+				return cancelled
+			}
+			cancelled.Message = "cancelled before the next write"
+			return stop(cancelled, i)
+		}
+		action, err := write(i, ref)
+		if err != nil {
+			return stop(atArgument(err, i+1), i+1)
+		}
+		completed = append(completed, result{ref, action})
+		if !jsonOutput(cmd) {
+			if err := writeResults(env, completed[i:]); err != nil {
+				return stop(err, i+1)
+			}
 		}
 	}
-	return &store.Error{Kind: store.KindCancelled, Message: "not deleted"}
+	if jsonOutput(cmd) {
+		if err := writeJSON(env.Stdout, map[string]any{"results": completed}); err != nil {
+			return stop(withHint(err, outputHint), len(refs))
+		}
+	}
+	return nil
 }

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.0.3
+
+- `mk run` takes its selectors as arguments before a required `--`: `mk run github work/GITHUB_TOKEN -- gh pr list` passes the namespace `github` with the work token in place of its own. `-n` and `-e` are gone, and using them explains the new form. `mk`'s flags go before the first selector, so everything after `--`, `--help` included, belongs to the command.
+- `mk get <namespace>/<NAME>` writes one entry's raw value for a program that runs a command to obtain its key. It works only for entries you grant program access, and never to a terminal; new entries start without it. `mk list --json` shows which entries have program access, and replacing, editing, or renaming an entry keeps it.
+- Program access changes only after you authenticate with your login password, Touch ID, or Apple Watch: with the Program access switch of an entry in the window, or with `mk grant` and `mk revoke`, which go through the Keychain service. One approval covers further changes from the same place for 5 minutes, and `mk` says when a change needed no dialog. Interrupting `mk grant` or `mk revoke` while the dialog is open withdraws the change.
+- `mk set` and `mk delete` take several entries. `mk set` prompts for each value, naming the entry, and checks every reference and value before writing any; `mk delete` lists the entries and asks once. Both write in order, stop at the first failure, and report what they completed and what they did not attempt. With `--json`, their results are one `{"results":[...]}` document, also for a single entry.
+- `mk set --stdin` drops the final line ending of a one-line value, so `gh auth token | mk set --stdin github/GITHUB_TOKEN` stores the token alone; a value of several lines is still stored byte for byte. Without a terminal, `mk set` needs `--stdin` and `mk delete` needs `--yes`.
+- The delete confirmation accepts only a complete `y` or `yes` line; an answer cut short by the end of input no longer deletes.
+- Namespaces may contain uppercase letters and are case-sensitive, so `GitHub` and `github` are two namespaces, listed side by side. A Mac still on 0.0.2 rejects such a namespace and leaves its entries out of its lists.
+- Errors refer to arguments by position and name an entry only when it exists, and suggest an existing entry or namespace that differs only in case or by up to two typing errors. An invalid namespace or name states the rule it breaks, in the window too. New exit statuses: 1 for an internal error, 11 for an entry without program access, and 12 for input or output that failed. `mk help exit-codes` describes them all.
+- Command help starts with usage and lists each command's flags; the root groups core and setup commands. On a terminal, headings, command names, and flags are bold, unless `NO_COLOR` is nonempty or `TERM` is `dumb`.
+- `mk activity` shows which programs got, read, wrote, or changed the program access of which entries on this Mac, and with what result, grouped over the last week by default. Each record names the program that ran `mk` and the programs that started it, or Maskey for the window, and refused grants and revokes are recorded too. Maskey keeps the current month's file and the 12 before it in `~/Library/Logs/io.github.entwining.maskey`, without values, notes, arguments, or environment variables.
+- In the window, an entry's name and namespace show a tooltip only when they are cut off.
+
 ## 0.0.2
 
 - An entry selected with `mk run -e` replaces a same-named entry of a namespace selected with `-n`, instead of failing as a conflict: `mk run -n github -e work/GITHUB_TOKEN -- gh pr list` passes the rest of `github` with the work token. The same name selected from two namespaces otherwise is still a conflict, and `mk run --help` explains why.

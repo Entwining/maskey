@@ -27,20 +27,28 @@ const (
 	// entry again before deciding whether to repeat it.
 	KindUncertain Kind = "uncertain"
 	KindCancelled Kind = "cancelled"
+	// KindNotGranted means the entry lacks program access required by mk get.
+	KindNotGranted Kind = "not_granted"
 )
 
-// Error is a failure of a store operation. It never carries a value.
+// Error is a failure of a store operation. It never carries a value. Ref
+// names the entry only when the store found it; otherwise Argument, when
+// set, is the 1-based position of the input the failure concerns.
 type Error struct {
 	Kind     Kind   `json:"kind"`
-	Ref      *Ref   `json:"entry,omitempty"`
-	OSStatus int32  `json:"os_status,omitempty"`
 	Message  string `json:"message"`
+	Ref      *Ref   `json:"entry,omitempty"`
+	Argument int    `json:"argument,omitempty"`
+	OSStatus int32  `json:"os_status,omitempty"`
 }
 
 func (e *Error) Error() string {
 	message := e.Message
-	if e.Ref != nil {
+	switch {
+	case e.Ref != nil:
 		message = e.Ref.String() + ": " + message
+	case e.Argument > 0:
+		message = fmt.Sprintf("argument %d: %s", e.Argument, message)
 	}
 	if e.OSStatus != 0 {
 		message = fmt.Sprintf("%s (OSStatus %d)", message, e.OSStatus)

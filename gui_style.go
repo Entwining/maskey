@@ -28,6 +28,7 @@ var (
 	eyeIcon       = icon("eye")
 	eyeOffIcon    = icon("eye-off")
 	copyIcon      = icon("copy")
+	infoIcon      = icon("info")
 	checkIcon     = icon("check")
 	plusIcon      = icon("plus")
 	folderKeyIcon = icon("folder-key")

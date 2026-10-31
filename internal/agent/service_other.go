@@ -6,10 +6,11 @@ import (
 	"context"
 	"errors"
 
+	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/store"
 )
 
-func Serve(context.Context, store.Backend, func(context.Context) error) error {
+func Serve(context.Context, store.Backend, activity.Recorder, func(context.Context) error, store.Approve) error {
 	return errors.New("the Keychain service requires macOS on Apple Silicon")
 }
 

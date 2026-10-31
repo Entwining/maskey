@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/agent"
 	"github.com/Entwining/maskey/internal/store"
 )
@@ -21,7 +22,7 @@ func (g *gui) read(ref store.Ref, action string, use func(value []byte)) {
 	token := g.selToken
 	g.readAction = action
 	g.start(func() func() {
-		value, err := g.store.Value(context.Background(), ref)
+		value, err := g.store.Value(activity.WithVia(g.ctx, action), ref)
 		return func() {
 			if token != g.selToken {
 				return
@@ -96,7 +97,7 @@ func (g *gui) edit(ref store.Ref) {
 		kind: kind, kindFrom: kind, notes: details.Notes, notesFrom: details.Notes, loading: true}
 	id := g.form.id
 	g.start(func() func() {
-		value, err := g.store.Value(context.Background(), ref)
+		value, err := g.store.Value(activity.WithVia(g.ctx, "edit"), ref)
 		return func() {
 			if !g.form.open || id != g.form.id {
 				return
@@ -230,9 +231,9 @@ func (g *gui) submit(then func()) {
 	g.start(func() func() {
 		var err error
 		if from == (store.Ref{}) {
-			err = g.store.Create(context.Background(), to, value, details)
+			err = g.store.Create(g.ctx, to, value, details)
 		} else {
-			err = g.store.Edit(context.Background(), from, to, value, editedDetails)
+			err = g.store.Edit(g.ctx, from, to, value, editedDetails)
 		}
 		return func() {
 			g.writeAction = ""
@@ -286,7 +287,7 @@ func (g *gui) askDelete(ref store.Ref) {
 func (g *gui) delete(ref store.Ref) {
 	g.writeAction, g.writeRef = "delete", ref
 	g.start(func() func() {
-		err := g.store.Delete(context.Background(), ref)
+		err := g.store.Delete(g.ctx, ref)
 		return func() {
 			g.writeAction = ""
 			if err != nil {
@@ -301,6 +302,29 @@ func (g *gui) delete(ref store.Ref) {
 				g.selectionChanged()
 			}
 			g.refresh()
+		}
+	})
+}
+
+// changeAccess grants or revokes ref's program access once the owner
+// approves. The switch shows the change while it runs and the stored state
+// again if the owner declines or the write fails.
+func (g *gui) changeAccess(ref store.Ref, granted bool) {
+	g.writeAction, g.writeRef, g.accessTo = "access", ref, granted
+	g.start(func() func() {
+		_, _, err := g.store.ChangeAccess(g.ctx, []store.Ref{ref}, granted, g.approve)
+		return func() {
+			g.writeAction = ""
+			switch {
+			case err == nil:
+				attributes := g.attributes[ref]
+				attributes.ProgramAccess = granted
+				g.attributes[ref] = attributes
+				g.refresh()
+			case store.IsKind(err, store.KindCancelled):
+			default:
+				g.writeFailed(false, "Change Program Access for", "Changed", ref, err)
+			}
 		}
 	})
 }
@@ -326,7 +350,7 @@ func (g *gui) installCLI() {
 	}
 	g.cliInstalling = true
 	g.start(func() func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		ctx, cancel := context.WithTimeout(g.ctx, time.Minute)
 		defer cancel()
 		executable, err := os.Executable()
 		var home, link string

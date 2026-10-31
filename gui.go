@@ -15,7 +15,9 @@ import (
 	"github.com/egoist/mygo/plugins/updater/native"
 	"github.com/egoist/mygo/ui"
 
+	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/keychain"
+	"github.com/Entwining/maskey/internal/owner"
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -40,7 +42,9 @@ const (
 )
 
 func runGUI() {
-	g := newGUI(store.New(keychain.New(store.Service)))
+	record := activityLog(func(err error) { log.Print("the activity record failed: ", err) })
+	ctx := activity.WithCaller(context.Background(), activity.Self())
+	g := newGUI(ctx, store.New(keychain.New(store.Service, record), record), owner.NewApproval(owner.NativeAuthenticate, owner.Clock).Approve)
 	mygo.Use(native.Plugin)
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
@@ -132,7 +136,10 @@ func runGUI() {
 // gui is the window's state. Keychain calls run on goroutines and publish
 // their results through post, which runs a function on the UI thread.
 type gui struct {
+	// ctx is every operation's context, which names the window's caller.
+	ctx      context.Context
 	store    *store.Store
+	approve  store.Approve
 	post     func(func())
 	services ui.Services
 	closed   bool
@@ -162,6 +169,8 @@ type gui struct {
 	valueField     ui.Handle
 	list           ui.ListState
 	row            int
+	nameText       ui.Handle
+	namespaceText  ui.Handle
 	// entry is the entry chosen, zero for none; while a form is open, the
 	// form's entry while the listing has it, zero for a new one.
 	entry store.Ref
@@ -178,9 +187,10 @@ type gui struct {
 	copied      bool
 	copiedUntil time.Time
 
-	writeAction string // "submit" or "delete"
+	writeAction string // "submit", "delete", or "access"
 	writeRef    store.Ref
 	writeForm   int
+	accessTo    bool // the program access an access write sets
 
 	form form
 	// confirmLeave holds while the question about the form's unsaved
@@ -269,8 +279,8 @@ func (e formError) on(field string) string {
 	return ""
 }
 
-func newGUI(s *store.Store) *gui {
-	g := &gui{store: s, namespace: allNamespaces}
+func newGUI(ctx context.Context, s *store.Store, approve store.Approve) *gui {
+	g := &gui{ctx: ctx, store: s, approve: approve, namespace: allNamespaces}
 	g.entryItems = newEntryItems(g)
 	return g
 }
@@ -351,7 +361,7 @@ func (g *gui) refresh() {
 	g.listToken++
 	token := g.listToken
 	g.start(func() func() {
-		namespaces, refs, attributes, err := g.store.Listing(context.Background())
+		namespaces, refs, attributes, err := g.store.Listing(g.ctx)
 		return func() {
 			if token != g.listToken {
 				return

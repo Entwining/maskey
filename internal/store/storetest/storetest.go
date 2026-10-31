@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -69,6 +70,22 @@ func (b *Backend) Read(ctx context.Context, accounts []string) (map[string][]byt
 	return values, nil
 }
 
+func (b *Backend) Get(ctx context.Context, account string) ([]byte, error) {
+	if err := b.before("get", account); err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	found, ok := b.items[account]
+	if !ok {
+		return nil, &store.Error{Kind: store.KindNotFound, Message: "the entry does not exist"}
+	}
+	if !found.ProgramAccess {
+		return nil, &store.Error{Kind: store.KindNotGranted, Message: "program access is not granted"}
+	}
+	return slices.Clone(found.value), nil
+}
+
 func (b *Backend) Add(ctx context.Context, account string, value []byte, details store.Details) error {
 	if err := b.before("add", account); err != nil {
 		return err
@@ -122,6 +139,25 @@ func (b *Backend) Edit(ctx context.Context, account, to string, value []byte, de
 	return nil
 }
 
+func (b *Backend) SetProgramAccess(ctx context.Context, account string, granted bool) error {
+	op := "revoke"
+	if granted {
+		op = "grant"
+	}
+	if err := b.before(op, account); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	changed, ok := b.items[account]
+	if !ok {
+		return &store.Error{Kind: store.KindNotFound, Message: "the entry does not exist"}
+	}
+	changed.ProgramAccess, changed.Modified = granted, b.Now()
+	b.items[account] = changed
+	return nil
+}
+
 func (b *Backend) Delete(ctx context.Context, account string) error {
 	if err := b.before("delete", account); err != nil {
 		return err
@@ -144,3 +180,26 @@ func (b *Backend) Put(account string, value []byte) {
 }
 
 var _ store.Backend = (*Backend)(nil)
+
+// Recorder keeps records in memory, with the caller of their context as the
+// activity record gives them.
+type Recorder struct {
+	mu      sync.Mutex
+	records []activity.Record
+}
+
+func (r *Recorder) Record(ctx context.Context, records ...activity.Record) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, record := range records {
+		record.Caller = activity.CallerOf(ctx)
+		r.records = append(r.records, record)
+	}
+}
+
+// Records returns what was recorded, in order.
+func (r *Recorder) Records() []activity.Record {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.records)
+}

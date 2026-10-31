@@ -79,17 +79,25 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 	heading(c, ref.Name, monospace, ref.Namespace, kind)
 	v, h := inputPadding(t)
 	// A value stays on one line, as in Passwords, so that a name never
-	// breaks into what reads as two; its tooltip shows what the line cuts.
-	text := func(s string, font string) func() {
+	// breaks into what reads as two.
+	line := func(s, font string) ui.Element {
+		return ui.Text(c, s).Font(font).TextColor(t.Text).SingleLine().Selectable().Padding(v+1, h+1)
+	}
+	// Names and namespaces have no length limit. Where the committed frame
+	// cut one, a tooltip shows it whole, as AppKit's expansion tooltips do.
+	cuttable := func(s, font string, handle *ui.Handle) func() {
 		return func() {
-			ui.Text(c, s).Font(font).TextColor(t.Text).SingleLine().Tooltip(s).Selectable().Padding(v+1, h+1)
+			e := line(s, font).Bind(handle)
+			if width, _ := c.MeasureText(0, ui.Span{Text: s, Font: font}); width > handle.Bounds(c).W-2*(h+1) {
+				e.Tooltip(s)
+			}
 		}
 	}
 	attributes := g.attributes[ref]
 	fields := []func(){
-		func() { cardField(c, "Name", text(ref.Name, monospace)) },
-		func() { cardField(c, "Namespace", text(ref.Namespace, "")) },
-		func() { cardField(c, "Kind", text(kindLabel(kind), "")) },
+		func() { cardField(c, "Name", cuttable(ref.Name, monospace, &g.nameText)) },
+		func() { cardField(c, "Namespace", cuttable(ref.Namespace, "", &g.namespaceText)) },
+		func() { cardField(c, "Kind", func() { line(kindLabel(kind), "") }) },
 		func() {
 			cardField(c, "Value", func() {
 				ui.Row(c).Gap(4).AlignItems(ui.Start).Padding(v+1, h+1).Children(func() {
@@ -119,6 +127,9 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 				})
 			})
 		},
+		func() {
+			cardField(c, "Program access", func() { g.accessSwitch(c, ref, attributes.ProgramAccess) })
+		},
 	}
 	if attributes.Notes != "" {
 		fields = append(fields, func() {
@@ -127,9 +138,42 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 	}
 	if !attributes.Modified.IsZero() {
 		modified := attributes.Modified.Local().Format(time.DateTime)
-		fields = append(fields, func() { cardField(c, "Modified", text(modified, "")) })
+		fields = append(fields, func() { cardField(c, "Modified", func() { line(modified, "") }) })
 	}
 	card(c, fields...)
+}
+
+func (g *gui) accessSwitch(c *ui.Context, ref store.Ref, granted bool) {
+	t := c.Theme()
+	v, h := inputPadding(t)
+	changing := g.writeAction == "access" && g.writeRef == ref
+	on := granted
+	if changing {
+		on = g.accessTo
+	}
+	ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(v+1, h+1).Children(func() {
+		// The icon sits close by the state, as a note on it rather than a
+		// control of its own.
+		ui.Row(c).Gap(5).AlignItems(ui.Center).Grow(1).Children(func() {
+			ui.Text(c, accessState(on)).TextColor(t.Text)
+			ui.Icon(c, infoIcon).Size(22*0.6, 22*0.6).Tooltip(accessCaption)
+		})
+		if changing {
+			ui.Spinner(c).Size(14, 14).Label("Changing program access")
+		}
+		if ui.Switch(c.Key("access"), &on).Disabled(g.writeAction != "").Description(accessCaption).Changed() {
+			g.changeAccess(ref, on)
+		}
+	})
+}
+
+const accessCaption = "When allowed, any program running as you can obtain this value."
+
+func accessState(granted bool) string {
+	if granted {
+		return "Allowed"
+	}
+	return "Not allowed"
 }
 
 func (g *gui) formCard(c *ui.Context, submitting bool) {
@@ -150,7 +194,7 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 			f.err = formError{}
 		}
 	}
-	card(c,
+	fields := []func(){
 		func() {
 			cardField(c, "Name", func() {
 				name := input(ui.TextInput(c.Key("name"), &f.name)).Bind(&g.nameField).Font(monospace).Placeholder("GITHUB_TOKEN")
@@ -189,12 +233,23 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 				}
 			}).Error(f.err.on("value"))
 		},
-		func() {
-			cardField(c, "Notes", func() {
-				input(ui.TextArea(c.Key("notes"), &f.notes)).Lines(2, 6).Placeholder("Optional")
+	}
+	if f.from != (store.Ref{}) {
+		// Keep program access read-only here: saving must not overwrite a
+		// concurrent grant or revoke. The row preserves the detail layout.
+		fields = append(fields, func() {
+			cardField(c, "Program access", func() {
+				v, h := inputPadding(t)
+				ui.Text(c, accessState(g.attributes[f.from].ProgramAccess)).TextColor(t.Text).Padding(v+1, h+1)
 			})
-		},
-	).Disabled(submitting)
+		})
+	}
+	fields = append(fields, func() {
+		cardField(c, "Notes", func() {
+			input(ui.TextArea(c.Key("notes"), &f.notes)).Lines(2, 6).Placeholder("Optional")
+		})
+	})
+	card(c, fields...).Disabled(submitting)
 	if f.err.field == "" && f.err.message != "" {
 		ui.Text(c, f.err.message).TextColor(t.Danger)
 	}

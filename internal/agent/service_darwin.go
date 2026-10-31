@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -33,7 +34,9 @@ var (
 	errJobNotLoaded     = errors.New("the Keychain service is not loaded")
 )
 
-func Serve(ctx context.Context, backend store.Backend, check func(context.Context) error) error {
+// Serve runs the Keychain service. recorder receives the records of
+// changes to program access the owner refused.
+func Serve(ctx context.Context, backend store.Backend, recorder activity.Recorder, check func(context.Context) error, approve store.Approve) error {
 	path, err := socketPath()
 	if err != nil {
 		return errServiceFiles
@@ -49,7 +52,7 @@ func Serve(ctx context.Context, backend store.Backend, check func(context.Contex
 	// launchd's EnvironmentVariables adds to its environment rather than replacing it.
 	os.Clearenv()
 	os.Setenv("PATH", servicePATH)
-	return serve(ctx, path, backend, check, func() bool {
+	return serve(ctx, path, backend, recorder, check, approve, func() bool {
 		installed, err := fileIdentity(executable)
 		return err == nil && !bytes.Equal(installed, self)
 	})
@@ -60,7 +63,7 @@ func Serve(ctx context.Context, backend store.Backend, check func(context.Contex
 // executable is now a different valid build: an upgrade replaced the app, and
 // returning lets launchd's KeepAlive start the new build. Only a change to that
 // file, not a client, can end the service this way.
-func serve(ctx context.Context, path string, backend store.Backend, check func(context.Context) error, replaced func() bool) error {
+func serve(ctx context.Context, path string, backend store.Backend, recorder activity.Recorder, check func(context.Context) error, approve store.Approve, replaced func() bool) error {
 	dir := filepath.Dir(path)
 	if err := privateDir(dir); err != nil {
 		return err
@@ -114,8 +117,24 @@ accept:
 		pending.Go(func() {
 			defer func() { <-slots }()
 			defer conn.Close()
-			if authenticate(conn) == nil {
-				serveRequest(workers, conn, backend, check)
+			// The owner can take minutes to answer, so a change to program
+			// access gives up its slot while it waits, and the slots stay
+			// free for mk run and mk get. Shutdown withdraws a change not
+			// yet approved, which has written nothing, so that it does not
+			// outlast the job's ExitTimeOut.
+			approve := func(request context.Context, reason string) (string, error) {
+				request, cancel := context.WithCancel(request)
+				defer cancel()
+				stop := context.AfterFunc(ctx, cancel)
+				defer stop()
+				<-slots
+				defer func() { slots <- struct{}{} }()
+				return approve(request, reason)
+			}
+			if pid, err := authenticate(conn); err == nil {
+				// The client waits for the hello, so it and almost always
+				// the program that started it still run.
+				serveRequest(activity.WithCaller(workers, activity.Invoker(pid)), conn, backend, recorder, check, approve)
 			} else if replaced() {
 				retire()
 			}
@@ -123,8 +142,8 @@ accept:
 	}
 	listener.Close()
 	// Accepted writes may finish after SIGTERM; immediate cancellation makes
-	// their outcome uncertain. Each ends within requestTimeout, and the lock
-	// is held until they have.
+	// their outcome uncertain. Keep the lock until all workers finish;
+	// each request has its own deadline.
 	pending.Wait()
 	return acceptErr
 }
@@ -385,7 +404,7 @@ func awaitService(ctx context.Context, path string) error {
 		conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "unix", path)
 		if err == nil {
 			defer conn.Close()
-			if err := authenticate(conn.(*net.UnixConn)); err != nil {
+			if _, err := authenticate(conn.(*net.UnixConn)); err != nil {
 				return identityError(err)
 			}
 			_, err := exchange(ctx, conn, request{Op: "check"})

@@ -25,9 +25,17 @@ CF_ABSOLUTE_TIME_EPOCH = 978307200
 # What a person sets on an entry besides its value, by request field and
 # Keychain attribute. kSecAttrDescription is the item's kind.
 DETAILS = (("kind", "kSecAttrDescription"), ("notes", "kSecAttrComment"))
+# kSecAttrGeneric grants program access only when it holds a JSON object
+# whose program_access member is true. Other members are ignored; missing
+# or malformed data does not grant access.
+MARKS = "kSecAttrGeneric"
 
 
 class HostError(Exception):
+    pass
+
+
+class NotGranted(Exception):
     pass
 
 
@@ -51,6 +59,8 @@ class Keychain:
             (self.cf, "CFDataCreate", p, [p, ctypes.c_char_p, long]),
             (self.cf, "CFDataGetLength", long, [p]),
             (self.cf, "CFDataGetBytePtr", p, [p]),
+            (self.cf, "CFDataGetTypeID", ctypes.c_ulong, []),
+            (self.cf, "CFGetTypeID", ctypes.c_ulong, [p]),
             (self.cf, "CFDateGetAbsoluteTime", ctypes.c_double, [p]),
             (self.cf, "CFRelease", None, [p]),
             (self.sec, "SecTaskCreateFromSelf", p, [p]),
@@ -137,24 +147,50 @@ class Keychain:
         if status != 0:
             return status, None
         self.own(result.value)
-        get = self.cf.CFDictionaryGetValue
         items = []
         for index in range(self.cf.CFArrayGetCount(result)):
-            attributes = self.cf.CFArrayGetValueAtIndex(result, index)
-            account = get(attributes, self.constant("kSecAttrAccount"))
-            name = self.text(account) if account else None
-            if name is None:
-                continue
-            item = {"account": name}
-            modified = get(attributes, self.constant("kSecAttrModificationDate"))
-            if modified:
-                item["modified"] = self.cf.CFDateGetAbsoluteTime(modified) + CF_ABSOLUTE_TIME_EPOCH
-            for field, attribute in DETAILS:
-                text = get(attributes, self.constant(attribute))
-                if text:
-                    item[field] = self.text(text) or ""
-            items.append(item)
+            item = self.item(self.cf.CFArrayGetValueAtIndex(result, index))
+            if item is not None:
+                items.append(item)
         return 0, items
+
+    def item(self, attributes):
+        get = self.cf.CFDictionaryGetValue
+        account = get(attributes, self.constant("kSecAttrAccount"))
+        name = self.text(account) if account else None
+        if name is None:
+            return None
+        item = {"account": name, "program_access": False}
+        modified = get(attributes, self.constant("kSecAttrModificationDate"))
+        if modified:
+            item["modified"] = self.cf.CFDateGetAbsoluteTime(modified) + CF_ABSOLUTE_TIME_EPOCH
+        for field, attribute in DETAILS:
+            text = get(attributes, self.constant(attribute))
+            if text:
+                item[field] = self.text(text) or ""
+        marks = get(attributes, self.constant(MARKS))
+        if marks and self.cf.CFGetTypeID(marks) == self.cf.CFDataGetTypeID():
+            item["program_access"] = granted(self.data(marks))
+        return item
+
+    def get(self, service, account):
+        true = self.constant("kCFBooleanTrue", self.cf)
+        # The grant and the value come from one lookup, so they belong to
+        # the same item, and the value never leaves without the grant.
+        query = self.query(service, account, [
+            ("kSecReturnData", true),
+            ("kSecReturnAttributes", true),
+            ("kSecMatchLimit", self.constant("kSecMatchLimitOne")),
+        ])
+        result = ctypes.c_void_p()
+        status = self.sec.SecItemCopyMatching(query, ctypes.byref(result))
+        if status != 0:
+            return status, None
+        self.own(result.value)
+        if not self.item(result)["program_access"]:
+            raise NotGranted()
+        value = self.cf.CFDictionaryGetValue(result, self.constant("kSecValueData"))
+        return 0, {"value": base64.b64encode(self.data(value)).decode("ascii")}
 
     def read(self, service, accounts):
         true = self.constant("kCFBooleanTrue", self.cf)
@@ -208,8 +244,20 @@ class Keychain:
             changes += [(attribute, self.string(details.get(field, ""))) for field, attribute in DETAILS]
         return self.sec.SecItemUpdate(self.query(service, account), self.dictionary(changes))
 
+    def set_program_access(self, service, account, granted):
+        marks = json.dumps({"program_access": granted}).encode("ascii")
+        changes = self.dictionary([(MARKS, self.value_data(marks))])
+        return self.sec.SecItemUpdate(self.query(service, account), changes)
+
     def delete(self, service, account):
         return self.sec.SecItemDelete(self.query(service, account))
+
+
+def granted(marks):
+    try:
+        return json.loads(marks).get("program_access") is True
+    except (ValueError, AttributeError):
+        return False
 
 
 def handle(keychain, request):
@@ -224,6 +272,8 @@ def handle(keychain, request):
         status, values = keychain.read(service, request["accounts"])
         return status, {"values": values}
     account = request["account"]
+    if operation == "get":
+        return keychain.get(service, account)
     if operation == "add":
         value = base64.b64decode(request["value"], validate=True)
         return keychain.add(service, account, value, request.get("details", {})), {}
@@ -234,6 +284,8 @@ def handle(keychain, request):
         if value is not None:
             value = base64.b64decode(value, validate=True)
         return keychain.edit(service, account, request["to"], value, request.get("details")), {}
+    if operation == "grant" or operation == "revoke":
+        return keychain.set_program_access(service, account, operation == "grant"), {}
     if operation == "delete":
         return keychain.delete(service, account), {}
     raise ValueError("unknown operation")
@@ -257,6 +309,9 @@ def main():
     respond({"ready": True})
     try:
         status, result = handle(keychain, json.loads(sys.stdin.buffer.read()))
+    except NotGranted:
+        respond({"error": {"stage": "not_granted"}})
+        return 1
     except Exception as error:
         # The type name only: messages and tracebacks can quote the request.
         respond({"error": {"stage": "request", "message": type(error).__name__}})

@@ -13,9 +13,11 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/agent"
 	"github.com/Entwining/maskey/internal/cli"
 	"github.com/Entwining/maskey/internal/keychain"
+	"github.com/Entwining/maskey/internal/owner"
 	"github.com/Entwining/maskey/internal/runner"
 	"github.com/Entwining/maskey/internal/store"
 )
@@ -55,9 +57,10 @@ func main() {
 		return
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	k := keychain.New(store.Service)
+	record := activityLog(func(err error) { fmt.Fprintln(os.Stderr, "mk: warning: the activity record failed:", err) })
+	k := keychain.New(store.Service, record)
 	if len(args) == 1 && args[0] == "--keychain-service" {
-		err := agent.Serve(ctx, k, k.Check)
+		err := agent.Serve(ctx, k, record, k.Check, owner.NewApproval(owner.NativeAuthenticate, owner.Clock).Approve)
 		stop()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -65,10 +68,15 @@ func main() {
 		}
 		return
 	}
-	backend := agent.New(k)
+	backend := agent.New(k, record.ReportFailure)
 	home, _ := os.UserHomeDir()
+	// The program that started mk is described before any operation, while
+	// it surely runs.
+	ctx = activity.WithCaller(ctx, activity.Invoker(os.Getpid()))
 	outcome := cli.Run(ctx, args, cli.Env{
-		Store:        store.New(backend),
+		Store:        store.New(backend, record),
+		ChangeAccess: backend.ChangeProgramAccess,
+		Activity:     record,
 		Check:        k.Check,
 		CheckService: backend.CheckService,
 		Setup: func(ctx context.Context) error {
@@ -117,4 +125,11 @@ func exitBySignal(sig syscall.Signal) {
 	script := fmt.Sprintf("kill -%d $$; exit %d", n, 128+n)
 	_ = syscall.Exec("/bin/sh", []string{"sh", "-c", script}, nil)
 	os.Exit(128 + n)
+}
+
+// activityLog is this Mac's activity record, which reports a failure to
+// record to warn. Without a home directory, every record fails.
+func activityLog(warn func(error)) *activity.Log {
+	dir, _ := activity.Dir(store.Service)
+	return activity.New(dir, warn)
 }

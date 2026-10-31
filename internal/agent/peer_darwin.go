@@ -15,14 +15,16 @@ import (
 
 var loadPeerAPI = sync.OnceValues(openPeerAPI)
 
-func authenticate(conn *net.UnixConn) error {
+// authenticate checks that the peer runs the same signed executable as this
+// process, and returns the peer's pid as the kernel reports it.
+func authenticate(conn *net.UnixConn) (int, error) {
 	api, err := loadPeerAPI()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	raw, err := conn.SyscallConn()
 	if err != nil {
-		return errPeerUnavailable
+		return 0, errPeerUnavailable
 	}
 	var token [8]uint32 // Opaque audit_token_t, copied unchanged into CFData.
 	var peerErr error
@@ -41,47 +43,48 @@ func authenticate(conn *net.UnixConn) error {
 			peerErr = errPeerUnavailable
 		}
 	}); err != nil {
-		return errPeerUnavailable
+		return 0, errPeerUnavailable
 	}
 	if peerErr != nil {
-		return peerErr
+		return 0, peerErr
 	}
 
 	data := api.dataCreate(0, unsafe.Pointer(&token), int64(unsafe.Sizeof(token)))
 	if data == 0 {
-		return errPeerUnavailable
+		return 0, errPeerUnavailable
 	}
 	defer api.release(data)
 	attributes := api.dictionaryCreate(0, &api.auditKey, &data, 1, api.keyCallbacks, api.valueCallbacks)
 	if attributes == 0 {
-		return errPeerUnavailable
+		return 0, errPeerUnavailable
 	}
 	defer api.release(attributes)
 	var peer, self uintptr
 	if api.copyGuest(0, attributes, 0, &peer) != 0 {
-		return errPeerUnavailable
+		return 0, errPeerUnavailable
 	}
 	defer api.release(peer)
 	if api.copySelf(0, &self) != 0 {
-		return errPeerUnavailable
+		return 0, errPeerUnavailable
 	}
 	defer api.release(self)
 	peerInfo, err := api.verifiedSigningInfo(peer)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer api.release(peerInfo)
 	selfInfo, err := api.verifiedSigningInfo(self)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer api.release(selfInfo)
 	peerHash := api.dictionaryGetValue(peerInfo, api.uniqueKey)
 	selfHash := api.dictionaryGetValue(selfInfo, api.uniqueKey)
 	if peerHash == 0 || selfHash == 0 || api.equal(peerHash, selfHash) == 0 {
-		return errPeerMismatch
+		return 0, errPeerMismatch
 	}
-	return nil
+	// An audit token's sixth word is the pid.
+	return int(token[5]), nil
 }
 
 // selfIdentity is the running code's cdhash.

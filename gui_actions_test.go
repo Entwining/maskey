@@ -175,6 +175,83 @@ func TestNotes(t *testing.T) {
 	}
 }
 
+// Saving must preserve program access changed after the window listed the
+// entry; the form's displayed state may be stale.
+func TestSaveKeepsProgramAccess(t *testing.T) {
+	h := newHarness(t)
+	h.backend.SetProgramAccess(context.Background(), "app/URL", true)
+	h.choose("URL", "Edit")
+	h.typeName("ENDPOINT")
+	h.typeValue("synthetic-endpoint-5c1e")
+	h.click("Save")
+	if !h.attributes("app/ENDPOINT").ProgramAccess {
+		t.Fatal("saving revoked program access")
+	}
+}
+
+// The switch writes program access as soon as it turns, once the owner
+// approves, whose approval later changes reuse; it shows the change while it
+// runs, and the stored state again when the owner declines.
+func TestProgramAccessSwitch(t *testing.T) {
+	h := newHarness(t)
+	h.click("URL")
+	h.refusal = &store.Error{Kind: store.KindCancelled, Message: "cancelled"}
+	h.click("Program access")
+	if h.attributes("app/URL").ProgramAccess || !h.tt.HasText("Not allowed") || len(h.openAlerts()) != 0 {
+		t.Fatalf("declined: texts %q, alerts %d", h.tt.Texts(), len(h.openAlerts()))
+	}
+	h.refusal = nil
+	started, release := h.pause("grant")
+	h.clickWithoutSettling("Program access")
+	h.waitFor(started)
+	h.tt.Frame()
+	if _, ok := h.tt.Find("Changing program access"); !ok || !h.tt.HasText("Allowed") || h.tt.HasText("Not allowed") {
+		t.Fatalf("while granting: texts %q", h.tt.Texts())
+	}
+	release()
+	h.settle()
+	if !h.attributes("app/URL").ProgramAccess || h.tt.HasText("Not allowed") {
+		t.Fatalf("granted: texts %q", h.tt.Texts())
+	}
+	h.click("Program access")
+	if h.attributes("app/URL").ProgramAccess || h.dialogs != 2 {
+		t.Fatalf("revoked after %d dialogs, want the second one reused", h.dialogs)
+	}
+}
+
+// The window runs one write at a time: while a Save runs, another entry's
+// switch waits, since taking over the write's progress would enable a
+// second Save that the first could then overwrite.
+func TestAccessSwitchWaitsForPendingSave(t *testing.T) {
+	h := newHarness(t)
+	h.choose("URL", "Edit")
+	h.typeValue("synthetic-older-save")
+	started, release := h.pause("edit")
+	h.clickWithoutSettling("Save")
+	h.waitFor(started)
+	h.click("API_TOKEN")
+	h.click("Program access")
+	if h.dialogs != 0 || h.attributes("app/API_TOKEN").ProgramAccess || h.g.writeAction != "submit" {
+		t.Fatalf("during the Save: %d dialogs, write %q", h.dialogs, h.g.writeAction)
+	}
+	release()
+	h.settle()
+	if value, _ := h.value("app/URL"); value != "synthetic-older-save" {
+		t.Fatalf("saved %q", value)
+	}
+}
+
+func TestValueReadsCarryActivityPurpose(t *testing.T) {
+	h := newHarness(t)
+	h.click("URL")
+	h.click("Show Value")
+	h.click("Copy Value")
+	h.click("Edit")
+	if want := []string{"reveal", "copy", "edit"}; !slices.Equal(h.reads, want) {
+		t.Fatalf("reads for %q, want %q", h.reads, want)
+	}
+}
+
 // A new entry's kind follows its name until the user picks one; the kind
 // is stored with the entry and shown with it, and a change to it alone is
 // enough to save.
