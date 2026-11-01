@@ -66,10 +66,6 @@ jobs:
 
   check:
     runs-on: macos-26
-    strategy:
-      fail-fast: false
-      matrix:
-        setup: [baseline, sdk-cache]
     timeout-minutes: 20
     outputs:
       version: ${{ steps.app.outputs.version }}
@@ -78,7 +74,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Read the Go version
-        if: matrix.setup == 'sdk-cache'
         id: go-version
         shell: bash
         run: |
@@ -86,7 +81,6 @@ jobs:
           version=$(GOTOOLCHAIN=local "${go_bins[0]}" mod edit -json | jq -er '.Go')
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6.1.0
-        if: matrix.setup == 'sdk-cache'
         with:
           path: ${{ runner.tool_cache }}/go/${{ steps.go-version.outputs.version }}
           key: go-sdk-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-version.outputs.version }}
