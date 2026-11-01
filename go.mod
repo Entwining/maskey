@@ -9,7 +9,7 @@ require (
 	github.com/ebitengine/purego v0.11.1
 	github.com/egoist/mygo v0.7.3
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.9
+	github.com/spf13/pflag v1.0.10
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
 )
