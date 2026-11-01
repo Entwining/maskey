@@ -62,27 +62,21 @@ func withoutLineEnding(value []byte) []byte {
 	return bytes.TrimSuffix(value[:len(value)-1], []byte("\r"))
 }
 
-// confirmDelete asks once on the terminal to delete refs, which exist. Only
-// a complete line answering y or yes confirms.
-func confirmDelete(ctx context.Context, env *Env, refs []store.Ref) error {
-	var prompt strings.Builder
-	fmt.Fprintf(&prompt, "Delete %s from this Mac and Macs syncing this Keychain:\n", count(len(refs), "entry", "entries"))
-	for _, ref := range refs {
-		fmt.Fprintf(&prompt, "  %s\n", ref)
-	}
-	prompt.WriteString("This cannot be undone. Continue? [y/N] ")
-	fmt.Fprint(env.Stderr, prompt.String())
+// confirm asks prompt once on the terminal. Only a complete line answering y
+// or yes confirms; otherwise, unchanged says what was left alone.
+func confirm(ctx context.Context, env *Env, prompt, unchanged string) error {
+	fmt.Fprint(env.Stderr, prompt)
 	answer, err := readUnlessCancelled(ctx, func() ([]byte, error) { return bufio.NewReader(env.Stdin).ReadBytes('\n') })
 	if !bytes.HasSuffix(answer, []byte("\n")) {
 		// The error starts a line of its own after an answer cut short.
 		fmt.Fprintln(env.Stderr)
 	}
-	cancelled := &store.Error{Kind: store.KindCancelled, Message: "no entries were deleted"}
+	cancelled := &store.Error{Kind: store.KindCancelled, Message: unchanged}
 	switch {
 	case ctx.Err() != nil, errors.Is(err, io.EOF):
 		return cancelled
 	case err != nil:
-		return withHint(&store.Error{Kind: kindIO, Message: "cannot read the answer"}, "check the input source; no entry was deleted")
+		return withHint(&store.Error{Kind: kindIO, Message: "cannot read the answer"}, "check the input source; "+unchanged)
 	}
 	switch strings.ToLower(strings.TrimSpace(string(answer))) {
 	case "y", "yes":

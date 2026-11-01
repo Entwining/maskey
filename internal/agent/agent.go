@@ -89,6 +89,15 @@ func socketPath() (string, error) {
 	return filepath.Join(dir, store.Service, "keychain.sock"), nil
 }
 
+// ServiceItem is the Keychain service's job or one of its files, and what
+// uninstalling the service does with it: Status is removed, absent, kept, or
+// failed, or "" in ServiceItems for an item RemoveService would remove.
+type ServiceItem struct {
+	Item   string
+	Status string
+	Detail string
+}
+
 type Client struct {
 	direct store.Backend
 	// failed receives the failures to record this process's operations

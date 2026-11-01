@@ -34,10 +34,9 @@ var config []byte
 //go:embed resources/skills/maskey/SKILL.md
 var skill []byte
 
-func version() string {
-	var c struct{ Version string }
-	_ = json.Unmarshal(config, &c)
-	return c.Version
+func manifest() (m struct{ Name, Version string }) {
+	_ = json.Unmarshal(config, &m)
+	return m
 }
 
 func main() {
@@ -70,6 +69,7 @@ func main() {
 	}
 	backend := agent.New(k, record.ReportFailure, record.Writable())
 	home, _ := os.UserHomeDir()
+	app := manifest()
 	// The program that started mk is described before any operation, while
 	// it surely runs.
 	ctx = activity.WithCaller(ctx, activity.Invoker(os.Getpid()))
@@ -86,13 +86,16 @@ func main() {
 			}
 			return agent.Install(ctx, executable)
 		},
-		Skill:       skill,
-		SkillSource: skillSource(),
-		Home:        home,
-		Stdin:       os.Stdin,
-		Stdout:      os.Stdout,
-		Stderr:      os.Stderr,
-		Version:     version(),
+		ServiceItems:  agent.ServiceItems,
+		RemoveService: agent.RemoveService,
+		Skill:         skill,
+		App:           app.Name,
+		Executable:    executable(),
+		Home:          home,
+		Stdin:         os.Stdin,
+		Stdout:        os.Stdout,
+		Stderr:        os.Stderr,
+		Version:       app.Version,
 	})
 	stop()
 	if outcome.Signal != 0 {
@@ -101,17 +104,17 @@ func main() {
 	os.Exit(outcome.Code)
 }
 
-// skillSource is the skill's directory in the bundle that holds this
-// executable, which mk reaches through a link.
-func skillSource() string {
-	executable, err := os.Executable()
+// executable is the file in the app bundle that this process runs, which
+// mk reaches through a link, or "" if it cannot be found.
+func executable() string {
+	path, err := os.Executable()
 	if err == nil {
-		executable, err = filepath.EvalSymlinks(executable)
+		path, err = filepath.EvalSymlinks(path)
 	}
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(filepath.Dir(filepath.Dir(executable)), "Resources", "skills", "maskey")
+	return path
 }
 
 // exitBySignal ends the process the way the command it ran ended. The Go

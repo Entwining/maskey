@@ -21,12 +21,7 @@ func testLog(t *testing.T, now *time.Time) *Log {
 	l := New(filepath.Join(t.TempDir(), "Logs"), func(err error) { t.Errorf("recording failed: %v", err) })
 	l.now = func() time.Time { return *now }
 	// The append-only flag refuses the removal of the test's directory.
-	t.Cleanup(func() {
-		entries, _ := os.ReadDir(l.dir)
-		for _, entry := range entries {
-			clearAppendOnly(filepath.Join(l.dir, entry.Name()))
-		}
-	})
+	t.Cleanup(func() { l.Remove() })
 	return l
 }
 

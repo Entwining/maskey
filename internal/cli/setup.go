@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,8 +211,15 @@ fails, the completed link remains; retry after resolving the problem.`,
 	return cmd
 }
 
+// skillSource is the skill's directory in the app bundle that holds
+// executable.
+func skillSource(executable string) string {
+	return filepath.Join(filepath.Dir(filepath.Dir(executable)), "Resources", "skills", "maskey")
+}
+
 func installSkill(env *Env) ([]string, error) {
-	if info, err := os.Stat(env.SkillSource); err != nil || !info.IsDir() {
+	source := skillSource(env.Executable)
+	if info, err := os.Stat(source); err != nil || !info.IsDir() {
 		return nil, &store.Error{Kind: store.KindPrerequisite, Message: "this mk is not inside Maskey.app, which holds the skill"}
 	}
 	links := skillLinks(env.Home)
@@ -220,7 +228,7 @@ func installSkill(env *Env) ([]string, error) {
 			if info.Mode()&os.ModeSymlink == 0 {
 				return nil, &store.Error{Kind: store.KindExists, Message: link + " exists and is not a link"}
 			}
-			if target, _ := os.Readlink(link); target == env.SkillSource {
+			if target, _ := os.Readlink(link); target == source {
 				continue
 			}
 			if err := os.Remove(link); err != nil {
@@ -230,7 +238,7 @@ func installSkill(env *Env) ([]string, error) {
 		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
 			return nil, &store.Error{Kind: store.KindPrerequisite, Message: err.Error()}
 		}
-		if err := os.Symlink(env.SkillSource, link); err != nil {
+		if err := os.Symlink(source, link); err != nil {
 			return nil, &store.Error{Kind: store.KindPrerequisite, Message: err.Error()}
 		}
 	}
@@ -238,14 +246,50 @@ func installSkill(env *Env) ([]string, error) {
 }
 
 func skillCheck(env *Env) check {
+	source := skillSource(env.Executable)
 	for _, link := range skillLinks(env.Home) {
 		target, err := os.Readlink(link)
 		switch {
 		case err != nil:
 			return check{Check: "skill", Status: "warning", Detail: "not installed", Recovery: "run mk skill install"}
-		case target != env.SkillSource:
+		case target != source:
 			return check{Check: "skill", Status: "warning", Detail: "links to another copy of Maskey", Recovery: "run mk skill install"}
 		}
 	}
 	return check{Check: "skill", Status: "ok", Detail: "linked in ~/.claude/skills and ~/.agents/skills"}
+}
+
+// cliLink is where InstallCLI links mk.
+func cliLink(home string) string { return filepath.Join(home, ".local", "bin", "mk") }
+
+// InstallCLI links home/.local/bin/mk to the app's executable, so upgrading
+// the app in place upgrades mk too. It replaces an earlier link but never a
+// file.
+func InstallCLI(home, executable string) (string, error) {
+	target, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		return "", err
+	}
+	link := cliLink(home)
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(link)
+	switch {
+	case err == nil && info.Mode()&fs.ModeSymlink == 0:
+		return "", fmt.Errorf("%s exists and is not a symbolic link", link)
+	case err != nil && !errors.Is(err, fs.ErrNotExist):
+		return "", err
+	}
+	// Symlink fails rather than replace a file already at this name, so
+	// only a link made here is ever removed.
+	temporary := fmt.Sprintf("%s.maskey-new-%d", link, os.Getpid())
+	if err := os.Symlink(target, temporary); err != nil {
+		return "", err
+	}
+	if err := os.Rename(temporary, link); err != nil {
+		os.Remove(temporary)
+		return "", err
+	}
+	return link, nil
 }

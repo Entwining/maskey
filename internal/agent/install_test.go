@@ -13,6 +13,8 @@ import (
 	"reflect"
 	"strconv"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/Entwining/maskey/internal/store"
 )
@@ -265,4 +267,23 @@ func TestInstallRejectsForeignConfiguration(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A status query that fails after bootout ends the stop with that failure.
+func TestStopJobQueryFailure(t *testing.T) {
+	failure := errors.New("synthetic launchctl failure")
+	control := func(_ context.Context, args ...string) error {
+		if args[0] == "print" {
+			return failure
+		}
+		return nil
+	}
+	// A stop that waited out the failure would end only at the deadline.
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := stopJob(ctx, control); !errors.Is(err, failure) {
+			t.Fatal(err)
+		}
+	})
 }

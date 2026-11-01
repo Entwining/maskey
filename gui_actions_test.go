@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"testing"
 
@@ -441,60 +438,4 @@ func TestNamespaceSwitchDropsPendingChoice(t *testing.T) {
 	if h.g.namespace != "app" || h.g.entry != (store.Ref{}) {
 		t.Fatalf("selection %s in %s after switching away and back", h.g.entry, h.g.namespace)
 	}
-}
-
-func TestInstallCLI(t *testing.T) {
-	home := t.TempDir()
-	app := filepath.Join(t.TempDir(), "Maskey")
-	os.WriteFile(app, nil, 0o755)
-	alias := filepath.Join(t.TempDir(), "alias")
-	os.Symlink(app, alias)
-
-	link, err := installCLI(home, alias)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if target, _ := os.Readlink(link); target != mustEval(t, app) {
-		t.Fatalf("mk links to %q, want the resolved executable %q", target, app)
-	}
-
-	// An earlier link, as to a moved app, is replaced.
-	os.Remove(link)
-	os.Symlink("/old/Maskey", link)
-	if _, err := installCLI(home, app); err != nil {
-		t.Fatal(err)
-	}
-	if target, _ := os.Readlink(link); target != mustEval(t, app) {
-		t.Fatalf("mk still links to %q", target)
-	}
-
-	// A file of the user's is never replaced.
-	os.Remove(link)
-	os.WriteFile(link, []byte("user file"), 0o755)
-	if _, err := installCLI(home, app); err == nil {
-		t.Fatal("installCLI replaced a regular file")
-	}
-	if b, _ := os.ReadFile(link); string(b) != "user file" {
-		t.Fatal("the user's file changed")
-	}
-
-	// Nor is one at the name of the temporary link.
-	os.Remove(link)
-	temporary := fmt.Sprintf("%s.maskey-new-%d", link, os.Getpid())
-	os.WriteFile(temporary, []byte("user file"), 0o755)
-	if _, err := installCLI(home, app); err == nil {
-		t.Fatal("installCLI replaced a file at its temporary name")
-	}
-	if b, _ := os.ReadFile(temporary); string(b) != "user file" {
-		t.Fatal("the file at the temporary name changed")
-	}
-}
-
-func mustEval(t *testing.T, path string) string {
-	t.Helper()
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resolved
 }

@@ -71,16 +71,7 @@ Maskey checks for a new version shortly after it opens and then once a day, and 
 
 ### Uninstall
 
-Entries stay in iCloud Keychain, on every Mac, when Maskey is gone; delete them in the window or with `mk delete` first if you no longer want them. Then quit Maskey, stop the Keychain service, and remove what Maskey installed and its activity record, whose files are append-only:
-
-```sh
-launchctl bootout gui/$(id -u)/io.github.entwining.maskey.keychain
-rm -f ~/Library/LaunchAgents/io.github.entwining.maskey.keychain.plist* ~/.local/bin/mk ~/.claude/skills/maskey ~/.agents/skills/maskey
-chflags -R nouappnd ~/Library/Logs/io.github.entwining.maskey
-rm -rf ~/Library/Application\ Support/io.github.entwining.maskey ~/Library/Application\ Support/Maskey ~/Library/Logs/io.github.entwining.maskey /Applications/Maskey.app ~/Applications/Maskey.app
-```
-
-With Homebrew, run `brew uninstall --cask maskey` in place of removing the app.
+Entries stay in iCloud Keychain, on every Mac, when Maskey is gone; delete them in the window or with `mk delete` first if you no longer want them. Quit Maskey, then run `mk uninstall`: it lists what Maskey installed on this Mac, asks once, stops the Keychain service, and removes its configuration, the activity record, the window's saved state, and the `mk` and skill links. Then move Maskey.app to the Trash, or run `brew uninstall --cask maskey` if Homebrew installed it.
 
 ## Use
 

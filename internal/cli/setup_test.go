@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,8 +109,64 @@ func TestSkill(t *testing.T) {
 	if outcome, _, stderr := h.run(t, "", "skill", "install"); outcome.Code != 4 || errorKind(stderr) != "exists" {
 		t.Fatalf("install over a directory: %+v %q", outcome, stderr)
 	}
-	h.source = filepath.Join(t.TempDir(), "missing")
+	h.executable = filepath.Join(t.TempDir(), "Maskey")
 	if outcome, _, stderr := h.run(t, "", "skill", "install"); outcome.Code != 6 || errorKind(stderr) != "prerequisite" {
 		t.Fatalf("install outside the app: %+v %q", outcome, stderr)
 	}
+}
+
+func TestInstallCLI(t *testing.T) {
+	home := t.TempDir()
+	app := filepath.Join(t.TempDir(), "Maskey")
+	os.WriteFile(app, nil, 0o755)
+	alias := filepath.Join(t.TempDir(), "alias")
+	os.Symlink(app, alias)
+
+	link, err := InstallCLI(home, alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, _ := os.Readlink(link); target != mustEval(t, app) {
+		t.Fatalf("mk links to %q, want the resolved executable %q", target, app)
+	}
+
+	// An earlier link, as to a moved app, is replaced.
+	os.Remove(link)
+	os.Symlink("/old/Maskey", link)
+	if _, err := InstallCLI(home, app); err != nil {
+		t.Fatal(err)
+	}
+	if target, _ := os.Readlink(link); target != mustEval(t, app) {
+		t.Fatalf("mk still links to %q", target)
+	}
+
+	// A file of the user's is never replaced.
+	os.Remove(link)
+	os.WriteFile(link, []byte("user file"), 0o755)
+	if _, err := InstallCLI(home, app); err == nil {
+		t.Fatal("InstallCLI replaced a regular file")
+	}
+	if b, _ := os.ReadFile(link); string(b) != "user file" {
+		t.Fatal("the user's file changed")
+	}
+
+	// Nor is one at the name of the temporary link.
+	os.Remove(link)
+	temporary := fmt.Sprintf("%s.maskey-new-%d", link, os.Getpid())
+	os.WriteFile(temporary, []byte("user file"), 0o755)
+	if _, err := InstallCLI(home, app); err == nil {
+		t.Fatal("InstallCLI replaced a file at its temporary name")
+	}
+	if b, _ := os.ReadFile(temporary); string(b) != "user file" {
+		t.Fatal("the file at the temporary name changed")
+	}
+}
+
+func mustEval(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }

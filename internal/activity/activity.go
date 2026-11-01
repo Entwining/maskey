@@ -156,6 +156,25 @@ func (l *Log) Writable() bool {
 	return err == nil
 }
 
+// Dir is the record's directory.
+func (l *Log) Dir() string { return l.dir }
+
+// Remove deletes the record, first clearing the append-only flag that
+// refuses unlinking its files.
+func (l *Log) Remove() error {
+	entries, err := os.ReadDir(l.dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		path := filepath.Join(l.dir, entry.Name())
+		if err := clearAppendOnly(path); err != nil {
+			return &os.PathError{Op: "chflags", Path: path, Err: err}
+		}
+	}
+	return os.RemoveAll(l.dir)
+}
+
 // OnFailure makes warn the receiver of the report of a failure to record.
 func (l *Log) OnFailure(warn func(error)) {
 	l.mu.Lock()

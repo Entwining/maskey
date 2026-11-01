@@ -27,4 +27,5 @@ When the user asks what used a credential, `mk activity` shows which programs go
 - The user enters a value themselves: ask them to run `mk set <namespace>/<NAME>` in their own terminal, where the prompt hides the input, or to add it in the Maskey window.
 - A value another program prints: `producer | mk set --stdin <namespace>/<NAME>`. A one-line value loses its final line ending; a value of several lines, such as a PEM key, is stored byte for byte.
 - `mk rename old/NAME new/NAME` moves an entry with its value, kind, notes, and program access. `mk delete --yes <namespace>/<NAME>...` deletes entries from every Mac on the user's Apple Account; run it only for entries the user asked to delete.
+- `mk uninstall --yes` stops the Keychain service and removes Maskey's links and records from this Mac, leaving entries and Maskey.app; run it only when the user asks to uninstall Maskey.
 

@@ -34,6 +34,7 @@ Setup commands:
   doctor      Check Keychain access, interpreter, service, and agent skill
   setup       Install the Keychain service for sandboxes and program access
   skill       Show or install the agent skill
+  uninstall   Remove what Maskey installed on this Mac outside its app
 
 Additional commands:
   completion  Generate shell completion
@@ -182,9 +183,9 @@ func TestHelpStyling(t *testing.T) {
 			t.Errorf("%q is not bold:\n%q", field, styled)
 		}
 	}
-	// 6 headings, 14 commands and 2 flags; nothing else is styled.
-	if n := strings.Count(styled, "\x1b[1m"); n != 22 {
-		t.Errorf("%d bold spans, want 22", n)
+	// 6 headings, 15 commands and 2 flags; nothing else is styled.
+	if n := strings.Count(styled, "\x1b[1m"); n != 23 {
+		t.Errorf("%d bold spans, want 23", n)
 	}
 	if plain := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(styled, ""); plain != rootHelp {
 		t.Errorf("styled help without its styling:\n%s", plain)

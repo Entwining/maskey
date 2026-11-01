@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +11,7 @@ import (
 
 	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/agent"
+	"github.com/Entwining/maskey/internal/cli"
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -358,7 +357,7 @@ func (g *gui) installCLI() {
 			home, err = os.UserHomeDir()
 		}
 		if err == nil {
-			link, err = installCLI(home, executable)
+			link, err = cli.InstallCLI(home, executable)
 		}
 		if err == nil {
 			err = agent.Install(ctx, executable)
@@ -377,37 +376,4 @@ func (g *gui) installCLI() {
 				detail: fmt.Sprintf("mk is in %s. If your shell can’t find it, add that directory to PATH.", dir), buttons: []alertButton{okButton}}, nil)
 		}
 	})
-}
-
-// installCLI links home/.local/bin/mk to the app's executable, so upgrading
-// the app in place upgrades mk too. It replaces an earlier link but never a
-// file.
-func installCLI(home, executable string) (string, error) {
-	target, err := filepath.EvalSymlinks(executable)
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".local", "bin")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	link := filepath.Join(dir, "mk")
-	info, err := os.Lstat(link)
-	switch {
-	case err == nil && info.Mode()&fs.ModeSymlink == 0:
-		return "", fmt.Errorf("%s exists and is not a symbolic link", link)
-	case err != nil && !errors.Is(err, fs.ErrNotExist):
-		return "", err
-	}
-	// Symlink fails rather than replace a file already at this name, so
-	// only a link made here is ever removed.
-	temporary := fmt.Sprintf("%s.maskey-new-%d", link, os.Getpid())
-	if err := os.Symlink(target, temporary); err != nil {
-		return "", err
-	}
-	if err := os.Rename(temporary, link); err != nil {
-		os.Remove(temporary)
-		return "", err
-	}
-	return link, nil
 }

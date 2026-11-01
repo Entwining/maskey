@@ -108,7 +108,8 @@ func TestDeleteConfirmation(t *testing.T) {
 	}
 }
 
-// Without a terminal to prompt on, set needs --stdin and delete --yes.
+// Without a terminal to prompt on, set needs --stdin, and delete and
+// uninstall --yes.
 func TestNonInteractiveNeedsFlags(t *testing.T) {
 	h := newHarness(t)
 	h.set(t, "app/TOKEN")
@@ -118,6 +119,7 @@ func TestNonInteractiveNeedsFlags(t *testing.T) {
 	}{
 		{[]string{"set", "app/TOKEN"}, "--stdin"},
 		{[]string{"delete", "app/TOKEN"}, "--yes"},
+		{[]string{"uninstall"}, "--yes"},
 	} {
 		if outcome, _, stderr := h.run(t, "y\n", test.args...); outcome.Code != 2 || !strings.HasPrefix(stderr, "mk: error[usage]: standard input is not a terminal and "+test.args[0]+" needs "+test.flag+"\n") {
 			t.Errorf("%q: %+v %q", test.args, outcome, stderr)

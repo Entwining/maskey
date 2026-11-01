@@ -26,6 +26,17 @@ import (
 const serviceLabel = store.Service + ".keychain"
 const servicePATH = "/usr/bin:/bin"
 
+// backupPattern names the configurations an install keeps beside the new
+// one.
+const backupPattern = "." + serviceLabel + ".backup-*"
+
+// serviceDomain is the launchd domain of the user's login session, and
+// serviceTarget the job in it.
+var (
+	serviceDomain = "gui/" + strconv.Itoa(os.Geteuid())
+	serviceTarget = serviceDomain + "/" + serviceLabel
+)
+
 var (
 	errServiceFiles     = errors.New("the Keychain service files could not be prepared safely")
 	errServiceRunning   = errors.New("the Keychain service is already running")
@@ -215,8 +226,40 @@ func Install(ctx context.Context, executable string) error {
 	if err != nil {
 		return errServiceInstall
 	}
-	path := filepath.Join(home, "Library", "LaunchAgents", serviceLabel+".plist")
-	return install(ctx, executable, path, launchctl, func(ctx context.Context) error { return awaitService(ctx, socket) })
+	return install(ctx, executable, plistPath(home), launchctl, func(ctx context.Context) error { return awaitService(ctx, socket) })
+}
+
+func plistPath(home string) string {
+	return filepath.Join(home, "Library", "LaunchAgents", serviceLabel+".plist")
+}
+
+func jobLoaded(ctx context.Context, control func(context.Context, ...string) error) (bool, error) {
+	err := control(ctx, "print", serviceTarget)
+	if errors.Is(err, errJobNotLoaded) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// stopJob boots the job out and waits until launchd has removed it: bootout
+// returns once launchd has signalled the job, which may still be finishing
+// accepted writes, and launchd refuses to bootstrap the label until the job
+// is gone.
+func stopJob(ctx context.Context, control func(context.Context, ...string) error) error {
+	if err := control(ctx, "bootout", serviceTarget); err != nil {
+		return err
+	}
+	for {
+		loaded, err := jobLoaded(ctx, control)
+		if err != nil || !loaded {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 func install(ctx context.Context, executable, path string, control func(context.Context, ...string) error, ready func(context.Context) error) error {
@@ -247,21 +290,19 @@ func install(ctx context.Context, executable, path string, control func(context.
 	}
 	defer lock.Close()
 	old, oldInfo, err := readPlist(path)
-	if err != nil || oldInfo != nil && !sameJob(old) {
+	if foreignConfiguration(old, oldInfo, err) {
 		return errServiceCollision
 	}
-	domain := "gui/" + strconv.Itoa(os.Geteuid())
-	target := domain + "/" + serviceLabel
-	loaded := control(ctx, "print", target)
-	if loaded != nil && !errors.Is(loaded, errJobNotLoaded) {
+	loaded, err := jobLoaded(ctx, control)
+	if err != nil {
 		return errServiceInstall
 	}
 	// A loaded job without our configuration file was installed by someone
 	// else under our label.
-	if loaded == nil && oldInfo == nil {
+	if loaded && oldInfo == nil {
 		return errServiceCollision
 	}
-	stage, err := os.CreateTemp(dir, "."+serviceLabel+".backup-*")
+	stage, err := os.CreateTemp(dir, backupPattern)
 	if err != nil {
 		return errServiceInstall
 	}
@@ -297,29 +338,10 @@ func install(ctx context.Context, executable, path string, control func(context.
 		// stays beside the new one; an identical one has nothing to preserve.
 		keep = !bytes.Equal(old, plist)
 	}
-	if loaded == nil {
-		if control(ctx, "bootout", target) != nil {
-			return errServiceInstall
-		}
-		// bootout returns once launchd has signalled the job, which may still
-		// be finishing accepted writes, and launchd refuses to bootstrap the
-		// label until the job is gone.
-		for {
-			err := control(ctx, "print", target)
-			if errors.Is(err, errJobNotLoaded) {
-				break
-			}
-			if err != nil {
-				return errServiceInstall
-			}
-			select {
-			case <-ctx.Done():
-				return errServiceInstall
-			case <-time.After(50 * time.Millisecond):
-			}
-		}
+	if loaded && stopJob(ctx, control) != nil {
+		return errServiceInstall
 	}
-	if control(ctx, "bootstrap", domain, path) != nil {
+	if control(ctx, "bootstrap", serviceDomain, path) != nil {
 		return errServiceInstall
 	}
 	return ready(ctx)
@@ -340,6 +362,12 @@ func readPlist(path string) ([]byte, os.FileInfo, error) {
 	}
 	data, err := io.ReadAll(file)
 	return data, info, err
+}
+
+// foreignConfiguration reports whether what readPlist returned is another
+// job's configuration, which install refuses to replace and uninstall keeps.
+func foreignConfiguration(data []byte, info os.FileInfo, err error) bool {
+	return err != nil || info != nil && !sameJob(data)
 }
 
 func sameJob(data []byte) bool {

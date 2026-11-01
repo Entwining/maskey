@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Entwining/maskey/internal/activity"
+	"github.com/Entwining/maskey/internal/agent"
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -36,15 +37,24 @@ type Env struct {
 	Check        func(context.Context) error
 	CheckService func(context.Context) error
 	Setup        func(context.Context) error
-	// Skill is the agent skill's SKILL.md, and SkillSource the directory in
-	// the app bundle that holds it.
-	Skill       []byte
-	SkillSource string
-	Home        string
-	Stdin       *os.File
-	Stdout      io.Writer
-	Stderr      io.Writer
-	Version     string
+	// ServiceItems lists the Keychain service's job and files under a home
+	// directory with what RemoveService, which stops and removes them, would
+	// do with each.
+	ServiceItems  func(ctx context.Context, home string) []agent.ServiceItem
+	RemoveService func(ctx context.Context, home string) []agent.ServiceItem
+	// Skill is the agent skill's SKILL.md.
+	Skill []byte
+	// App is the app's name, which MyGo names its directories after, and
+	// Executable the app's executable, with links resolved, or "" if it
+	// cannot be found.
+	App        string
+	Executable string
+	// Home is the user's home directory, or "" if it is unknown.
+	Home    string
+	Stdin   *os.File
+	Stdout  io.Writer
+	Stderr  io.Writer
+	Version string
 }
 
 // Outcome is how the process ends: an exit code, or a signal to end by.
@@ -127,7 +137,7 @@ See mk skill show for the agent workflow.`},
 		cmd.GroupID = "core"
 		root.AddCommand(cmd)
 	}
-	for _, cmd := range []*cobra.Command{doctorCommand(env), setupCommand(env), skillCommand(env)} {
+	for _, cmd := range []*cobra.Command{doctorCommand(env), setupCommand(env), skillCommand(env), uninstallCommand(env)} {
 		cmd.GroupID = "setup"
 		root.AddCommand(cmd)
 	}

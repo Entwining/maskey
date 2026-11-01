@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Entwining/maskey/internal/activity"
+	"github.com/Entwining/maskey/internal/agent"
 	"github.com/Entwining/maskey/internal/store"
 	"github.com/Entwining/maskey/internal/store/storetest"
 )
@@ -25,17 +26,33 @@ type harness struct {
 	check   error
 	service error
 	home    string
-	source  string
+	// executable is the app's executable, and source the skill's directory
+	// beside it.
+	executable string
+	source     string
 }
 
 func newHarness(t *testing.T) *harness {
 	backend := storetest.New()
-	source := filepath.Join(t.TempDir(), "Maskey.app", "Contents", "Resources", "skills", "maskey")
+	// Resolved, as main resolves it: the temporary directory is behind a link.
+	contents, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents = filepath.Join(contents, "Maskey.app", "Contents")
+	source := filepath.Join(contents, "Resources", "skills", "maskey")
+	executable := filepath.Join(contents, "MacOS", "Maskey")
 	if err := os.MkdirAll(source, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Dir(executable), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(executable, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	logs := filepath.Join(t.TempDir(), "Logs")
-	return &harness{backend: backend, store: store.New(backend, new(storetest.Recorder)), activity: activity.New(logs, nil), logs: logs, home: t.TempDir(), source: source}
+	return &harness{backend: backend, store: store.New(backend, new(storetest.Recorder)), activity: activity.New(logs, nil), logs: logs, home: t.TempDir(), executable: executable, source: source}
 }
 
 func (h *harness) env(stdin *os.File, stdout, stderr io.Writer) Env {
@@ -48,17 +65,26 @@ func (h *harness) env(stdin *os.File, stdout, stderr io.Writer) Env {
 			}
 			return h.store.ChangeAccess(ctx, refs, granted, approve)
 		},
-		Activity:     h.activity,
-		Check:        func(context.Context) error { return h.check },
-		CheckService: func(context.Context) error { return h.service },
-		Skill:        []byte("synthetic skill\n"),
-		SkillSource:  h.source,
-		Home:         h.home,
-		Stdin:        stdin,
-		Stdout:       stdout,
-		Stderr:       stderr,
-		Version:      "1.2.3",
+		Activity:      h.activity,
+		Check:         func(context.Context) error { return h.check },
+		CheckService:  func(context.Context) error { return h.service },
+		ServiceItems:  noService,
+		RemoveService: noService,
+		Skill:         []byte("synthetic skill\n"),
+		App:           "Maskey",
+		Executable:    h.executable,
+		Home:          h.home,
+		Stdin:         stdin,
+		Stdout:        stdout,
+		Stderr:        stderr,
+		Version:       "1.2.3",
 	}
+}
+
+// noService lists and removes the Keychain service where it is not loaded
+// and none of its files exist.
+func noService(context.Context, string) []agent.ServiceItem {
+	return []agent.ServiceItem{{Item: "Keychain service", Status: "absent"}}
 }
 
 // run executes a command line with stdin holding input.

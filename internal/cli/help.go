@@ -225,7 +225,14 @@ confirmed writes.
 doctor keeps check failures in its stdout report and returns the first
 failed interpreter or Keychain status. Service and skill warnings do not
 fail it. get prints raw bytes without an added newline; run keeps masked
-child output. Their --json flag changes mk errors only.`,
+child output. Their --json flag changes mk errors only.
+
+uninstall prints one row per item on stdout, also with --json and when an
+item fails. An absent item is not a failure; a kept item is one it must
+not remove, such as a link to something else, or the service's files
+while the service may still be loaded. Any failed item makes the status
+prerequisite; resolve it, then run uninstall again. It never touches
+Keychain entries or Maskey.app.`,
 		Args: noArgs("exit-codes takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}

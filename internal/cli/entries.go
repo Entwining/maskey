@@ -289,7 +289,13 @@ the initial check.`,
 				}
 			}
 			if !yes {
-				if err := confirmDelete(cmd.Context(), env, refs); err != nil {
+				var prompt strings.Builder
+				fmt.Fprintf(&prompt, "Delete %s from this Mac and Macs syncing this Keychain:\n", count(len(refs), "entry", "entries"))
+				for _, ref := range refs {
+					fmt.Fprintf(&prompt, "  %s\n", ref)
+				}
+				prompt.WriteString("This cannot be undone. Continue? [y/N] ")
+				if err := confirm(cmd.Context(), env, prompt.String(), "no entries were deleted"); err != nil {
 					return err
 				}
 			}

@@ -17,3 +17,7 @@ func Serve(context.Context, store.Backend, activity.Recorder, func(context.Conte
 func Install(context.Context, string) error {
 	return errors.New("the Keychain service requires macOS on Apple Silicon")
 }
+
+func ServiceItems(context.Context, string) []ServiceItem { return nil }
+
+func RemoveService(context.Context, string) []ServiceItem { return nil }
