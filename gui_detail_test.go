@@ -19,7 +19,7 @@ func TestLongNameStaysOnOneLine(t *testing.T) {
 	backend.Put("app/URL", []byte(urlValue))
 	backend.Put("app/"+long, []byte("synthetic-long-5c1e"))
 	h := newHarnessWith(t, backend)
-	h.tt.SetSize(820, 600)
+	h.tt.SetSize(windowMinWidth, 600)
 	nameHeight := func(name string) float32 {
 		t.Helper()
 		h.click(name)
@@ -40,7 +40,7 @@ func TestTooltipsShowCutText(t *testing.T) {
 	backend.Put("app/URL", []byte(urlValue))
 	backend.Put("app/"+long, []byte("synthetic-long-5c1e"))
 	h := newHarnessWith(t, backend)
-	h.tt.SetSize(820, 600)
+	h.tt.SetSize(windowMinWidth, 600)
 	shown := func(text string) int {
 		n := 0
 		for _, s := range h.tt.Texts() {

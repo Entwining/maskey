@@ -67,10 +67,17 @@ func newHarness(t *testing.T) *harness {
 
 func newHarnessWith(t *testing.T, backend *storetest.Backend) *harness {
 	t.Helper()
+	return newHarnessAt(t, backend, "")
+}
+
+// newHarnessAt is newHarnessWith with the window's layout saved at
+// layoutPath.
+func newHarnessAt(t *testing.T, backend *storetest.Backend, layoutPath string) *harness {
+	t.Helper()
 	h := &harness{t: t, backend: backend, posted: make(chan func(), 64), woken: make(chan struct{}, 1)}
 	// The clock stands still, so an approval lasts the whole test.
 	approval := owner.NewApproval(h.authenticate, func() (time.Duration, bool) { return 0, true }, "")
-	h.g = newGUI(context.Background(), store.New(taggedReads{backend, &h.reads}, new(storetest.Recorder)), approval.Approve)
+	h.g = newGUI(context.Background(), store.New(taggedReads{backend, &h.reads}, new(storetest.Recorder)), approval.Approve, layoutPath)
 	h.g.post = func(fn func()) { h.posted <- fn }
 	h.g.showMessage = h.showMessage
 	h.tt = ui.NewTester(h.g.view, 980, 600)

@@ -41,10 +41,13 @@ func (g *gui) sidebar(c *ui.Context, vibrant bool) {
 	}
 }
 
-func (g *gui) listPane(c *ui.Context) {
+// listPane is the list and its toolbar, whose content starts after inset,
+// the room the window controls and the sidebar's button take over its left
+// edge.
+func (g *gui) listPane(c *ui.Context, inset float32) {
 	t := c.Theme()
 	rows := g.rows()
-	toolbar(c, func() {
+	toolbar(c, inset, func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
 			title, subtitle := "All Entries", entriesLabel(len(g.refs))
 			if g.query != "" {
@@ -80,6 +83,28 @@ func (g *gui) listPane(c *ui.Context) {
 	default:
 		g.entries(c, rows)
 	}
+}
+
+// sidebarButton floats over the toolbars at x, level with the window
+// controls. It is one element whichever pane it is over, so that it moves
+// with the sidebar and keeps the focus as the sidebar hides and shows.
+func (g *gui) sidebarButton(c *ui.Context, x float32) {
+	b := iconButton(c.Key("sidebar"), panelLeftIcon, g.sidebarLabel(), sidebarButtonSize, false, false).TextColor(c.Theme().TextMuted)
+	if b.Absolute().Left(x).Top((titleBarHeight - 1 - sidebarButtonSize) / 2).Clicked() {
+		g.toggleSidebar()
+	}
+}
+
+func (g *gui) sidebarLabel() string {
+	if g.sidebarHidden {
+		return "Show Sidebar"
+	}
+	return "Hide Sidebar"
+}
+
+func (g *gui) toggleSidebar() {
+	g.sidebarHidden = !g.sidebarHidden
+	g.sidebarItem.SetLabel(g.sidebarLabel())
 }
 
 func entriesLabel(n int) string {
@@ -167,7 +192,7 @@ func (g *gui) entryRow(c *ui.Context, ref store.Ref, selected, focused, mixed bo
 		case deleting:
 			ui.Spinner(c).Size(12, 12).Label("Delete in progress")
 		case mixed:
-			ui.Text(c, ref.Namespace).FontSize(t.FontSize - 1).TextColor(muted).SingleLine().MaxWidth(listWidth / 2)
+			ui.Text(c, ref.Namespace).FontSize(t.FontSize - 1).TextColor(muted).SingleLine().MaxWidth(g.listWidth / 2)
 		}
 	})
 }

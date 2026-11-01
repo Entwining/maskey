@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -22,9 +23,21 @@ import (
 )
 
 const (
-	titleBarHeight = 52
-	sidebarWidth   = 200
-	listWidth      = 280
+	titleBarHeight      = 52
+	sidebarDefaultWidth = 200
+	sidebarMinWidth     = 160
+	sidebarMaxWidth     = 320
+	listDefaultWidth    = 280
+	listMinWidth        = 240
+	listMaxWidth        = 480
+	// detailMinWidth fits the detail's toolbar with its two button slots and
+	// the search field at its minimum width, the gaps before each, and the
+	// toolbar's padding: 18 before its content and 12 after.
+	detailMinWidth = 18 + 3*8 + 2*toolbarButtonWidth + searchMinWidth + 12
+	// windowMinWidth fits the panes at their minimum widths, with the lines
+	// between them.
+	windowMinWidth    = sidebarMinWidth + 1 + listMinWidth + 1 + detailMinWidth
+	sidebarButtonSize = 28
 	// toolbarButtonWidth fits Edit, Save, Add, Cancel, and Close, which take
 	// turns in the detail's two button slots, so that opening, saving, and
 	// closing a form move nothing in its toolbar.
@@ -44,16 +57,20 @@ const (
 func runGUI() {
 	record := activityLog(func(err error) { log.Print(err) })
 	ctx := activity.WithCaller(context.Background(), activity.Self())
-	g := newGUI(ctx, store.New(keychain.New(store.Service, record), record), owner.NewApproval(owner.NativeAuthenticate, owner.Clock, "program access changes in this window").Approve)
+	var layoutPath string
+	if dir, err := mygo.App.Path(mygo.PathUserData); err != nil {
+		log.Print("the window's layout is not remembered: ", err)
+	} else {
+		layoutPath = filepath.Join(dir, layoutFile)
+	}
+	g := newGUI(ctx, store.New(keychain.New(store.Service, record), record), owner.NewApproval(owner.NativeAuthenticate, owner.Clock, "program access changes in this window").Approve, layoutPath)
 	mygo.Use(native.Plugin)
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
-			Title:  "Maskey",
-			Width:  980,
-			Height: 600,
-			// The toolbar's two button slots and the search field at its
-			// minimum width fit beside the sidebar and the list.
-			MinWidth:  820,
+			Title:     "Maskey",
+			Width:     980,
+			Height:    600,
+			MinWidth:  windowMinWidth,
 			MinHeight: 420,
 			StateKey:  "main",
 			// The window controls sit over the sidebar, as in Finder and Notes.
@@ -106,6 +123,7 @@ func runGUI() {
 				mygo.Separator(),
 				{Label: "Reload", Accelerator: "CmdOrCtrl+R", Click: g.onMenu(g.refresh)},
 				mygo.Separator(),
+				g.sidebarItem,
 				{Role: mygo.RoleToggleFullScreen},
 			}},
 			{Role: mygo.RoleWindowMenu},
@@ -149,8 +167,15 @@ type gui struct {
 	closeWindow, quitApp func()
 	// showMessage shows an alert and waits for the index of the button
 	// chosen.
-	showMessage func(alert) (int, error)
-	entryItems  entryItems
+	showMessage   func(alert) (int, error)
+	entryItems    entryItems
+	sidebarItem   *mygo.MenuItem
+	sidebarHidden bool
+	// The sidebar's and the list's widths, as fitted to the window.
+	sidebarWidth, listWidth float32
+	// layoutPath is where the layout is saved as the window closes; ""
+	// keeps none.
+	layoutPath string
 
 	namespaces []store.Namespace
 	refs       []store.Ref // every entry, sorted by namespace and name
@@ -279,9 +304,13 @@ func (e formError) on(field string) string {
 	return ""
 }
 
-func newGUI(ctx context.Context, s *store.Store, approve store.Approve) *gui {
-	g := &gui{ctx: ctx, store: s, approve: approve, namespace: allNamespaces}
+// newGUI makes the window's state, with the layout saved at layoutPath.
+func newGUI(ctx context.Context, s *store.Store, approve store.Approve, layoutPath string) *gui {
+	l := loadLayout(layoutPath)
+	g := &gui{ctx: ctx, store: s, approve: approve, namespace: allNamespaces, layoutPath: layoutPath,
+		sidebarHidden: l.SidebarHidden, sidebarWidth: l.SidebarWidth, listWidth: l.ListWidth}
 	g.entryItems = newEntryItems(g)
+	g.sidebarItem = &mygo.MenuItem{Label: g.sidebarLabel(), Accelerator: "Ctrl+Cmd+S", Click: g.onMenu(g.toggleSidebar)}
 	return g
 }
 
@@ -340,10 +369,17 @@ func (g *gui) follow(ref store.Ref) {
 	g.refresh()
 }
 
+// close runs once the window has closed, also as the app quits.
 func (g *gui) close() {
 	g.closed = true
 	g.selectionChanged()
 	g.form.value, g.form.original = "", ""
+	if g.layoutPath == "" {
+		return
+	}
+	if err := g.layout().save(g.layoutPath); err != nil {
+		log.Print("the window's layout was not saved: ", err)
+	}
 }
 
 // quit closes the window first, so that no work starts after it, then quits
@@ -474,7 +510,6 @@ func (g *gui) rows() []store.Ref {
 
 func (g *gui) view(c *ui.Context) {
 	c.SetTheme(theme(c.Theme()))
-	t := c.Theme()
 	g.services = c.Services()
 	if g.copied {
 		if g.copiedUntil.IsZero() {
@@ -493,17 +528,7 @@ func (g *gui) view(c *ui.Context) {
 	if vibrant {
 		c.Root().Background(ui.Transparent)
 	}
-	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		side := ui.Column(c).Width(sidebarWidth).Shrink(0)
-		if !vibrant {
-			side.Background(t.Surface)
-		}
-		side.Children(func() { g.sidebar(c, vibrant) })
-		ui.Box(c).Width(1).Background(t.Border)
-		ui.Column(c).Width(listWidth).Shrink(0).Background(t.Background).Children(func() { g.listPane(c) })
-		ui.Box(c).Width(1).Background(t.Border)
-		ui.Column(c).Grow(1).MinWidth(0).Background(t.Background).Children(func() { g.detail(c) })
-	})
+	g.panes(c, vibrant)
 	g.updateEntryItems(g.list.Focused(c))
 }
 

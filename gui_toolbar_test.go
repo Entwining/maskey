@@ -27,7 +27,7 @@ func sameRect(a, b ui.Rect) bool {
 // empty slot before it, and the search field stays where it is. Find gives
 // a plain button's title, centered in it, so buttons compare by center.
 func TestToolbarStaysInPlace(t *testing.T) {
-	for _, width := range []int{820, 980, 1400} {
+	for _, width := range []int{windowMinWidth, 980, 1400} {
 		t.Run(fmt.Sprint(width), func(t *testing.T) {
 			h := newHarness(t)
 			h.tt.SetSize(width, 600)
@@ -80,11 +80,11 @@ func TestToolbarStaysInPlace(t *testing.T) {
 // search field with its clear button, inside the window.
 func TestToolbarFitsMinimumWidth(t *testing.T) {
 	h := newHarness(t)
-	h.tt.SetSize(820, 600)
+	h.tt.SetSize(windowMinWidth, 600)
 	h.choose("URL", "Edit")
 	h.typeInto("Search entries", "u")
 	search, clear, save := h.find("Search entries"), h.find("Clear"), h.find("Save")
-	if search.X+search.W > 820-12+0.5 || clear.W < 16 || clear.X+clear.W > search.X+search.W-8 {
+	if search.X+search.W > windowMinWidth-12+0.5 || clear.W < 16 || clear.X+clear.W > search.X+search.W-8 {
 		t.Fatalf("the search field at %v overflows the window, or its clear button at %v the field", search, clear)
 	}
 	if save.X+save.W+8 > search.X+0.5 {

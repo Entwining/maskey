@@ -34,6 +34,7 @@ var (
 	folderKeyIcon = icon("folder-key")
 	keyIcon       = icon("key-round")
 	layersIcon    = icon("layers")
+	panelLeftIcon = icon("panel-left")
 	searchIcon    = icon("search")
 )
 
@@ -131,11 +132,15 @@ func iconButton(c *ui.Context, svg *ui.SVG, label string, size float32, busy, di
 // toolbar is the strip at the top of a pane, as high as the sidebar's room
 // for the window controls, with the line under it, so that the panes' rows
 // start at one height.
-func toolbar(c *ui.Context, content func()) {
+func toolbar(c *ui.Context, inset float32, content func()) {
 	t := c.Theme()
-	ui.Row(c).Height(titleBarHeight-1).Shrink(0).AlignItems(ui.Center).Gap(8).Padding(0, 12, 0, t.Space(4.5)).DragWindow().Children(content)
+	ui.Row(c).Height(titleBarHeight-1).Shrink(0).AlignItems(ui.Center).Gap(8).Padding(0, 12, 0, toolbarStart(t, inset)).DragWindow().Children(content)
 	ui.Box(c).Height(1).Shrink(0).Background(t.Border)
 }
+
+// toolbarStart is where a toolbar's content starts: after inset, the room
+// what floats over its left edge takes.
+func toolbarStart(t *ui.Theme, inset float32) float32 { return max(t.Space(4.5), inset+8) }
 
 func emptyState(c *ui.Context, svg *ui.SVG, title, message, action string, run func()) {
 	t := c.Theme()

@@ -4,6 +4,8 @@
 
 - In a sandbox that cannot write `~/Library/Logs/io.github.entwining.maskey`, `mk` sends the operations `mk activity` shows to the Keychain service, which records them from outside the sandbox, so the sandbox needs only the service's socket. Remove that directory from the sandbox's writable paths if you added it: a process that can write there can rewrite or delete the record. Without the service, `mk` still uses the Keychain directly where it can, and its warning says that the operation was not recorded and how to fix that.
 - `mk setup` while the Keychain service is running restarts it instead of sometimes failing and leaving it stopped, which made `mk grant`, `mk revoke`, and sandboxed commands report the service unreachable until the next `mk setup`.
+- Hide the window's sidebar with the button at its top edge or View → Hide Sidebar (Control-Command-S), and show it again the same way; the entry takes its room, and the chosen namespace stays chosen.
+- Drag the line between the sidebar and the list, or between the list and the entry, to resize them, or move it with the arrow keys once Tab reaches it. Dragging the sidebar's line more than halfway from its narrowest width to the window's edge hides the sidebar, and dragging back before letting go shows it again. The window remembers whether the sidebar is hidden and how wide the sidebar and the list are, and it can now be as narrow as 740 points.
 
 ## 0.0.3
 

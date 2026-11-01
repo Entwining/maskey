@@ -20,7 +20,7 @@ func (g *gui) detail(c *ui.Context) {
 	// nothing moves as the form opens and closes, and the search field keeps
 	// its place and width.
 	slot := func() { ui.Box(c).MinWidth(toolbarButtonWidth) }
-	toolbar(c, func() {
+	toolbar(c, 0, func() {
 		ui.Box(c).Grow(1)
 		switch {
 		case f.open:

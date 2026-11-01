@@ -77,7 +77,7 @@ Entries stay in iCloud Keychain, on every Mac, when Maskey is gone; delete them 
 launchctl bootout gui/$(id -u)/io.github.entwining.maskey.keychain
 rm -f ~/Library/LaunchAgents/io.github.entwining.maskey.keychain.plist* ~/.local/bin/mk ~/.claude/skills/maskey ~/.agents/skills/maskey
 chflags -R nouappnd ~/Library/Logs/io.github.entwining.maskey
-rm -rf ~/Library/Application\ Support/io.github.entwining.maskey ~/Library/Logs/io.github.entwining.maskey /Applications/Maskey.app ~/Applications/Maskey.app
+rm -rf ~/Library/Application\ Support/io.github.entwining.maskey ~/Library/Application\ Support/Maskey ~/Library/Logs/io.github.entwining.maskey /Applications/Maskey.app ~/Applications/Maskey.app
 ```
 
 With Homebrew, run `brew uninstall --cask maskey` in place of removing the app.
