@@ -2,7 +2,7 @@ name: Check
 
 on:
   push:
-    branches: [main, feature/go-setup-cache]
+    branches: [main]
     paths-ignore: &docs
       - README.md
       - AGENTS.md
