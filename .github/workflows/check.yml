@@ -69,7 +69,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        setup: ${{ fromJSON(github.run_attempt == 1 && '["baseline","sdk-cache","no-cache"]' || '["baseline","sdk-cache"]') }}
+        setup: [baseline, sdk-cache]
     timeout-minutes: 20
     outputs:
       version: ${{ steps.app.outputs.version }}
@@ -80,8 +80,10 @@ jobs:
       - name: Read the Go version
         if: matrix.setup == 'sdk-cache'
         id: go-version
+        shell: bash
         run: |
-          version=$(GOTOOLCHAIN=local go mod edit -json | jq -r '.Go')
+          go_bins=("$RUNNER_TOOL_CACHE"/go/*/arm64/bin/go)
+          version=$(GOTOOLCHAIN=local "${go_bins[0]}" mod edit -json | jq -er '.Go')
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6.1.0
         if: matrix.setup == 'sdk-cache'
@@ -91,7 +93,6 @@ jobs:
       - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
-          cache: ${{ matrix.setup != 'no-cache' }}
       - name: Vet
         run: |
           test "$(uname -m)" = arm64
