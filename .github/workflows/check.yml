@@ -3,7 +3,13 @@ name: Check
 on:
   push:
     branches: [main]
+    paths-ignore: &docs
+      - README.md
+      - AGENTS.md
+      - ".agents/**"
+      - "docs/**"
   pull_request:
+    paths-ignore: *docs
   workflow_call:
     outputs:
       version:
@@ -19,7 +25,7 @@ env:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Workflow lints need no macOS, and this image has shellcheck.
@@ -49,6 +55,24 @@ jobs:
         with:
           advanced-security: false
 
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v9.3.0
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+
   check:
     runs-on: macos-26
     timeout-minutes: 20
@@ -61,14 +85,13 @@ jobs:
       - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v9.3.0
-        with:
-          version: ${{ env.GOLANGCI_LINT_VERSION }}
-      - name: Vet and test
+      - name: Vet
         run: |
           test "$(uname -m)" = arm64
           go tool mygo vet .
-          go test -race ./...
+      - name: Test
+        # MyGo's vet step already runs go vet over every package.
+        run: go test -race -vet=off ./...
       - name: Build the app
         id: app
         run: |
