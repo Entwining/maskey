@@ -37,6 +37,7 @@ const (
 // memory only. A process keeps one for every change it makes.
 type Approval struct {
 	authenticate Authenticate
+	scope        string
 	// clock keeps counting while the Mac sleeps, so that an approval does
 	// not outlast its lifetime across sleep. Without a clock, no approval
 	// is reused.
@@ -50,8 +51,11 @@ type Approval struct {
 	until time.Duration
 }
 
-func NewApproval(authenticate Authenticate, clock func() (time.Duration, bool)) *Approval {
-	return &Approval{authenticate: authenticate, clock: clock, gate: make(chan struct{}, 1)}
+// NewApproval returns an approval for the changes scope names, which
+// completes the dialog's sentence "It will not ask again for <scope> in the
+// next 5 minutes."
+func NewApproval(authenticate Authenticate, clock func() (time.Duration, bool), scope string) *Approval {
+	return &Approval{authenticate: authenticate, clock: clock, scope: scope, gate: make(chan struct{}, 1)}
 }
 
 // Approve returns Reused when an approval holds, and otherwise asks the
@@ -74,7 +78,7 @@ func (a *Approval) Approve(ctx context.Context, reason string) (string, error) {
 	if a.holds() {
 		return Reused, nil
 	}
-	if err := a.authenticate(ctx, reason+"; changes in the next 5 minutes will not ask again"); err != nil {
+	if err := a.authenticate(ctx, reason+". It will not ask again for "+a.scope+" in the next 5 minutes"); err != nil {
 		return "", err
 	}
 	if now, ok := a.clock(); ok {

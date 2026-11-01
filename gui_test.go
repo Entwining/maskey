@@ -69,7 +69,7 @@ func newHarnessWith(t *testing.T, backend *storetest.Backend) *harness {
 	t.Helper()
 	h := &harness{t: t, backend: backend, posted: make(chan func(), 64), woken: make(chan struct{}, 1)}
 	// The clock stands still, so an approval lasts the whole test.
-	approval := owner.NewApproval(h.authenticate, func() (time.Duration, bool) { return 0, true })
+	approval := owner.NewApproval(h.authenticate, func() (time.Duration, bool) { return 0, true }, "")
 	h.g = newGUI(context.Background(), store.New(taggedReads{backend, &h.reads}, new(storetest.Recorder)), approval.Approve)
 	h.g.post = func(fn func()) { h.posted <- fn }
 	h.g.showMessage = h.showMessage

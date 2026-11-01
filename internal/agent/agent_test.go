@@ -358,7 +358,7 @@ func TestAgentWithdrawalBeforeApproval(t *testing.T) {
 		t.Run(fmt.Sprintf("approval holds=%v", holds), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				dialogs := 0
-				approval := owner.NewApproval(func(context.Context, string) error { dialogs++; return nil }, func() (time.Duration, bool) { return 0, true })
+				approval := owner.NewApproval(func(context.Context, string) error { dialogs++; return nil }, func() (time.Duration, bool) { return 0, true }, "")
 				if holds {
 					if _, err := approval.Approve(context.Background(), "earlier change"); err != nil {
 						t.Fatal(err)

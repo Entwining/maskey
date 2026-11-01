@@ -23,7 +23,7 @@ func TestApprovalLifetime(t *testing.T) {
 			return &store.Error{Kind: store.KindCancelled, Message: "cancelled"}
 		}
 		return nil
-	}, func() (time.Duration, bool) { return now, true })
+	}, func() (time.Duration, bool) { return now, true }, "changes from mk")
 	ctx := context.Background()
 	for _, step := range []struct {
 		at      time.Duration
@@ -45,12 +45,12 @@ func TestApprovalLifetime(t *testing.T) {
 			t.Fatalf("at %v: %q, %v after %d dialogs; want %q after %d", step.at, got, err, len(reasons), step.want, step.dialogs)
 		}
 	}
-	if want := "grant program access to ns/A; changes in the next 5 minutes will not ask again"; reasons[0] != want {
+	if want := "grant program access to ns/A. It will not ask again for changes from mk in the next 5 minutes"; reasons[0] != want {
 		t.Fatalf("reason %q, want %q", reasons[0], want)
 	}
 	// While the clock fails, no approval is given or reused.
 	dialogs, clockOK := 0, false
-	approval = NewApproval(func(context.Context, string) error { dialogs++; return nil }, func() (time.Duration, bool) { return 0, clockOK })
+	approval = NewApproval(func(context.Context, string) error { dialogs++; return nil }, func() (time.Duration, bool) { return 0, clockOK }, "")
 	for i, ok := range []bool{false, true, false} {
 		clockOK = ok
 		if got, err := approval.Approve(ctx, "grant program access to ns/A"); got != Dialog || err != nil || dialogs != i+1 {
@@ -69,7 +69,7 @@ func TestApprovalSharesOneDialog(t *testing.T) {
 			dialogs.Add(1)
 			<-answer
 			return nil
-		}, func() (time.Duration, bool) { return 0, true })
+		}, func() (time.Duration, bool) { return 0, true }, "")
 		ctx := context.Background()
 		results := make(chan string, 3)
 		var wg sync.WaitGroup

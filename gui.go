@@ -44,7 +44,7 @@ const (
 func runGUI() {
 	record := activityLog(func(err error) { log.Print(err) })
 	ctx := activity.WithCaller(context.Background(), activity.Self())
-	g := newGUI(ctx, store.New(keychain.New(store.Service, record), record), owner.NewApproval(owner.NativeAuthenticate, owner.Clock).Approve)
+	g := newGUI(ctx, store.New(keychain.New(store.Service, record), record), owner.NewApproval(owner.NativeAuthenticate, owner.Clock, "program access changes in this window").Approve)
 	mygo.Use(native.Plugin)
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{

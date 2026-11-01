@@ -60,7 +60,7 @@ func main() {
 	record := activityLog(func(err error) { fmt.Fprintln(os.Stderr, "mk: warning:", err) })
 	k := keychain.New(store.Service, record)
 	if len(args) == 1 && args[0] == "--keychain-service" {
-		err := agent.Serve(ctx, k, record, k.Check, owner.NewApproval(owner.NativeAuthenticate, owner.Clock).Approve)
+		err := agent.Serve(ctx, k, record, k.Check, owner.NewApproval(owner.NativeAuthenticate, owner.Clock, "program access changes from mk").Approve)
 		stop()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)

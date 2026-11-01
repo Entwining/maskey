@@ -204,7 +204,7 @@ func TestServeWaitsForOwnerWithoutSlots(t *testing.T) {
 		dialogs.Add(1)
 		<-answer
 		return nil
-	}, func() (time.Duration, bool) { return 0, true })
+	}, func() (time.Duration, bool) { return 0, true }, "")
 	path, _, _ := startTestService(t, backend, nil, func(context.Context) error { return nil }, approval.Approve, notReplaced)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
