@@ -2,7 +2,7 @@ name: Check
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/go-setup-cache]
     paths-ignore: &docs
       - README.md
       - AGENTS.md
@@ -66,6 +66,10 @@ jobs:
 
   check:
     runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        setup: ${{ fromJSON(github.run_attempt == 1 && '["baseline","sdk-cache","no-cache"]' || '["baseline","sdk-cache"]') }}
     timeout-minutes: 20
     outputs:
       version: ${{ steps.app.outputs.version }}
@@ -73,9 +77,21 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      - name: Read the Go version
+        if: matrix.setup == 'sdk-cache'
+        id: go-version
+        run: |
+          version=$(GOTOOLCHAIN=local go mod edit -json | jq -r '.Go')
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6.1.0
+        if: matrix.setup == 'sdk-cache'
+        with:
+          path: ${{ runner.tool_cache }}/go/${{ steps.go-version.outputs.version }}
+          key: go-sdk-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-version.outputs.version }}
       - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
+          cache: ${{ matrix.setup != 'no-cache' }}
       - name: Vet
         run: |
           test "$(uname -m)" = arm64
