@@ -28,9 +28,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Workflow lints need no macOS, and this image has shellcheck.
-  workflows:
-    runs-on: ubuntu-slim
+  lint:
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
@@ -54,14 +53,6 @@ jobs:
       - uses: zizmorcore/zizmor-action@v0.8.0
         with:
           advanced-security: false
-
-  lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
       - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
