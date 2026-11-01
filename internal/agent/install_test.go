@@ -100,10 +100,29 @@ func TestInstallUpgradeAndFailures(t *testing.T) {
 			}
 			injected := &store.Error{Kind: store.KindPrerequisite, Message: "synthetic host check failure"}
 			var calls []string
+			// launchd removes a booted-out job once it exits, here after two
+			// more status queries, and refuses to bootstrap its label until
+			// then.
+			stopping := -1
 			control := func(_ context.Context, args ...string) error {
 				calls = append(calls, args[0])
 				if args[0] == failure {
 					return injected
+				}
+				switch args[0] {
+				case "bootout":
+					stopping = 2
+				case "print":
+					if stopping == 0 {
+						return errJobNotLoaded
+					}
+					if stopping > 0 {
+						stopping--
+					}
+				case "bootstrap":
+					if stopping != 0 {
+						return errors.New("synthetic launchd refusal: operation already in progress")
+					}
 				}
 				return nil
 			}
@@ -114,7 +133,7 @@ func TestInstallUpgradeAndFailures(t *testing.T) {
 				}
 				return nil
 			})
-			want := []string{"print", "bootout", "bootstrap", "ready"}
+			want := []string{"print", "bootout", "print", "print", "print", "bootstrap", "ready"}
 			if failure != "" {
 				for i, step := range want {
 					if step == failure {
@@ -172,7 +191,20 @@ func TestReinstallKeepsNoIdenticalBackup(t *testing.T) {
 	if err := os.WriteFile(path, jobPlist(resolved), 0600); err != nil {
 		t.Fatal(err)
 	}
-	control := func(context.Context, ...string) error { return nil }
+	loaded := true
+	control := func(_ context.Context, args ...string) error {
+		switch args[0] {
+		case "print":
+			if !loaded {
+				return errJobNotLoaded
+			}
+		case "bootout":
+			loaded = false
+		case "bootstrap":
+			loaded = true
+		}
+		return nil
+	}
 	ready := func(context.Context) error { return nil }
 	for range 2 {
 		if err := install(context.Background(), executable, path, control, ready); err != nil {

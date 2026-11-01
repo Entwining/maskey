@@ -297,8 +297,27 @@ func install(ctx context.Context, executable, path string, control func(context.
 		// stays beside the new one; an identical one has nothing to preserve.
 		keep = !bytes.Equal(old, plist)
 	}
-	if loaded == nil && control(ctx, "bootout", target) != nil {
-		return errServiceInstall
+	if loaded == nil {
+		if control(ctx, "bootout", target) != nil {
+			return errServiceInstall
+		}
+		// bootout returns once launchd has signalled the job, which may still
+		// be finishing accepted writes, and launchd refuses to bootstrap the
+		// label until the job is gone.
+		for {
+			err := control(ctx, "print", target)
+			if errors.Is(err, errJobNotLoaded) {
+				break
+			}
+			if err != nil {
+				return errServiceInstall
+			}
+			select {
+			case <-ctx.Done():
+				return errServiceInstall
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
 	}
 	if control(ctx, "bootstrap", domain, path) != nil {
 		return errServiceInstall

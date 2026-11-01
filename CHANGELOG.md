@@ -3,6 +3,7 @@
 ## 0.0.4
 
 - In a sandbox that cannot write `~/Library/Logs/io.github.entwining.maskey`, `mk` sends the operations `mk activity` shows to the Keychain service, which records them from outside the sandbox, so the sandbox needs only the service's socket. Remove that directory from the sandbox's writable paths if you added it: a process that can write there can rewrite or delete the record. Without the service, `mk` still uses the Keychain directly where it can, and its warning says that the operation was not recorded and how to fix that.
+- `mk setup` while the Keychain service is running restarts it instead of sometimes failing and leaving it stopped, which made `mk grant`, `mk revoke`, and sandboxed commands report the service unreachable until the next `mk setup`.
 
 ## 0.0.3
 
