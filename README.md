@@ -18,7 +18,7 @@ An entry is `<namespace>/<NAME>`. The name becomes the environment variable, and
 
 The command you run still receives the credentials and can do anything with them. Masking does not catch a value the command encodes or transforms, writes to a file, or sends over the network. A terminal program that inserts line breaks or styling within a value can also show it unmasked. Use Maskey with commands you trust, and wrap the tool that needs the credential rather than a whole agent, whose own logs `mk` cannot mask.
 
-Maskey reaches the Keychain through Apple's `/usr/bin/python3`, so any program hosted by that interpreter can reach the same items, without asking you and without a record. The activity record and the 5-minute approval for program access are Maskey's own policy, not protections macOS enforces, and a program running as you can also edit the record. Entries stay readable after the Mac's first unlock since startup, so unattended jobs keep working while the screen is locked.
+Maskey reaches the Keychain through Apple's `/usr/bin/python3`, so any program hosted by that interpreter can reach the same items, without asking you and without a record. The activity record and the 5-minute approval for program access are Maskey's own policy, not protections macOS enforces, and a program running as you can also edit the record unless a sandbox keeps it from writing the record's directory. Entries stay readable after the Mac's first unlock since startup, so unattended jobs keep working while the screen is locked.
 
 ## Install
 
@@ -110,13 +110,13 @@ An entry's Program access switch allows `mk get` to give its value to programs; 
 
 ## Sandboxed agents
 
-An agent sandbox that blocks direct Keychain access can let `mk` use its Keychain service instead. Allow this Unix socket in the sandbox's network permissions:
+An agent sandbox needs only Maskey's Keychain service to run `mk`. Allow this Unix socket in the sandbox's network permissions:
 
 ```text
 ~/Library/Application Support/io.github.entwining.maskey/keychain.sock
 ```
 
-`mk` tries the Keychain directly first and uses the service only when that is `unavailable`. Where the sandbox allows the Keychain itself, also let it write `~/Library/Logs/io.github.entwining.maskey`, or `mk` warns that it could not record the operation. Both ends check that they are the same signed executable before a request or value is sent. Only Keychain operations go through the service; the command and the masking of its output stay in the sandbox.
+`mk` uses the Keychain directly where the sandbox allows it, except for the operations `mk activity` shows when the sandbox cannot write the activity record: those go to the service, which performs and records them outside the sandbox. Do not let a sandbox write `~/Library/Logs/io.github.entwining.maskey`, since a process that can write there can rewrite or delete the record. If the service cannot be reached, `mk` still uses the Keychain directly where it can, and warns that the operation was not recorded. Both ends check that they are the same signed executable before a request or value is sent. Only Keychain operations go through the service; the command and the masking of its output stay in the sandbox.
 
 ## Troubleshooting
 

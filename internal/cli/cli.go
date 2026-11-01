@@ -105,7 +105,16 @@ See mk skill show for the agent workflow.`},
 	root.SetErr(env.Stderr)
 	groupOfCommands(root)
 	root.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
-		env.Activity.OnFailure(func(err error) { warn(cmd, env, "the activity record failed: "+err.Error()) })
+		env.Activity.OnFailure(func(err error) {
+			// A failure to record that carries an unavailable error is that of
+			// an operation mk performed itself because the service, which
+			// would have recorded it, could not be reached.
+			recovery := ""
+			if store.IsKind(err, store.KindUnavailable) {
+				recovery = recoveries[store.KindUnavailable]
+			}
+			warn(cmd, env, err.Error(), recovery)
+		})
 	}
 	root.Flags().Bool("version", false, "Show the installed version")
 	root.SetFlagErrorFunc(flagError)
@@ -176,13 +185,21 @@ func writeJSON(w io.Writer, document any) error {
 }
 
 // warn reports on stderr a problem that leaves the command's result alone,
-// as JSON with --json.
-func warn(cmd *cobra.Command, env *Env, message string) {
+// with a recovery as errors give one, as JSON with --json.
+func warn(cmd *cobra.Command, env *Env, message, recovery string) {
 	if jsonOutput(cmd) {
-		_ = writeJSON(env.Stderr, map[string]any{"warning": map[string]string{"message": message}})
+		warning := map[string]string{"message": message}
+		if recovery != "" {
+			warning["recovery"] = recovery
+		}
+		_ = writeJSON(env.Stderr, map[string]any{"warning": warning})
 		return
 	}
-	fmt.Fprintln(env.Stderr, "mk: warning:", message)
+	text := "mk: warning: " + message + "\n"
+	if recovery != "" {
+		text += "mk: hint: " + recovery + "\n"
+	}
+	_, _ = io.WriteString(env.Stderr, text)
 }
 
 func writeResult(cmd *cobra.Command, env *Env, document any, text string) error {

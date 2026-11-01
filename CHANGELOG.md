@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.4
+
+- In a sandbox that cannot write `~/Library/Logs/io.github.entwining.maskey`, `mk` sends the operations `mk activity` shows to the Keychain service, which records them from outside the sandbox, so the sandbox needs only the service's socket. Remove that directory from the sandbox's writable paths if you added it: a process that can write there can rewrite or delete the record. Without the service, `mk` still uses the Keychain directly where it can, and its warning says that the operation was not recorded and how to fix that.
+
 ## 0.0.3
 
 - `mk run` takes its selectors as arguments before a required `--`: `mk run github work/GITHUB_TOKEN -- gh pr list` passes the namespace `github` with the work token in place of its own. `-n` and `-e` are gone, and using them explains the new form. `mk`'s flags go before the first selector, so everything after `--`, `--help` included, belongs to the command.

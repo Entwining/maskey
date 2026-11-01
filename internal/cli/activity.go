@@ -69,7 +69,7 @@ files in ~/Library/Logs/` + store.Service + `.`,
 				parts = append(parts, count(n, "record", "records")+" of a later Maskey")
 			}
 			if len(parts) > 0 {
-				warn(cmd, env, "skipped "+strings.Join(parts, " and "))
+				warn(cmd, env, "skipped "+strings.Join(parts, " and "), "")
 			}
 			full, _ := cmd.Flags().GetBool("full")
 			switch {

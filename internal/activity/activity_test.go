@@ -170,6 +170,72 @@ func TestRecordFailureWarnsOnce(t *testing.T) {
 	}
 }
 
+// A failure to write a record says the operation was not recorded and names
+// the file; a failure to prune afterwards says only that.
+func TestRecordFailureStage(t *testing.T) {
+	now := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
+	var reported []error
+	ctx := WithFailureReport(context.Background(), func(err error) { reported = append(reported, err) })
+
+	readOnly := testLog(t, &now)
+	if err := os.Mkdir(readOnly.dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	readOnly.Record(ctx, Record{Op: "get", Entry: "ns/A", Result: "ok"})
+	var path *os.PathError
+	if len(reported) != 1 || !strings.HasPrefix(reported[0].Error(), "an operation was not recorded: ") ||
+		!errors.As(reported[0], &path) || path.Path != filepath.Join(readOnly.dir, "activity-2026-11.jsonl") {
+		t.Fatalf("write failure reported %v", reported)
+	}
+
+	reported = nil
+	l := testLog(t, &now)
+	// A directory named for an old month cannot be removed while it holds a
+	// file.
+	if err := os.MkdirAll(filepath.Join(l.dir, "activity-2024-01.jsonl", "file"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	l.Record(ctx, Record{Op: "get", Entry: "ns/A", Result: "ok"})
+	lines, _, err := l.Read(now.Add(-time.Second), func(Record) bool { return true })
+	if err != nil || len(lines) != 1 {
+		t.Fatalf("the record before the prune: %v, %v", lines, err)
+	}
+	if len(reported) != 1 || !strings.HasPrefix(reported[0].Error(), "older activity files were not removed: ") {
+		t.Fatalf("prune failure reported %v", reported)
+	}
+}
+
+// Writable answers before any write whether the record's directory, or the
+// directory that would hold it, accepts writes.
+func TestWritable(t *testing.T) {
+	writable := t.TempDir()
+	readOnly := filepath.Join(t.TempDir(), "read-only")
+	if err := os.Mkdir(readOnly, 0500); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		dir  string
+		want bool
+	}{
+		{writable, true},
+		{filepath.Join(writable, "Logs"), true},
+		{readOnly, false},
+		{filepath.Join(readOnly, "Logs"), false},
+		{filepath.Join(file, "Logs"), false},
+	} {
+		if got := New(test.dir, nil).Writable(); got != test.want {
+			t.Errorf("Writable() in %s = %v, want %v", test.dir, got, test.want)
+		}
+	}
+	if entries, _ := os.ReadDir(writable); len(entries) != 0 {
+		t.Fatalf("Writable created %v", entries)
+	}
+}
+
 // Read returns the matching records of the window newest first, and counts
 // the lines it cannot use instead of failing on them.
 func TestRead(t *testing.T) {

@@ -174,8 +174,7 @@ func (k *Keychain) record(ctx context.Context, req request, result *response, er
 		outcome = string(store.KindOf(err))
 	}
 	switch {
-	case req.Op == "items" || req.Op == "check":
-		// Metadata listing and the host check are not activity events.
+	case !Records(req.Op):
 		return
 	case store.IsKind(err, store.KindUnavailable):
 		// It reached no item. Where mk falls back to the Keychain service,
@@ -257,6 +256,12 @@ func (k *Keychain) exchange(ctx context.Context, req request) (*response, error)
 // a read counts as a write, the safe guess.
 func Writes(op string) bool {
 	return op != "items" && op != "read" && op != "get" && op != "check"
+}
+
+// Records reports whether the activity record keeps op: metadata listing
+// and the host check are not activity events.
+func Records(op string) bool {
+	return op != "items" && op != "check"
 }
 
 // parse reads the helper's output: a ready line, then a result line. A

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -133,38 +134,49 @@ func TestActivityReadFailure(t *testing.T) {
 	}
 }
 
-// recordingBackend records each get, as the Keychain backend does.
-type recordingBackend struct {
+// reportingBackend reports failure after each get, as the Keychain client
+// reports a failure to record.
+type reportingBackend struct {
 	*storetest.Backend
-	log *activity.Log
+	log     *activity.Log
+	failure error
 }
 
-func (b recordingBackend) Get(ctx context.Context, account string) ([]byte, error) {
+func (b reportingBackend) Get(ctx context.Context, account string) ([]byte, error) {
 	value, err := b.Backend.Get(ctx, account)
-	b.log.Record(ctx, activity.Record{Op: "get", Entry: account, Result: string(store.KindOf(err))})
+	b.log.ReportFailure(b.failure)
 	return value, err
 }
 
 // A failure to record warns on stderr, as JSON with --json, and leaves the
-// value on stdout and the exit status alone.
+// value on stdout and the exit status alone. Only a failure after the
+// service was unavailable carries a recovery, unavailable's.
 func TestRecordFailureWarns(t *testing.T) {
 	h := newHarness(t)
 	h.set(t, "app/TOKEN")
 	h.backend.SetProgramAccess(context.Background(), "app/TOKEN", true)
-	blocker := filepath.Join(t.TempDir(), "file")
-	os.WriteFile(blocker, nil, 0600)
+	diskFull := errors.New("an operation was not recorded: synthetic disk failure")
+	unreachable := fmt.Errorf("%w (%w)", diskFull, &store.Error{Kind: store.KindUnavailable, Message: "the Keychain service is not reachable"})
+	hint := recoveries[store.KindUnavailable]
 	for _, test := range []struct {
-		args []string
-		want string
+		failure error
+		json    bool
+		want    string
 	}{
-		{[]string{"get", "app/TOKEN"}, "mk: warning: the activity record failed: "},
-		{[]string{"get", "--json", "app/TOKEN"}, `{"warning":{"message":"the activity record failed: `},
+		{diskFull, false, "mk: warning: " + diskFull.Error() + "\n"},
+		{diskFull, true, `{"warning":{"message":"` + diskFull.Error() + `"}}` + "\n"},
+		{unreachable, false, "mk: warning: " + unreachable.Error() + "\nmk: hint: " + hint + "\n"},
+		{unreachable, true, `{"warning":{"message":"` + unreachable.Error() + `","recovery":"` + hint + `"}}` + "\n"},
 	} {
-		h.activity = activity.New(filepath.Join(blocker, "Logs"), nil)
-		h.store = store.New(recordingBackend{h.backend, h.activity}, nil)
-		outcome, stdout, stderr := h.run(t, "", test.args...)
-		if outcome.Code != 0 || stdout != "synthetic-app/TOKEN" || !strings.HasPrefix(stderr, test.want) || strings.Count(stderr, "\n") != 1 {
-			t.Errorf("%q: %+v %q %q", test.args, outcome, stdout, stderr)
+		h.activity = activity.New(t.TempDir(), nil)
+		h.store = store.New(reportingBackend{h.backend, h.activity, test.failure}, nil)
+		args := []string{"get", "app/TOKEN"}
+		if test.json {
+			args = []string{"get", "--json", "app/TOKEN"}
+		}
+		outcome, stdout, stderr := h.run(t, "", args...)
+		if outcome.Code != 0 || stdout != "synthetic-app/TOKEN" || stderr != test.want {
+			t.Errorf("%q with %v: %+v %q %q", args, test.failure, outcome, stdout, stderr)
 		}
 	}
 }

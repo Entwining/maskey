@@ -123,9 +123,10 @@ commands and carries out mk grant and mk revoke.
 
 Run outside the agent sandbox so the service can reach the Keychain.
 The service verifies that callers are the same signed Maskey executable.
-mk falls back to the service only when direct Keychain access is
-unavailable. Commands stay in the caller's sandbox; grants and revokes
-always use the service.
+mk uses the service where direct Keychain access is unavailable, and for
+the operations mk activity shows where it cannot write the activity
+record. Commands stay in the caller's sandbox; grants and revokes always
+use the service.
 
 Maskey > Install Command Line Tool installs the service and the mk link.
 mk setup installs only the service. After an update, the service moves to

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -90,91 +91,104 @@ func socketPath() (string, error) {
 
 type Client struct {
 	direct store.Backend
-	// failed receives the service's failures to record this process's
-	// operations.
+	// failed receives the failures to record this process's operations
+	// that the service reports, and those of operations performed directly
+	// because the service was unavailable.
 	failed  func(error)
 	path    string
 	pathErr error
-	// remoteOnly is set once direct access is unavailable: a sandbox lasts
-	// as long as the process, and each direct try launches the helper.
-	remoteOnly atomic.Bool
+	// recordable is whether this process can write the activity record.
+	recordable bool
+	// directUnavailable and serviceUnavailable mark a side that answered
+	// unavailable, which later calls skip: a sandbox lasts as long as the
+	// process, each direct try launches the helper, and each service try
+	// may wait for a restart.
+	directUnavailable  atomic.Bool
+	serviceUnavailable atomic.Pointer[store.Error]
 }
 
-// fallsBack reports whether err sends a call to the service, and makes
-// later calls go there directly.
-func (c *Client) fallsBack(err error) bool {
-	if !store.IsKind(err, store.KindUnavailable) {
-		return false
-	}
-	c.remoteOnly.Store(true)
-	return true
-}
-
-func New(direct store.Backend, failed func(error)) *Client {
+func New(direct store.Backend, failed func(error), recordable bool) *Client {
 	path, err := socketPath()
-	return &Client{direct: direct, failed: failed, path: path, pathErr: err}
+	return &Client{direct: direct, failed: failed, path: path, pathErr: err, recordable: recordable}
+}
+
+// perform runs req directly or, if req is recorded and this process cannot
+// record it, in the service, which records it from outside the sandbox. It
+// tries the other side only when the first answers unavailable, which means
+// the operation reached no entry: once a write is sent, a lost answer is
+// uncertain, and a repeat on the other side could write twice.
+func (c *Client) perform(ctx context.Context, req request, direct func(context.Context) (response, error)) (response, error) {
+	if (c.recordable || !keychain.Records(req.Op)) && !c.directUnavailable.Load() {
+		r, err := direct(ctx)
+		if !store.IsKind(err, store.KindUnavailable) {
+			return r, err
+		}
+		c.directUnavailable.Store(true)
+	}
+	serviceErr := c.serviceUnavailable.Load()
+	if serviceErr == nil {
+		r, err := c.remote(ctx, req)
+		if !errors.As(err, &serviceErr) || serviceErr.Kind != store.KindUnavailable {
+			return r, err
+		}
+		c.serviceUnavailable.Store(serviceErr)
+	}
+	if !c.directUnavailable.Load() {
+		// Only an operation this process cannot record gets here, so the
+		// warning that it was not recorded names the service's failure as
+		// the cause.
+		r, err := direct(activity.WithFailureReport(ctx, func(err error) { c.failed(fmt.Errorf("%w (%w)", err, serviceErr)) }))
+		if !store.IsKind(err, store.KindUnavailable) {
+			return r, err
+		}
+		c.directUnavailable.Store(true)
+	}
+	// Neither side is reachable; the service's reason is the one to act on.
+	return response{}, serviceErr
 }
 
 func (c *Client) Items(ctx context.Context) ([]store.Item, error) {
-	if !c.remoteOnly.Load() {
-		items, err := c.direct.Items(ctx)
-		if !c.fallsBack(err) {
-			return items, err
-		}
-	}
-	r, err := c.remote(ctx, request{Op: "items"})
+	r, err := c.perform(ctx, request{Op: "items"}, func(ctx context.Context) (r response, err error) {
+		r.Items, err = c.direct.Items(ctx)
+		return r, err
+	})
 	return r.Items, err
 }
 
 func (c *Client) Read(ctx context.Context, accounts []string) (map[string][]byte, error) {
-	if !c.remoteOnly.Load() {
-		values, err := c.direct.Read(ctx, accounts)
-		if !c.fallsBack(err) {
-			return values, err
-		}
-	}
-	r, err := c.remote(ctx, request{Op: "read", Accounts: accounts, Via: activity.ViaOf(ctx)})
+	r, err := c.perform(ctx, request{Op: "read", Accounts: accounts, Via: activity.ViaOf(ctx)}, func(ctx context.Context) (r response, err error) {
+		r.Values, err = c.direct.Read(ctx, accounts)
+		return r, err
+	})
 	return r.Values, err
 }
 
 func (c *Client) Get(ctx context.Context, account string) ([]byte, error) {
-	if !c.remoteOnly.Load() {
-		value, err := c.direct.Get(ctx, account)
-		if !c.fallsBack(err) {
-			return value, err
-		}
-	}
-	r, err := c.remote(ctx, request{Op: "get", Account: account})
+	r, err := c.perform(ctx, request{Op: "get", Account: account}, func(ctx context.Context) (r response, err error) {
+		r.Value, err = c.direct.Get(ctx, account)
+		return r, err
+	})
 	return r.Value, err
 }
 
 func (c *Client) Add(ctx context.Context, account string, value []byte, details store.Details) error {
-	if !c.remoteOnly.Load() {
-		if err := c.direct.Add(ctx, account, value, details); !c.fallsBack(err) {
-			return err
-		}
-	}
-	_, err := c.remote(ctx, request{Op: "add", Account: account, Value: value, Details: &details})
+	_, err := c.perform(ctx, request{Op: "add", Account: account, Value: value, Details: &details}, func(ctx context.Context) (response, error) {
+		return response{}, c.direct.Add(ctx, account, value, details)
+	})
 	return err
 }
 
 func (c *Client) Update(ctx context.Context, account string, value []byte) error {
-	if !c.remoteOnly.Load() {
-		if err := c.direct.Update(ctx, account, value); !c.fallsBack(err) {
-			return err
-		}
-	}
-	_, err := c.remote(ctx, request{Op: "update", Account: account, Value: value})
+	_, err := c.perform(ctx, request{Op: "update", Account: account, Value: value}, func(ctx context.Context) (response, error) {
+		return response{}, c.direct.Update(ctx, account, value)
+	})
 	return err
 }
 
 func (c *Client) Edit(ctx context.Context, account, to string, value []byte, details *store.Details) error {
-	if !c.remoteOnly.Load() {
-		if err := c.direct.Edit(ctx, account, to, value, details); !c.fallsBack(err) {
-			return err
-		}
-	}
-	_, err := c.remote(ctx, request{Op: "edit", Account: account, To: to, Value: value, Details: details})
+	_, err := c.perform(ctx, request{Op: "edit", Account: account, To: to, Value: value, Details: details}, func(ctx context.Context) (response, error) {
+		return response{}, c.direct.Edit(ctx, account, to, value, details)
+	})
 	return err
 }
 
@@ -201,12 +215,9 @@ func (c *Client) ChangeProgramAccess(ctx context.Context, refs []store.Ref, gran
 }
 
 func (c *Client) Delete(ctx context.Context, account string) error {
-	if !c.remoteOnly.Load() {
-		if err := c.direct.Delete(ctx, account); !c.fallsBack(err) {
-			return err
-		}
-	}
-	_, err := c.remote(ctx, request{Op: "delete", Account: account})
+	_, err := c.perform(ctx, request{Op: "delete", Account: account}, func(ctx context.Context) (response, error) {
+		return response{}, c.direct.Delete(ctx, account)
+	})
 	return err
 }
 

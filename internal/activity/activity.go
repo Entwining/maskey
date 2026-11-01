@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -141,6 +142,20 @@ func New(dir string, warn func(error)) *Log {
 	return &Log{dir: dir, now: time.Now, warn: warn}
 }
 
+// Writable reports whether this process may write the record's directory,
+// or create it in its parent. It asks access(2), which a sandbox that denies
+// the writes answers in advance, instead of opening the month's file, which
+// would create it and make the next record skip the prune. Any other error
+// counts as not writable, the safe guess for a caller that then has the
+// record written elsewhere.
+func (l *Log) Writable() bool {
+	err := unix.Access(l.dir, unix.W_OK)
+	if errors.Is(err, unix.ENOENT) {
+		err = unix.Access(filepath.Dir(l.dir), unix.W_OK)
+	}
+	return err == nil
+}
+
 // OnFailure makes warn the receiver of the report of a failure to record.
 func (l *Log) OnFailure(warn func(error)) {
 	l.mu.Lock()
@@ -189,46 +204,59 @@ func (l *Log) ReportFailure(err error) {
 	})
 }
 
-// append writes r to its month's file in a single write, which O_APPEND
-// keeps whole beside other processes' records. The file is opened for each
-// record: the month can change between records, and a descriptor kept
-// across a prune would keep writing to a removed file.
+// append writes r and, after a month's first record, prunes. Its error says
+// which of the two failed, since only the first loses the record.
 func (l *Log) append(now time.Time, r Record) error {
+	created, err := l.write(now, r)
+	if err != nil {
+		return fmt.Errorf("an operation was not recorded: %w", err)
+	}
+	if created {
+		if err := l.prune(now); err != nil {
+			return fmt.Errorf("older activity files were not removed: %w", err)
+		}
+	}
+	return nil
+}
+
+// write writes r to its month's file in a single write, which O_APPEND
+// keeps whole beside other processes' records, and reports whether it
+// created the file. The file is opened for each record: the month can
+// change between records, and a descriptor kept across a prune would keep
+// writing to a removed file.
+func (l *Log) write(now time.Time, r Record) (created bool, err error) {
 	line, err := json.Marshal(r)
 	if err != nil {
-		return err
+		return false, err
 	}
 	line = append(line, '\n')
 	if err := os.MkdirAll(l.dir, 0700); err != nil {
-		return err
+		return false, err
 	}
 	path := filepath.Join(l.dir, fileName(now))
 	const flags = unix.O_WRONLY | unix.O_APPEND | unix.O_CREAT | unix.O_CLOEXEC | unix.O_NOFOLLOW
 	fd, err := unix.Open(path, flags|unix.O_EXCL, 0600)
-	created := err == nil
+	created = err == nil
 	if errors.Is(err, unix.EEXIST) {
 		fd, err = unix.Open(path, flags, 0600)
 	}
 	if err != nil {
-		return err
+		return false, &os.PathError{Op: "open", Path: path, Err: err}
 	}
 	defer unix.Close(fd)
 	if err := setAppendOnly(fd); err != nil {
-		return err
+		return false, &os.PathError{Op: "chflags", Path: path, Err: err}
 	}
 	// os.File.Write would continue a short write in another call, which
 	// another process's record could split.
 	n, err := unix.Write(fd, line)
 	if err == nil && n != len(line) {
-		err = fmt.Errorf("wrote %d of %d bytes", n, len(line))
+		err = io.ErrShortWrite
 	}
 	if err != nil {
-		return err
+		return false, &os.PathError{Op: "write", Path: path, Err: err}
 	}
-	if created {
-		return l.prune(now)
-	}
-	return nil
+	return created, nil
 }
 
 // keptMonths is how many months before the current one keep their file.
@@ -251,11 +279,11 @@ func (l *Log) prune(now time.Time) error {
 			continue
 		}
 		path := filepath.Join(l.dir, entry.Name())
-		err := clearAppendOnly(path)
-		if err == nil {
-			err = os.Remove(path)
+		if err := clearAppendOnly(path); err != nil {
+			errs = append(errs, &os.PathError{Op: "chflags", Path: path, Err: err})
+			continue
 		}
-		errs = append(errs, err)
+		errs = append(errs, os.Remove(path))
 	}
 	return errors.Join(errs...)
 }

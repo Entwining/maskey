@@ -57,7 +57,7 @@ func main() {
 		return
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	record := activityLog(func(err error) { fmt.Fprintln(os.Stderr, "mk: warning: the activity record failed:", err) })
+	record := activityLog(func(err error) { fmt.Fprintln(os.Stderr, "mk: warning:", err) })
 	k := keychain.New(store.Service, record)
 	if len(args) == 1 && args[0] == "--keychain-service" {
 		err := agent.Serve(ctx, k, record, k.Check, owner.NewApproval(owner.NativeAuthenticate, owner.Clock).Approve)
@@ -68,7 +68,7 @@ func main() {
 		}
 		return
 	}
-	backend := agent.New(k, record.ReportFailure)
+	backend := agent.New(k, record.ReportFailure, record.Writable())
 	home, _ := os.UserHomeDir()
 	// The program that started mk is described before any operation, while
 	// it surely runs.

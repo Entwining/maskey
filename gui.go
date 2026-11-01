@@ -42,7 +42,7 @@ const (
 )
 
 func runGUI() {
-	record := activityLog(func(err error) { log.Print("the activity record failed: ", err) })
+	record := activityLog(func(err error) { log.Print(err) })
 	ctx := activity.WithCaller(context.Background(), activity.Self())
 	g := newGUI(ctx, store.New(keychain.New(store.Service, record), record), owner.NewApproval(owner.NativeAuthenticate, owner.Clock).Approve)
 	mygo.Use(native.Plugin)

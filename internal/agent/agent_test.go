@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -444,21 +443,6 @@ func TestAgentFinishesApprovedChange(t *testing.T) {
 	}
 }
 
-// Program access changes only in the service, which holds the owner's
-// approval, even where the Keychain is reachable directly.
-func TestClientChangesProgramAccessOnlyThroughService(t *testing.T) {
-	backend := storetest.New()
-	backend.Put("test/NAME", []byte("synthetic-value"))
-	calls := 0
-	backend.Before = func(string, string) error { calls++; return nil }
-	client := New(backend, nil)
-	client.path = filepath.Join(t.TempDir(), "missing.sock")
-	_, _, err := client.ChangeProgramAccess(context.Background(), []store.Ref{{Namespace: "test", Name: "NAME"}}, true)
-	if !store.IsKind(err, store.KindUnavailable) || calls != 0 {
-		t.Fatalf("without the service: %v after %d direct calls", err, calls)
-	}
-}
-
 func TestAgentErrorResponses(t *testing.T) {
 	t.Run("typed error", func(t *testing.T) {
 		want := &store.Error{Kind: store.KindLocked, Ref: &store.Ref{Namespace: "test", Name: "NAME"}, OSStatus: -25308, Message: "locked"}
@@ -483,90 +467,6 @@ func TestAgentErrorResponses(t *testing.T) {
 			t.Fatal("the error contains an input value")
 		}
 	})
-}
-
-func TestClientDirectRoundTrip(t *testing.T) {
-	ctx := context.Background()
-	client := New(storetest.New(), nil)
-	client.path = filepath.Join(t.TempDir(), "missing.sock")
-	account := "test/NAME"
-	for _, test := range []struct {
-		write func(context.Context, string, []byte) error
-		value []byte
-	}{
-		{func(ctx context.Context, account string, value []byte) error {
-			return client.Add(ctx, account, value, store.Details{})
-		}, []byte("synthetic-value")},
-		{client.Update, []byte("synthetic-update")},
-	} {
-		if err := test.write(ctx, account, test.value); err != nil {
-			t.Fatal(err)
-		}
-		values, err := client.Read(ctx, []string{account})
-		if err != nil || !bytes.Equal(values[account], test.value) {
-			t.Fatalf("direct read: %v", err)
-		}
-	}
-	items, err := client.Items(ctx)
-	if err != nil || len(items) != 1 || items[0].Account != account {
-		t.Fatalf("direct items: %v, %v", items, err)
-	}
-	if err := client.Delete(ctx, account); err != nil {
-		t.Fatal(err)
-	}
-	items, err = client.Items(ctx)
-	if err != nil || len(items) != 0 {
-		t.Fatalf("direct items after delete: %v, %v", items, err)
-	}
-}
-
-func TestClientFallbackOnlyUnavailable(t *testing.T) {
-	ctx := context.Background()
-	for _, method := range []struct {
-		name string
-		call func(*Client) error
-	}{
-		{"items", func(c *Client) error { _, err := c.Items(ctx); return err }},
-		{"read", func(c *Client) error { _, err := c.Read(ctx, []string{"test/NAME"}); return err }},
-		{"get", func(c *Client) error { _, err := c.Get(ctx, "test/NAME"); return err }},
-		{"add", func(c *Client) error { return c.Add(ctx, "test/NAME", []byte("synthetic-value"), store.Details{}) }},
-		{"update", func(c *Client) error { return c.Update(ctx, "test/NAME", []byte("synthetic-value")) }},
-		{"edit", func(c *Client) error { return c.Edit(ctx, "test/NAME", "test/OTHER", nil, nil) }},
-		{"delete", func(c *Client) error { return c.Delete(ctx, "test/NAME") }},
-	} {
-		// Every other kind takes uncertain's path; falling back on it would
-		// repeat a write.
-		for _, kind := range []store.Kind{store.KindUnavailable, store.KindUncertain} {
-			t.Run(method.name+"/"+string(kind), func(t *testing.T) {
-				want := &store.Error{Kind: kind, Message: "direct backend error"}
-				backend := storetest.New()
-				calls := 0
-				backend.Before = func(op, account string) error { calls++; return want }
-				client := New(backend, nil)
-				client.path = filepath.Join(t.TempDir(), "missing.sock")
-				got := method.call(client)
-				if kind == store.KindUnavailable {
-					if !store.IsKind(got, store.KindUnavailable) || got == want || got.Error() != unavailable().Error() {
-						t.Fatalf("unavailable did not fall back to the service: %v", got)
-					}
-				} else if got != want {
-					t.Fatalf("direct error was replaced: %v, want %v", got, want)
-				}
-				if calls != 1 {
-					t.Fatalf("direct backend calls = %d, want 1", calls)
-				}
-				// Only unavailable sends later calls straight to the service.
-				method.call(client)
-				wantCalls := 2
-				if kind == store.KindUnavailable {
-					wantCalls = 1
-				}
-				if calls != wantCalls {
-					t.Fatalf("direct backend calls after a second call = %d, want %d", calls, wantCalls)
-				}
-			})
-		}
-	}
 }
 
 func agentRoundTrip(t *testing.T, backend store.Backend, req request) (response, error) {

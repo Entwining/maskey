@@ -197,9 +197,10 @@ exit_code, and optional recovery, argument, entry, or numeric os_status.
 Check kind, not message text. argument is a 1-based operand position,
 excluding flags and command names; for run it counts selectors before --.
 Unknown or invalid operands are never repeated. Typo hints suggest only;
-they never apply a correction. A warning, such as a failure to record
-activity, goes to stderr as mk: warning: <message>, or with --json as one
-{"warning":{"message":...}} line, and changes neither output nor status.
+they never apply a correction. A warning, such as an operation that was not
+recorded, goes to stderr as mk: warning: <message>, with a hint as errors
+have, or with --json as one {"warning":{"message":...}} line with optional
+recovery, and changes neither output nor status.
 
 set, delete, grant, and revoke validate all references and collect
 required input before writing. Writes run in argument order and stop at
