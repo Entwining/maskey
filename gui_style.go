@@ -188,3 +188,13 @@ func cardField(c *ui.Context, label string, control func()) ui.Element {
 func inputPadding(t *ui.Theme) (vertical, horizontal float32) {
 	return t.Space(1.5), t.Space(2.5)
 }
+
+// lineRow is a row as high as a line of text, on whose middle its controls
+// center, spilling into the padding around it where they are taller: they
+// line up with the first line of the text beside them, and the field is no
+// taller than one of text. It measures an empty line, not that text, which
+// can be a shown value: MyGo keeps measured text past the value's clearing.
+func lineRow(c *ui.Context) ui.Element {
+	_, height := c.MeasureText(0)
+	return ui.Row(c).Height(height).AlignItems(ui.Center)
+}

@@ -202,8 +202,8 @@ func TestProgramAccessSwitch(t *testing.T) {
 	h.clickWithoutSettling("Program access")
 	h.waitFor(started)
 	h.tt.Frame()
-	if _, ok := h.tt.Find("Changing program access"); !ok || !h.tt.HasText("Allowed") || h.tt.HasText("Not allowed") {
-		t.Fatalf("while granting: texts %q", h.tt.Texts())
+	if _, ok := h.tt.Find("Changing program access"); !ok || !h.tt.HasText("Allowed") || h.tt.HasText("Not allowed") || !h.tt.Focused("Program access") {
+		t.Fatalf("while granting: switch focused %v, texts %q", h.tt.Focused("Program access"), h.tt.Texts())
 	}
 	release()
 	h.settle()

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.5
+
+- In an entry's details, the Show Value and Copy Value buttons line up with the value's first line instead of sitting lower, and the Program access switch with its state, so every field is as tall as one line of text.
+
 ## 0.0.4
 
 - In a sandbox that cannot write `~/Library/Logs/io.github.entwining.maskey`, `mk` sends the operations `mk activity` shows to the Keychain service, which records them from outside the sandbox, so the sandbox needs only the service's socket. Remove that directory from the sandbox's writable paths if you added it: a process that can write there can rewrite or delete the record. Without the service, `mk` still uses the Keychain directly where it can, and its warning says that the operation was not recorded and how to fix that.

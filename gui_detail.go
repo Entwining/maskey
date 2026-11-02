@@ -110,20 +110,22 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 					} else {
 						ui.Text(c, hiddenValue).TextColor(t.Text).Grow(1).MinWidth(0).SingleLine()
 					}
-					show, showIcon := "Show Value", eyeIcon
-					if g.showing(ref) {
-						show, showIcon = "Hide Value", eyeOffIcon
-					}
-					if iconButton(c.Key("reveal"), showIcon, show, 22, g.readAction == "reveal", !g.canReveal(ref)).Clicked() {
-						g.toggleReveal()
-					}
-					copyLabel, copySVG := "Copy Value", copyIcon
-					if g.copied {
-						copyLabel, copySVG = "Copied", checkIcon
-					}
-					if iconButton(c.Key("copy"), copySVG, copyLabel, 22, g.readAction == "copy", !g.canCopy(ref)).Clicked() {
-						g.copy(ref)
-					}
+					lineRow(c).Gap(4).Children(func() {
+						show, showIcon := "Show Value", eyeIcon
+						if g.showing(ref) {
+							show, showIcon = "Hide Value", eyeOffIcon
+						}
+						if iconButton(c.Key("reveal"), showIcon, show, 22, g.readAction == "reveal", !g.canReveal(ref)).Clicked() {
+							g.toggleReveal()
+						}
+						copyLabel, copySVG := "Copy Value", copyIcon
+						if g.copied {
+							copyLabel, copySVG = "Copied", checkIcon
+						}
+						if iconButton(c.Key("copy"), copySVG, copyLabel, 22, g.readAction == "copy", !g.canCopy(ref)).Clicked() {
+							g.copy(ref)
+						}
+					})
 				})
 			})
 		},
@@ -161,9 +163,13 @@ func (g *gui) accessSwitch(c *ui.Context, ref store.Ref, granted bool) {
 		if changing {
 			ui.Spinner(c).Size(14, 14).Label("Changing program access")
 		}
-		if ui.Switch(c.Key("access"), &on).Disabled(g.writeAction != "").Description(accessCaption).Changed() {
-			g.changeAccess(ref, on)
-		}
+		// The key keeps the switch's focus and animation while the spinner
+		// before it comes and goes.
+		lineRow(c).Key("access").Children(func() {
+			if ui.Switch(c.Key("access"), &on).Disabled(g.writeAction != "").Description(accessCaption).Changed() {
+				g.changeAccess(ref, on)
+			}
+		})
 	})
 }
 

@@ -132,6 +132,39 @@ func TestAccessInfo(t *testing.T) {
 	}
 }
 
+// The Value field's buttons center on the value's first line, hidden or
+// shown on several lines.
+func TestValueButtonsCenterOnFirstLine(t *testing.T) {
+	const value = "synthetic-first\nsynthetic-second"
+	backend := storetest.New()
+	backend.Put("app/MULTI", []byte(value))
+	h := newHarnessWith(t, backend)
+	h.click("MULTI")
+	find := func(s string) ui.Rect {
+		t.Helper()
+		r, ok := h.tt.Find(s)
+		if !ok {
+			t.Fatalf("%s is absent: %q", s, h.tt.Texts())
+		}
+		return r
+	}
+	check := func(state string, line float32, buttons ...string) {
+		t.Helper()
+		for _, b := range buttons {
+			r := find(b)
+			if d := r.Y + r.H/2 - line; d < -0.5 || d > 0.5 {
+				t.Errorf("%s: %s's middle is %v from the first line's", state, b, d)
+			}
+		}
+	}
+	hidden := find(hiddenValue)
+	check("hidden", hidden.Y+hidden.H/2, "Show Value", "Copy Value")
+	h.click("Show Value")
+	shown := find(value)
+	line := shown.H / float32(strings.Count(value, "\n")+1)
+	check("shown", shown.Y+line/2, "Hide Value", "Copy Value")
+}
+
 // Modified is written in local time as YYYY-MM-DD HH:mm:ss, whatever the
 // region's hour cycle.
 func TestModifiedFormat(t *testing.T) {
