@@ -64,6 +64,20 @@ func TestAddFailureKeepsForm(t *testing.T) {
 	}
 }
 
+// With the namespace and the name both invalid, the error is on the
+// namespace, the form's first field and the first that mk checks.
+func TestAddChecksNamespaceFirst(t *testing.T) {
+	h := newHarness(t)
+	h.click("New Entry")
+	h.typeNamespace(".bad")
+	h.typeName("1BAD")
+	h.typeValue("synthetic-other-77aa")
+	h.click("Add")
+	if f := h.g.form; !f.open || f.err.field != "namespace" || !h.tt.HasText(f.err.message) {
+		t.Fatalf("form open %v, error %+v", f.open, f.err)
+	}
+}
+
 // Closing the form returns the keyboard focus to the list, which chooses the
 // row focused before, URL, while the names load; NEW_KEY then sorts into the
 // row URL had. The list must not take that for URL moving.

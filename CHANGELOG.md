@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.6
+
+- In the window, Namespace comes before Name, in an entry's details and in its form, as in `<namespace>/<NAME>`. A new entry starts in Namespace when All Entries is chosen, and in Name when the namespace chosen in the sidebar fills Namespace, also when it replaces another form. Leaving a new entry asks first once you have typed or changed its namespace.
+
 ## 0.0.5
 
 - In an entry's details, the Show Value and Copy Value buttons line up with the value's first line instead of sitting lower, and the Program access switch with its state, so every field is as tall as one line of text.

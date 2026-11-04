@@ -95,8 +95,8 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 	}
 	attributes := g.attributes[ref]
 	fields := []func(){
-		func() { cardField(c, "Name", cuttable(ref.Name, monospace, &g.nameText)) },
 		func() { cardField(c, "Namespace", cuttable(ref.Namespace, "", &g.namespaceText)) },
+		func() { cardField(c, "Name", cuttable(ref.Name, monospace, &g.nameText)) },
 		func() { cardField(c, "Kind", func() { line(kindLabel(kind), "") }) },
 		func() {
 			cardField(c, "Value", func() {
@@ -200,11 +200,23 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 			f.err = formError{}
 		}
 	}
+	// The fields follow the entry's reference, <namespace>/<NAME>. A new
+	// entry starts in the first of them still empty: the namespace chosen
+	// in the sidebar fills its field.
 	fields := []func(){
+		func() {
+			cardField(c, "Namespace", func() {
+				namespace := input(ui.TextInput(c.Key("namespace"), &f.namespace)).Bind(&g.namespaceField).Placeholder("github")
+				if f.from == (store.Ref{}) && f.namespace == "" {
+					namespace.AutoFocus()
+				}
+				edited(namespace)
+			}).Error(f.err.on("namespace"))
+		},
 		func() {
 			cardField(c, "Name", func() {
 				name := input(ui.TextInput(c.Key("name"), &f.name)).Bind(&g.nameField).Font(monospace).Placeholder("GITHUB_TOKEN")
-				if f.from == (store.Ref{}) {
+				if f.from == (store.Ref{}) && f.namespace != "" {
 					name.AutoFocus()
 				}
 				edited(name)
@@ -212,11 +224,6 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 				// kind follows the name here, before the Kind field shows it.
 				f.followName()
 			}).Error(f.err.on("name"))
-		},
-		func() {
-			cardField(c, "Namespace", func() {
-				edited(input(ui.TextInput(c.Key("namespace"), &f.namespace)).Bind(&g.namespaceField).Placeholder("github"))
-			}).Error(f.err.on("namespace"))
 		},
 		func() {
 			cardField(c, "Kind", func() {
@@ -255,7 +262,9 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 			input(ui.TextArea(c.Key("notes"), &f.notes)).Lines(2, 6).Placeholder("Optional")
 		})
 	})
-	card(c, fields...).Disabled(submitting)
+	// Each form builds its controls anew, so a form opened over another
+	// takes the focus its fields ask for.
+	card(c.Key(f.id), fields...).Disabled(submitting)
 	if f.err.field == "" && f.err.message != "" {
 		ui.Text(c, f.err.message).TextColor(t.Danger)
 	}

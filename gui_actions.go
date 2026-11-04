@@ -70,7 +70,7 @@ func (g *gui) openNew() {
 		g.choose(store.Ref{})
 		g.selectionChanged()
 		g.pick = store.Ref{}
-		g.form = form{open: true, id: g.form.id + 1, chosenBefore: chosenBefore, namespace: namespace, kind: kindLabel(store.InferValueKind("")), inferredFrom: new(string)}
+		g.form = form{open: true, id: g.form.id + 1, chosenBefore: chosenBefore, namespaceFrom: namespace, namespace: namespace, kind: kindLabel(store.InferValueKind("")), inferredFrom: new(string)}
 	})
 }
 
@@ -194,14 +194,14 @@ func (g *gui) ask(then func(), offerSave bool) bool {
 func (g *gui) submit(then func()) {
 	f := &g.form
 	to := store.Ref{Namespace: f.namespace, Name: f.name}
-	if err := store.ValidateName(to.Name); err != nil {
-		f.err = formError{"name", sentence(err)}
-		g.nameField.Focus()
-		return
-	}
 	if err := store.ValidateNamespace(to.Namespace); err != nil {
 		f.err = formError{"namespace", sentence(err)}
 		g.namespaceField.Focus()
+		return
+	}
+	if err := store.ValidateName(to.Name); err != nil {
+		f.err = formError{"name", sentence(err)}
+		g.nameField.Focus()
 		return
 	}
 	from := f.from

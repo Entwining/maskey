@@ -76,6 +76,38 @@ func TestTooltipsShowCutText(t *testing.T) {
 	}
 }
 
+// A new entry's form puts the namespace above the name, as the entry's
+// reference does, and starts in the first of them still empty, also when it
+// replaces another form.
+func TestNewEntryStartsAtFirstEmptyField(t *testing.T) {
+	for _, tc := range []struct {
+		name, chosen  string
+		overEdit      bool
+		wantNamespace string
+		wantName      string
+	}{
+		{name: "all entries", chosen: "All Entries", wantNamespace: "synthetic"},
+		{name: "a namespace", chosen: "app", wantNamespace: "app", wantName: "synthetic"},
+		{name: "over an edit", chosen: "app", overEdit: true, wantNamespace: "app", wantName: "synthetic"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.click(tc.chosen)
+			if tc.overEdit {
+				h.choose("URL", "Edit")
+			}
+			h.click("New Entry")
+			if namespace, name := h.find("Namespace"), h.find("Name"); namespace.Y >= name.Y {
+				t.Fatalf("Namespace at %v is not above Name at %v", namespace, name)
+			}
+			h.tt.Type("synthetic")
+			if f := h.g.form; f.namespace != tc.wantNamespace || f.name != tc.wantName {
+				t.Fatalf("typing filled namespace %q and name %q", f.namespace, f.name)
+			}
+		})
+	}
+}
+
 func TestEditKeepsFieldsInPlace(t *testing.T) {
 	h := newHarness(t)
 	h.click("API_TOKEN")
@@ -113,8 +145,8 @@ func TestAccessInfo(t *testing.T) {
 		}
 		return r.Y + r.H/2
 	}
-	namespace, kind, value, modified := middle("Namespace"), middle("Kind"), middle("Show Value"), middle("Modified")
-	if step, want := modified-value, 3*(value-kind)-(kind-namespace); step-want > 0.5 {
+	name, kind, value, modified := middle("Name"), middle("Kind"), middle("Show Value"), middle("Modified")
+	if step, want := modified-value, 3*(value-kind)-(kind-name); step-want > 0.5 {
 		t.Fatalf("Modified is %v below the Value field, want at most %v", step, want)
 	}
 	shown := func() int { return strings.Count(strings.Join(h.tt.Texts(), "\n"), accessCaption) }

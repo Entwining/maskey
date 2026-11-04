@@ -233,12 +233,15 @@ type form struct {
 	// chosenBefore is the entry chosen before a new entry's form opened,
 	// chosen again when it closes.
 	chosenBefore store.Ref
-	namespace    string
-	name         string
-	value        string
-	original     string // the stored value, once loaded
-	kind         string // a label of kinds
-	notes        string
+	// namespaceFrom is the namespace a new entry's form opened with: the
+	// one chosen in the sidebar, or none.
+	namespaceFrom string
+	namespace     string
+	name          string
+	value         string
+	original      string // the stored value, once loaded
+	kind          string // a label of kinds
+	notes         string
 	// kindFrom and notesFrom are what the form showed when it opened; the
 	// form writes the details only when they differ.
 	kindFrom  string
@@ -268,10 +271,10 @@ func (f *form) detailsChanged() bool { return f.kind != f.kindFrom || f.notes !=
 
 // dirty reports whether the form holds anything the user typed. A value
 // still loading or kept as stored is not, and neither, in a new entry's
-// form, are its namespace and kind.
+// form, are its kind and the namespace it opened with.
 func (f *form) dirty() bool {
 	if f.from == (store.Ref{}) {
-		return f.name != "" || f.value != "" || f.notes != ""
+		return f.namespace != f.namespaceFrom || f.name != "" || f.value != "" || f.notes != ""
 	}
 	return f.namespace != f.from.Namespace || f.name != f.from.Name || f.value != f.original || f.detailsChanged()
 }

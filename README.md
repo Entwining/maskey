@@ -77,7 +77,7 @@ Entries stay in iCloud Keychain, on every Mac, when Maskey is gone; delete them 
 
 ### In the window
 
-Click + or choose File → New Entry, and enter a name such as `GITHUB_TOKEN`, a namespace, and the value. Kind describes the value and sets the entry's icon; Maskey suggests one from the name until you choose one. Notes are plain text shown with the entry, so keep secrets in the value. The toolbar's search field (⌘F) matches entry and namespace names across every namespace and stays usable while you edit.
+Click + or choose File → New Entry, and enter a namespace, a name such as `GITHUB_TOKEN`, and the value; the namespace chosen in the sidebar is filled in. Kind describes the value and sets the entry's icon; Maskey suggests one from the name until you choose one. Notes are plain text shown with the entry, so keep secrets in the value. The toolbar's search field (⌘F) matches entry and namespace names across every namespace and stays usable while you edit.
 
 Before you switch entries or namespaces, close the window, or quit, Maskey asks whether to save, discard, or continue editing any unsaved changes. Saving is offered only when the form can be saved. Cancel and Escape in the editor ask before discarding unsaved changes, without offering Save; an unchanged form closes at once. Escape in the search field clears the query.
 
