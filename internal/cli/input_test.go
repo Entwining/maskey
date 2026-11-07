@@ -15,6 +15,14 @@ import (
 // terminal returns a terminal whose input holds what was typed.
 func terminal(t *testing.T, typed string) *os.File {
 	t.Helper()
+	_, tty := openTerminal(t, typed)
+	return tty
+}
+
+// openTerminal returns a terminal whose input holds what was typed, and
+// the side that shows what is written on it.
+func openTerminal(t *testing.T, typed string) (master, tty *os.File) {
+	t.Helper()
 	master, tty, err := pty.Open()
 	if err != nil {
 		t.Fatal(err)
@@ -23,7 +31,7 @@ func terminal(t *testing.T, typed string) *os.File {
 	if _, err := master.WriteString(typed); err != nil {
 		t.Fatal(err)
 	}
-	return tty
+	return master, tty
 }
 
 // A piped value of one line loses its line ending, as gh auth token or echo

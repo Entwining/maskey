@@ -50,11 +50,14 @@ type Env struct {
 	App        string
 	Executable string
 	// Home is the user's home directory, or "" if it is unknown.
-	Home    string
-	Stdin   *os.File
-	Stdout  io.Writer
-	Stderr  io.Writer
-	Version string
+	Home  string
+	Stdin *os.File
+	// Terminal opens the controlling terminal, where set asks for a
+	// passphrase while stdin carries the key.
+	Terminal func() (*os.File, error)
+	Stdout   io.Writer
+	Stderr   io.Writer
+	Version  string
 }
 
 // Outcome is how the process ends: an exit code, or a signal to end by.

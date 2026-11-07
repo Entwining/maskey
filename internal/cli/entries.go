@@ -103,6 +103,15 @@ github/GITHUB_TOKEN stores the token alone. A value of several lines,
 such as a PEM key, is stored byte for byte. Empty values and NUL bytes
 are rejected.
 
+For a private key protected by a passphrase, mk asks on the terminal
+whether to store the key without it, since ssh-add and most programs that
+load a key cannot answer a passphrase prompt. Enter the passphrase once,
+or press Return to keep the key as it is for a program that reads the
+passphrase from another entry. A key stored without its passphrase keeps
+its format but loses its comment. Without a terminal, or for a PKCS#8 key
+(ENCRYPTED PRIVATE KEY), which only OpenSSL can decrypt, mk stores the
+key as it is and warns how to proceed.
+
 A namespace starts with an ASCII letter or digit, followed by ASCII
 letters, digits, '.', '_' or '-'. NAME starts with an ASCII letter or
 '_', followed by ASCII letters, digits or '_'. Each reference may appear
@@ -141,6 +150,15 @@ access. New entries start without program access.`,
 				value, err := readValue(cmd.Context(), env, ref, i, len(refs), fromStdin)
 				if err != nil {
 					return err
+				}
+				switch protectionOf(value) {
+				case removable:
+					if value, err = offerToRemovePassphrase(cmd, env, ref, value); err != nil {
+						return err
+					}
+				case unremovable:
+					warn(cmd, env, "the private key is protected by a passphrase that mk cannot remove",
+						fmt.Sprintf("openssl pkey -in <file> | mk set --stdin %s stores the key without it; OpenSSL asks for the passphrase on the terminal. Keep it when the program reads the passphrase from another entry.", ref))
 				}
 				if err := store.ValidateValue(value); err != nil {
 					return atArgument(err, i+1)

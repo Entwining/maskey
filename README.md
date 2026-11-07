@@ -81,7 +81,7 @@ Click + or choose File → New Entry, and enter a namespace, a name such as `GIT
 
 Before you switch entries or namespaces, close the window, or quit, Maskey asks whether to save, discard, or continue editing any unsaved changes. Saving is offered only when the form can be saved. Cancel and Escape in the editor ask before discarding unsaved changes, without offering Save; an unchanged form closes at once. Escape in the search field clears the query.
 
-The value editor accepts multiple lines but refuses to paste CRLF line endings, which it would change to LF. An entry whose value contains carriage returns keeps that value when you edit it; replace it with `mk set --stdin`, which stores a value of several lines byte for byte.
+The value editor accepts multiple lines but refuses to paste CRLF line endings, which it would change to LF. An entry whose value contains carriage returns keeps that value when you edit it; replace it with `mk set --stdin`, which stores a value of several lines byte for byte. A private key protected by a passphrase is stored as pasted; `mk set --stdin` in Terminal offers to store it without the passphrase.
 
 ### From a terminal
 
@@ -89,7 +89,7 @@ The value editor accepts multiple lines but refuses to paste CRLF line endings, 
 
 Interactive and full-screen programs work when `mk run` runs in the foreground of the terminal that is its input and output; Ctrl-Z suspends the command and `fg` resumes it. Captured output or selected values containing control characters use pipes instead.
 
-`mk list` prints entry references, and `mk list --json` adds each entry's kind, modification time, and whether it has program access; neither shows values or notes. `mk set`, `mk rename`, and `mk delete` manage entries. `mk set` prompts for each value without echoing it; `mk set --stdin` reads one value from a pipe or file, and a terminal echoes what you type to it. Deleting an entry removes it from every Mac on your Apple Account and cannot be undone.
+`mk list` prints entry references, and `mk list --json` adds each entry's kind, modification time, and whether it has program access; neither shows values or notes. `mk set`, `mk rename`, and `mk delete` manage entries. `mk set` prompts for each value without echoing it; `mk set --stdin` reads one value from a pipe or file, and a terminal echoes what you type to it. For a private key protected by a passphrase, `mk set --stdin` asks on the terminal whether to store the key without it; press Return to keep it. Deleting an entry removes it from every Mac on your Apple Account and cannot be undone.
 
 `mk --help` and `mk <command> --help` describe the commands, and `mk help exit-codes` the error kinds and exit statuses that scripts can rely on. Commands that support `--json` list it in their help. With that flag, errors go to stderr as JSON and results to stdout. `mk activity --json` emits one JSON record per line, and `mk doctor --json` keeps failed checks in its stdout report. `mk get` still writes the raw value, and `mk run` passes the command's masked output through.
 

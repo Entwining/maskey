@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"github.com/Entwining/maskey/internal/store"
@@ -17,35 +20,84 @@ import (
 // readValue reads ref from stdin or a hidden terminal prompt. Piped input
 // follows withoutLineEnding; i is the zero-based position in a batch of n.
 func readValue(ctx context.Context, env *Env, ref store.Ref, i, n int, fromStdin bool) ([]byte, error) {
-	read := func() ([]byte, error) {
-		value, err := io.ReadAll(env.Stdin)
-		return withoutLineEnding(value), err
-	}
 	if !fromStdin {
-		fd := int(env.Stdin.Fd())
-		// Cancellation can return before ReadPassword restores echo, so
-		// restore the terminal state here as well.
-		state, err := term.GetState(fd)
-		if err != nil {
-			return nil, inputError()
-		}
-		defer func() { _ = term.Restore(fd, state) }()
 		position := ""
 		if n > 1 {
 			position = fmt.Sprintf("%d of %d, ", i+1, n)
 		}
-		fmt.Fprintf(env.Stderr, "Value for %s (%sinput hidden): ", ref, position)
-		defer fmt.Fprintln(env.Stderr)
-		read = func() ([]byte, error) { return term.ReadPassword(fd) }
+		return readHidden(ctx, env.Stdin, env.Stderr, fmt.Sprintf("Value for %s (%sinput hidden): ", ref, position))
 	}
-	value, err := readUnlessCancelled(ctx, read)
-	if ctx.Err() != nil {
-		return nil, &store.Error{Kind: store.KindCancelled, Message: "cancelled before any entry was written"}
-	}
+	value, err := readUnlessCancelled(ctx, func() ([]byte, error) {
+		value, err := io.ReadAll(env.Stdin)
+		return withoutLineEnding(value), err
+	})
+	return value, readError(ctx, err)
+}
+
+// readHidden writes prompt on out and reads one line from the terminal in
+// without echoing it.
+func readHidden(ctx context.Context, in *os.File, out io.Writer, prompt string) ([]byte, error) {
+	fd := int(in.Fd())
+	// Cancellation can return before ReadPassword restores echo, so
+	// restore the terminal state here as well.
+	state, err := term.GetState(fd)
 	if err != nil {
 		return nil, inputError()
 	}
-	return value, nil
+	defer func() { _ = term.Restore(fd, state) }()
+	fmt.Fprint(out, prompt)
+	defer fmt.Fprintln(out)
+	value, err := readUnlessCancelled(ctx, func() ([]byte, error) { return term.ReadPassword(fd) })
+	return value, readError(ctx, err)
+}
+
+// readError is how a read of a value that ended with err failed: cancelled
+// once ctx is done, whatever err says, and otherwise an input failure.
+func readError(ctx context.Context, err error) error {
+	switch {
+	case ctx.Err() != nil:
+		return &store.Error{Kind: store.KindCancelled, Message: "cancelled before any entry was written"}
+	case err != nil:
+		return inputError()
+	}
+	return nil
+}
+
+// offerToRemovePassphrase asks on the terminal for the passphrase of the
+// private key value, which is ref's, and returns the key without it, or as
+// it is when the owner answers with an empty line. Where mk cannot ask, or
+// cannot decrypt, it keeps the key and warns how to proceed.
+func offerToRemovePassphrase(cmd *cobra.Command, env *Env, ref store.Ref, value []byte) ([]byte, error) {
+	tty, err := env.Terminal()
+	if err != nil {
+		warn(cmd, env, "the private key is protected by a passphrase",
+			fmt.Sprintf("mk set --stdin %s < <file> in a terminal offers to store the key without it. Keep it when the program reads the passphrase from another entry.", ref))
+		return value, nil
+	}
+	// The terminal stays open until mk exits: after Ctrl-C, a read still
+	// waits on it, and on macOS closing it waits for that read.
+	fmt.Fprintf(tty, "%s is protected by a passphrase. Enter the passphrase to store the key without it, or press Return to store the key as it is.\n", ref)
+	prompt := "Passphrase (input hidden): "
+	for {
+		passphrase, err := readHidden(cmd.Context(), tty, tty, prompt)
+		if err != nil {
+			return nil, err
+		}
+		if len(passphrase) == 0 {
+			return value, nil
+		}
+		plain, err := withoutPassphrase(value, passphrase)
+		switch {
+		case errors.Is(err, x509.IncorrectPasswordError):
+			prompt = "Bad passphrase, try again (input hidden): "
+		case err != nil:
+			warn(cmd, env, "mk cannot remove the passphrase from this key",
+				"ssh-keygen -p -f <file> rewrites the key in OpenSSH format with a cipher mk reads, keeping its passphrase; then retry. A security key (sk-) keeps its passphrase.")
+			return value, nil
+		default:
+			return plain, nil
+		}
+	}
 }
 
 func inputError() error {

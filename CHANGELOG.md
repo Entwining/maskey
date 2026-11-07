@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.7
+
+- For a private key protected by a passphrase, `mk set --stdin` asks on the terminal whether to store the key without it, so that `ssh-add -` and other programs load it without asking: enter the passphrase once, or press Return to keep it for a program that reads the passphrase from another entry, such as Snowflake's `PRIVATE_KEY_PASSPHRASE`. The key keeps its format, OpenSSH or PEM, but not its comment. Without a terminal, or for a PKCS#8 key, which `mk` cannot decrypt, the key is stored as it is and a warning says how to remove the passphrase.
+
 ## 0.0.6
 
 - In the window, Namespace comes before Name, in an entry's details and in its form, as in `<namespace>/<NAME>`. A new entry starts in Namespace when All Entries is chosen, and in Name when the namespace chosen in the sidebar fills Namespace, also when it replaces another form. Leaving a new entry asks first once you have typed or changed its namespace.

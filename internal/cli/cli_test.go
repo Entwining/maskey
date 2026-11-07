@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -30,6 +31,10 @@ type harness struct {
 	// beside it.
 	executable string
 	source     string
+	// terminal is the controlling terminal, when the process has one, and
+	// terminalOpens counts the attempts to open it.
+	terminal      *os.File
+	terminalOpens int
 }
 
 func newHarness(t *testing.T) *harness {
@@ -75,9 +80,16 @@ func (h *harness) env(stdin *os.File, stdout, stderr io.Writer) Env {
 		Executable:    h.executable,
 		Home:          h.home,
 		Stdin:         stdin,
-		Stdout:        stdout,
-		Stderr:        stderr,
-		Version:       "1.2.3",
+		Terminal: func() (*os.File, error) {
+			h.terminalOpens++
+			if h.terminal == nil {
+				return nil, errors.New("no controlling terminal")
+			}
+			return h.terminal, nil
+		},
+		Stdout:  stdout,
+		Stderr:  stderr,
+		Version: "1.2.3",
 	}
 }
 
@@ -90,14 +102,20 @@ func noService(context.Context, string) []agent.ServiceItem {
 // run executes a command line with stdin holding input.
 func (h *harness) run(t *testing.T, input string, args ...string) (Outcome, string, string) {
 	t.Helper()
+	return h.runOn(stdinHolding(t, input), args...)
+}
+
+// stdinHolding is a file to read input from as stdin.
+func stdinHolding(t *testing.T, input string) *os.File {
+	t.Helper()
 	stdin, err := os.CreateTemp(t.TempDir(), "stdin")
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { stdin.Close() })
 	stdin.WriteString(input)
-	stdin.Seek(0, 0)
-	defer stdin.Close()
-	return h.runOn(stdin, args...)
+	stdin.Seek(0, io.SeekStart)
+	return stdin
 }
 
 func (h *harness) runOn(stdin *os.File, args ...string) (Outcome, string, string) {

@@ -93,6 +93,7 @@ func main() {
 		Executable:    executable(),
 		Home:          home,
 		Stdin:         os.Stdin,
+		Terminal:      func() (*os.File, error) { return os.OpenFile("/dev/tty", os.O_RDWR, 0) },
 		Stdout:        os.Stdout,
 		Stderr:        os.Stderr,
 		Version:       app.Version,
