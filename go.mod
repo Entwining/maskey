@@ -6,7 +6,7 @@ tool github.com/egoist/mygo/cmd/mygo
 
 require (
 	github.com/creack/pty v1.1.24
-	github.com/ebitengine/purego v0.11.1
+	github.com/ebitengine/purego v0.11.2
 	github.com/egoist/mygo v0.7.3
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
