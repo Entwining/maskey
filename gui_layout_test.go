@@ -306,6 +306,28 @@ func TestSidebarDragHidesAndShows(t *testing.T) {
 	h.expectPanes("released", sidebarMinWidth, listDefaultWidth)
 }
 
+// A drag released between two frames, past where the pointer last moved,
+// ends where the pointer let go: the sidebar takes that width, or hides
+// when it is below half its minimum.
+func TestDividerReleasedPastLastMove(t *testing.T) {
+	t.Run("width", func(t *testing.T) {
+		h := newHarness(t)
+		d := h.pressDivider(sidebarDefaultWidth)
+		d.by(30)
+		h.tt.Release(d.x+30, 300)
+		h.tt.Advance(time.Second)
+		h.expectPanes("released 30 past the last move", sidebarDefaultWidth+60, listDefaultWidth)
+	})
+	t.Run("hidden", func(t *testing.T) {
+		h := newHarness(t)
+		d := h.pressDivider(sidebarDefaultWidth)
+		d.by(-10)
+		h.tt.Release(sidebarMinWidth/2-20, 300)
+		h.tt.Advance(time.Second)
+		h.expectPanes("flicked below half the minimum", 0, listDefaultWidth)
+	})
+}
+
 // The sidebar's divider takes a drag while the sidebar slides in, which sets
 // the width it slides to.
 func TestSidebarDividerDragWhileSliding(t *testing.T) {

@@ -133,9 +133,18 @@ func (g *gui) entries(c *ui.Context, refs []store.Ref) {
 	g.list.Key = func(i int) any { return refs[i] }
 	g.list.Label = func(i int) string { return refs[i].Name }
 	g.list.Selected = &g.row
-	g.list.OnShortcut(c, 0, ui.KeySpace, g.revealChosen)
-	g.list.OnShortcut(c, ui.Cmd, ui.KeyC, g.copyChosen)
-	g.list.OnShortcut(c, ui.Cmd, ui.KeyBackspace, g.deleteChosen)
+	// A held key acts once: its repeats would show and hide the value, and
+	// read it, over and over.
+	pressed := func(action func()) func() {
+		return func() {
+			if !c.ShortcutRepeated() {
+				action()
+			}
+		}
+	}
+	g.list.OnShortcut(c, 0, ui.KeySpace, pressed(g.revealChosen))
+	g.list.OnShortcut(c, ui.Cmd, ui.KeyC, pressed(g.copyChosen))
+	g.list.OnShortcut(c, ui.Cmd, ui.KeyBackspace, pressed(g.deleteChosen))
 	// Rows name their namespace wherever the list mixes namespaces.
 	mixed := g.query != "" || g.namespace == allNamespaces
 	// The padding matches the sidebar's, so the first rows of both start at

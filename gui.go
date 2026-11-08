@@ -250,8 +250,10 @@ type form struct {
 	// follows the name: in a new entry's form, until the user picks one.
 	inferredFrom *string
 	loading      bool
-	// keepValue is set when the stored value holds carriage returns, which
-	// the text area would change: the entry can move, but its value stays.
+	// keepValue is set when the stored value holds carriage returns: the
+	// text area shows them as loaded, but a line break typed or pasted in
+	// it is LF, so an edit would mix line endings. The entry can move, but
+	// its value stays.
 	keepValue bool
 	err       formError
 }

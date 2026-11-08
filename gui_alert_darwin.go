@@ -13,9 +13,11 @@ import (
 // choose its cancel button, and so does a sheet that ends without a
 // button, as when the app quits.
 //
-// MyGo's Dialog.Message can mark no button destructive, and gives no Escape
-// to a default button that is also the cancel button; once it can,
-// showSheet becomes a call to it.
+// showSheet builds its own NSAlert rather than calling MyGo's
+// Dialog.Message. Dialog.Message takes the key equivalent off every button
+// but the default one, losing Command-D on Don’t Save; once the window has
+// closed, it shows the alert in a window of its own, where showSheet
+// answers with the cancel button; and it sets no icon on a sheet.
 type alert struct {
 	message, detail string
 	buttons         []alertButton

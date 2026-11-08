@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.8
+
+- In the window's entry list, holding Space, Command-C, or Command-Backspace acts once, as a single press does, instead of showing and hiding the value, reading it from the Keychain each time it shows, or copying it over and over.
+- A divider dragged quickly and let go between two frames ends where the pointer let go instead of short of it, so a quick drag of the sidebar's line toward the window's edge hides the sidebar.
+
 ## 0.0.7
 
 - For a private key protected by a passphrase, `mk set --stdin` asks on the terminal whether to store the key without it, so that `ssh-add -` and other programs load it without asking: enter the passphrase once, or press Return to keep it for a program that reads the passphrase from another entry, such as Snowflake's `PRIVATE_KEY_PASSPHRASE`. The key keeps its format, OpenSSH or PEM, but not its comment. Without a terminal, or for a PKCS#8 key, which `mk` cannot decrypt, the key is stored as it is and a warning says how to remove the passphrase.

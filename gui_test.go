@@ -532,6 +532,38 @@ func TestListKeys(t *testing.T) {
 	}
 }
 
+// A list key held down acts on its press alone: the value stays shown, is
+// read once for showing and once for copying, and the delete asks once.
+func TestListKeysIgnoreRepeats(t *testing.T) {
+	h := newHarness(t)
+	h.click("API_TOKEN")
+	h.tt.Key(0, ui.KeySpace)
+	h.settle()
+	h.tt.KeyRepeat(0, ui.KeySpace)
+	h.settle()
+	if !h.tt.HasText(tokenValue) {
+		t.Fatalf("a held Space hid the value: %q", h.tt.Texts())
+	}
+	h.tt.Key(ui.Cmd, ui.KeyC)
+	h.settle()
+	h.tt.SetClipboard("")
+	h.tt.KeyRepeat(ui.Cmd, ui.KeyC)
+	h.settle()
+	if got := h.tt.Clipboard(); got != "" {
+		t.Fatalf("a held Cmd-C copied %q again", got)
+	}
+	if want := []string{"reveal", "copy"}; !slices.Equal(h.reads, want) {
+		t.Fatalf("reads for %q, want %q", h.reads, want)
+	}
+	h.tt.Key(ui.Cmd, ui.KeyBackspace)
+	h.settle()
+	h.tt.KeyRepeat(ui.Cmd, ui.KeyBackspace)
+	h.settle()
+	if n := len(h.openAlerts()); n != 1 {
+		t.Fatalf("a held Cmd-Backspace asked %d times", n)
+	}
+}
+
 // The list's keys follow the row's rules: a value being saved cannot be
 // shown.
 func TestListKeysWaitForWrites(t *testing.T) {
