@@ -39,6 +39,9 @@ func (g *gui) sidebar(c *ui.Context, vibrant bool) {
 	if list.Changed() {
 		g.leave(func() { g.showNamespace(chosen) })
 	}
+	if g.update != "" {
+		g.updateButton(c)
+	}
 }
 
 // listPane is the list and its toolbar, whose content starts after inset,

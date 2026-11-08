@@ -116,11 +116,7 @@ var neutral = ui.RGBA(127, 127, 127, 1)
 // action runs; both fit the same bounds.
 func iconButton(c *ui.Context, svg *ui.SVG, label string, size float32, busy, disabled bool) ui.Element {
 	b := ui.ButtonBase(c).Size(size, size).Shrink(0).Radius(size/4 + 1).Center().Label(label).Tooltip(label).Disabled(busy || disabled)
-	if b.Pressed() {
-		b.Background(neutral.Alpha(0.22))
-	} else if b.Hovered() {
-		b.Background(neutral.Alpha(0.13))
-	}
+	tint(b)
 	return b.Children(func() {
 		if busy {
 			ui.Spinner(c).Size(size-10, size-10).Label(label + " in progress")
@@ -128,6 +124,16 @@ func iconButton(c *ui.Context, svg *ui.SVG, label string, size float32, busy, di
 			ui.Icon(c, svg).Size(size*0.6, size*0.6)
 		}
 	})
+}
+
+// tint shades a borderless button while it is pressed or the pointer is
+// over it.
+func tint(b ui.Element) {
+	if b.Pressed() {
+		b.Background(neutral.Alpha(0.22))
+	} else if b.Hovered() {
+		b.Background(neutral.Alpha(0.13))
+	}
 }
 
 // toolbar is the strip at the top of a pane, as high as the sidebar's room

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.10
+
+- When Maskey finds a newer version, Check for Updates… in the Maskey menu becomes Update to Maskey <version>…, and a button under the sidebar names the version; both open the update window, which offers to relaunch into an update already installed in the background. An update installed without asking still waits for Maskey to quit, and if Maskey stays open a week after finding it, the update window shows once, the next time you switch to Maskey.
+
 ## 0.0.9
 
 - An SSH Key entry gives the command `mk run` starts an SSH agent instead of the key: `ssh`, `git`, and `ssh-keygen -Y sign` sign with it through `SSH_AUTH_SOCK`, the entry's name holds its public key, and the agent ends with the command, so the private key never enters the command's environment or an agent that outlives it. A new entry whose name ends in `SSH_KEY` gets this kind; choose it in the window for an existing Private Key entry, which still reaches the command as a variable for programs that read the key themselves. An SSH Key entry holds only a private key without its passphrase, which `mk run` does not ask for: `mk set` removes the passphrase at a terminal prompt, and both `mk set` and the window refuse any other value, such as a public key. Update Maskey on every Mac before choosing SSH Key: an earlier version passes such an entry to commands as a variable, and editing its notes in an earlier window also sets its kind, on every Mac, back to the one its name suggests.

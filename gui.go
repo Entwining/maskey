@@ -82,10 +82,17 @@ func runGUI() {
 		g.post = win.Update
 		g.showMessage = func(a alert) (int, error) { return showSheet(win, a) }
 		g.clipboard = generalPasteboard{}
+		g.updateItem, g.checkForUpdates = updater.MenuItem(), updater.CheckForUpdates
+		g.checkLabel = g.updateItem.Label
+		updater.OnChange(func() {
+			version := updater.AvailableVersion()
+			g.post(func() { g.showUpdate(version) })
+		})
+		mygo.App.OnDidBecomeActive(func() { g.post(g.remindUpdate) })
 		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 			{Role: mygo.RoleAppMenu, Submenu: []*mygo.MenuItem{
 				{Role: mygo.RoleAbout},
-				updater.MenuItem(),
+				g.updateItem,
 				mygo.Separator(),
 				{Label: "Install Command Line Tool…", Click: g.onMenu(g.installCLI)},
 				mygo.Separator(),
@@ -181,6 +188,18 @@ type gui struct {
 	entryItems    entryItems
 	sidebarItem   *mygo.MenuItem
 	sidebarHidden bool
+	// updateItem is the updater's menu item, whose label is checkLabel until
+	// the updater finds a newer version; checkForUpdates opens the update
+	// window.
+	updateItem      *mygo.MenuItem
+	checkLabel      string
+	checkForUpdates func()
+	// update is the newer version the updater found, "" for none, shown
+	// since updateSince; reminded is the last version for which the update
+	// window opened on its own.
+	update      string
+	updateSince time.Time
+	reminded    string
 	// The sidebar's and the list's widths, as fitted to the window.
 	sidebarWidth, listWidth float32
 	// layoutPath is where the layout is saved as the window closes; ""
@@ -236,93 +255,6 @@ type gui struct {
 	confirmLeave bool
 
 	cliInstalling bool
-}
-
-// form is the detail pane's editor, of a new entry or of the entry from.
-type form struct {
-	open bool
-	id   int
-	from store.Ref // zero for a new entry
-	// chosenBefore is the entry chosen before a new entry's form opened,
-	// chosen again when it closes.
-	chosenBefore store.Ref
-	// namespaceFrom is the namespace a new entry's form opened with: the
-	// one chosen in the sidebar, or none.
-	namespaceFrom string
-	namespace     string
-	name          string
-	value         string
-	original      string // the stored value, once loaded
-	kind          string // a label of kinds
-	notes         string
-	// kindFrom and notesFrom are what the form showed when it opened; the
-	// form writes the details only when they differ.
-	kindFrom  string
-	notesFrom string
-	// inferredFrom is the name the kind was inferred from, while the kind
-	// follows the name: in a new entry's form, until the user picks one.
-	inferredFrom *string
-	loading      bool
-	// keepValue is set when the stored value holds carriage returns: the
-	// text area shows them as loaded, but a line break typed or pasted in
-	// it is LF, so an edit would mix line endings. The entry can move, but
-	// its value stays.
-	keepValue bool
-	// keptKey is sshagent.Key's verdict on the value kept, which the form
-	// does not hold, for when SSH Key is chosen for it.
-	keptKey error
-	err     formError
-}
-
-// ready reports whether submitting the form would write anything.
-func (f *form) ready() bool {
-	if f.from == (store.Ref{}) {
-		return f.namespace != "" && f.name != "" && f.value != ""
-	}
-	if f.loading || f.original == "" && !f.keepValue {
-		return false
-	}
-	return f.namespace != f.from.Namespace || f.name != f.from.Name || !f.keepValue && f.value != f.original || f.detailsChanged()
-}
-
-func (f *form) detailsChanged() bool { return f.kind != f.kindFrom || f.notes != f.notesFrom }
-
-// dirty reports whether the form holds anything the user typed. A value
-// still loading or kept as stored is not, and neither, in a new entry's
-// form, are its kind and the namespace it opened with.
-func (f *form) dirty() bool {
-	if f.from == (store.Ref{}) {
-		return f.namespace != f.namespaceFrom || f.name != "" || f.value != "" || f.notes != ""
-	}
-	return f.namespace != f.from.Namespace || f.name != f.from.Name || f.value != f.original || f.detailsChanged()
-}
-
-// followName infers the kind from the name, unless the user picked a kind
-// other than the one inferred.
-func (f *form) followName() {
-	if f.inferredFrom == nil {
-		return
-	}
-	if f.kind != kindLabel(store.InferValueKind(*f.inferredFrom)) {
-		f.inferredFrom = nil
-		return
-	}
-	name := f.name
-	f.kind, f.inferredFrom = kindLabel(store.InferValueKind(name)), &name
-}
-
-// formError is a failure shown in a form, under the field it concerns, or
-// below the fields when it concerns none.
-type formError struct {
-	field   string // "namespace", "name", "value", or ""
-	message string
-}
-
-func (e formError) on(field string) string {
-	if e.field == field {
-		return e.message
-	}
-	return ""
 }
 
 // newGUI makes the window's state, with the layout saved at layoutPath.
