@@ -131,16 +131,17 @@ func runGUI() {
 		}))
 		// Edits made with mk show up when the window comes back.
 		win.OnFocus(g.refresh)
-		// Closing the window or quitting waits for an answer about unsaved
-		// changes. Both events arrive on the UI thread.
+		// Closing the window or quitting waits for a write to finish, so
+		// that its outcome is recorded and shown, and for an answer about
+		// unsaved changes. Both events arrive on the UI thread.
 		g.closeWindow, g.quitApp = win.Close, mygo.App.Quit
 		win.OnClose(func(e *mygo.CloseEvent) {
-			if g.ask(g.closeWindow, true) {
+			if g.beforeExit(closeExit) {
 				e.PreventDefault()
 			}
 		})
 		mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
-			if g.ask(g.quit, true) {
+			if g.beforeExit(quitExit) {
 				e.PreventDefault()
 			}
 		})
@@ -224,10 +225,10 @@ type gui struct {
 	// copied.
 	clearCopy func()
 
-	writeAction string // "submit", "delete", or "access"
-	writeRef    store.Ref
-	writeForm   int
-	accessTo    bool // the program access an access write sets
+	write *write // nil while none runs
+	// exit is the close or quit waiting for the write, or for the
+	// installation of the command line tool, to finish.
+	exit exit
 
 	form form
 	// confirmLeave holds while the question about the form's unsaved
@@ -344,7 +345,7 @@ func (g *gui) showing(ref store.Ref) bool { return ref == g.entry && g.revealed 
 // rules: no value is shown or copied while one is read, and none while it
 // is written, when it cannot be edited either; none is shown while a form
 // has its place; a shown value can always be hidden.
-func (g *gui) writing(ref store.Ref) bool { return g.writeAction != "" && g.writeRef == ref }
+func (g *gui) writing(ref store.Ref) bool { return g.write != nil && g.write.ref == ref }
 
 func (g *gui) canCopy(ref store.Ref) bool { return g.readAction == "" && !g.writing(ref) }
 
@@ -427,9 +428,9 @@ func (g *gui) refresh() {
 			}
 			g.listErr = ""
 			// A value shown before another writer replaced it is no longer
-			// the entry's.
+			// the entry's; a read still running for the entry reads again.
 			if g.revealed != "" && !attributes[g.entry].Modified.Equal(g.attributes[g.entry].Modified) {
-				g.selectionChanged()
+				g.revealed = ""
 			}
 			g.namespaces, g.refs, g.attributes = namespaces, refs, attributes
 			if !slices.ContainsFunc(namespaces, func(n store.Namespace) bool { return n.Name == g.namespace }) {

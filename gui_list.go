@@ -189,7 +189,7 @@ func (g *gui) entryRow(c *ui.Context, ref store.Ref, selected, focused, mixed bo
 		row.Background(t.SurfaceHover)
 	}
 	row.TextColor(text).ContextMenu(func(m *ui.Menu) { g.rowMenu(m, ref) })
-	deleting := g.writing(ref) && g.writeAction == "delete"
+	deleting := g.writing(ref) && g.write.action == deleteWrite
 	if deleting {
 		row.Opacity(0.5)
 	}
@@ -230,7 +230,7 @@ func (g *gui) rowMenu(m *ui.Menu, ref store.Ref) {
 		g.openEdit(ref)
 	}
 	m.Separator()
-	if m.Item("Delete…").Disabled(g.writeAction != "").Chosen() {
+	if m.Item("Delete…").Disabled(g.write != nil).Chosen() {
 		if !g.form.open {
 			g.choose(ref)
 		}
@@ -253,7 +253,7 @@ func (g *gui) copyChosen() {
 func (g *gui) editChosen() { g.openEdit(g.entry) }
 
 func (g *gui) deleteChosen() {
-	if g.entry != (store.Ref{}) && g.writeAction == "" {
+	if g.entry != (store.Ref{}) && g.write == nil {
 		g.askDelete(g.entry)
 	}
 }
@@ -291,7 +291,7 @@ func (g *gui) updateEntryItems(listFocused bool) {
 	}
 	enableItem(m.reveal, chosen && g.canReveal(ref), "")
 	enableItem(m.edit, chosen && g.canEdit(ref), "")
-	enableItem(m.delete, chosen && g.writeAction == "", "CmdOrCtrl+Backspace")
+	enableItem(m.delete, chosen && g.write == nil, "CmdOrCtrl+Backspace")
 }
 
 // enableItem enables or disables item, and gives it its key, unless "",

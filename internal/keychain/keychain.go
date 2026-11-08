@@ -39,8 +39,7 @@ const (
 )
 
 // Timeout bounds each run of the helper from its start, so that a helper
-// that hangs ends the operation instead of holding it, and a service
-// stopping after the owner's approval finishes its writes in time.
+// that hangs ends the operation instead of holding it.
 const Timeout = 30 * time.Second
 
 type Keychain struct {

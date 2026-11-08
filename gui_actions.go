@@ -16,9 +16,10 @@ import (
 )
 
 // read loads ref's value and passes it to use unless another entry was
-// chosen meanwhile.
+// chosen meanwhile. A listing that shows ref replaced while it loaded can
+// mean the value read is the one replaced, so ref is read again.
 func (g *gui) read(ref store.Ref, action string, use func(value []byte)) {
-	token := g.selToken
+	token, modified := g.selToken, g.attributes[ref].Modified
 	g.readAction = action
 	g.start(func() func() {
 		value, err := g.store.Value(activity.WithVia(g.ctx, action), ref)
@@ -29,6 +30,10 @@ func (g *gui) read(ref store.Ref, action string, use func(value []byte)) {
 			g.readAction = ""
 			if err != nil {
 				g.showAlert(fmt.Sprintf("Couldn’t Read “%s”", ref.Name), err)
+				return
+			}
+			if !g.attributes[ref].Modified.Equal(modified) {
+				g.read(ref, action, use)
 				return
 			}
 			use(value)
@@ -142,14 +147,96 @@ func (g *gui) closeForm() {
 	g.form = form{id: g.form.id}
 }
 
+// write is a Keychain write the window runs; one runs at a time.
+type write struct {
+	action   writeAction
+	ref      store.Ref
+	form     int  // the form a submit writes
+	accessTo bool // the program access an access write sets
+}
+
+type writeAction int
+
+const (
+	submitWrite writeAction = iota
+	deleteWrite
+	accessWrite
+)
+
+// exit is how the window goes once its writes finish: closing it, or
+// quitting the app, which closes it as well.
+type exit int
+
+const (
+	noExit exit = iota
+	closeExit
+	quitExit
+)
+
+// startWrite runs w as the window's write, unless another runs: then an
+// answer given to a question asked before that write started does nothing.
+// Once w's result applies, a close or quit that waited for it goes ahead.
+func (g *gui) startWrite(w *write, work func() func()) {
+	if g.write != nil {
+		return
+	}
+	g.write = w
+	g.start(func() func() {
+		apply := work()
+		return func() {
+			g.write = nil
+			apply()
+			g.resumeExit()
+		}
+	})
+}
+
+// busy reports whether the window is changing something outside it, which
+// ending the process would leave unrecorded and unreported. A closed window
+// starts and applies nothing, so it waits for nothing, whatever the menu
+// bar, which outlives it, asked for.
+func (g *gui) busy() bool { return !g.closed && (g.write != nil || g.cliInstalling) }
+
+// beforeExit answers a request to close the window or quit, and reports
+// whether to prevent it for now. While the window is busy, the exit waits
+// until resumeExit; a write or installation that fails cancels it, so that
+// its alert, or the form's error, shows. Otherwise the user is asked about
+// unsaved changes. MyGo takes a prevented quit as cancelled and resumes it
+// as a plain quit: a logout or restart stops, and the updater's Relaunch
+// quits without starting Maskey again.
+func (g *gui) beforeExit(e exit) bool {
+	if g.busy() {
+		g.exit = max(g.exit, e)
+		return true
+	}
+	if e == quitExit {
+		return g.ask(g.quit, true)
+	}
+	return g.ask(g.closeWindow, true)
+}
+
+// resumeExit closes or quits again, once nothing holds the exit back.
+func (g *gui) resumeExit() {
+	e := g.exit
+	if e == noExit || g.busy() {
+		return
+	}
+	g.exit = noExit
+	if e == quitExit {
+		g.quitApp()
+	} else {
+		g.closeWindow()
+	}
+}
+
 // submitting reports whether the open form's write is running.
 func (g *gui) submitting() bool {
-	return g.form.open && g.writeForm == g.form.id && g.writeAction == "submit"
+	return g.form.open && g.write != nil && g.write.action == submitWrite && g.write.form == g.form.id
 }
 
 // canSubmit reports whether the form's primary action is available: the
 // form would write something, and no other write runs.
-func (g *gui) canSubmit() bool { return g.form.ready() && g.writeAction == "" }
+func (g *gui) canSubmit() bool { return g.form.ready() && g.write == nil }
 
 // leave runs then, which replaces the form, at once or, when the form holds
 // unsaved changes, once the user has answered for them.
@@ -168,19 +255,26 @@ func (g *gui) cancelForm() {
 	}
 }
 
-// ask defers then, and asks about the form's unsaved changes, when it has
-// any, and reports whether it did. A write of the form already has its
-// draft, or deletes its entry, so leaving then is what Close does. A window
-// close or a quit while the question is open waits on it, leaving its
-// buttons and the action it defers as they are.
+// unsaved reports whether leaving the form waits on an answer about its
+// unsaved changes. A write of the form already has its draft, or deletes
+// its entry, so leaving then is what Close does.
+func (g *gui) unsaved() bool {
+	f := &g.form
+	return g.confirmLeave || f.open && f.dirty() && !g.submitting() && !g.writing(f.from)
+}
+
+// ask defers then, and asks about the form's unsaved changes, when leaving
+// waits on them, and reports whether it did. A window close or a quit while
+// the question is open waits on it, leaving its buttons and the action it
+// defers as they are.
 func (g *gui) ask(then func(), offerSave bool) bool {
+	if !g.unsaved() {
+		return false
+	}
 	if g.confirmLeave {
 		return true
 	}
 	f := &g.form
-	if !f.open || !f.dirty() || g.submitting() || g.writing(f.from) {
-		return false
-	}
 	g.confirmLeave = true
 	p, id := g.newLeavePrompt(offerSave), f.id
 	g.message(p.alert, func(button int) {
@@ -244,9 +338,8 @@ func (g *gui) submit(then func()) {
 	if from == (store.Ref{}) {
 		verb, done, target = "Add", "Added", to
 	}
-	g.writeAction, g.writeRef, g.writeForm = "submit", target, id
 	moves := g.moves
-	g.start(func() func() {
+	g.startWrite(&write{action: submitWrite, ref: target, form: id}, func() func() {
 		var err error
 		if from == (store.Ref{}) {
 			err = g.store.Create(g.ctx, to, value, details)
@@ -254,7 +347,6 @@ func (g *gui) submit(then func()) {
 			err = g.store.Edit(g.ctx, from, to, value, editedDetails)
 		}
 		return func() {
-			g.writeAction = ""
 			sameForm := g.form.open && id == g.form.id
 			if err != nil {
 				// The form stays as it was, to correct and retry; the list
@@ -303,11 +395,9 @@ func (g *gui) askDelete(ref store.Ref) {
 }
 
 func (g *gui) delete(ref store.Ref) {
-	g.writeAction, g.writeRef = "delete", ref
-	g.start(func() func() {
+	g.startWrite(&write{action: deleteWrite, ref: ref}, func() func() {
 		err := g.store.Delete(g.ctx, ref)
 		return func() {
-			g.writeAction = ""
 			if err != nil {
 				g.writeFailed(false, "Delete", "Deleted", ref, err)
 				return
@@ -328,11 +418,9 @@ func (g *gui) delete(ref store.Ref) {
 // approves. The switch shows the change while it runs and the stored state
 // again if the owner declines or the write fails.
 func (g *gui) changeAccess(ref store.Ref, granted bool) {
-	g.writeAction, g.writeRef, g.accessTo = "access", ref, granted
-	g.start(func() func() {
+	g.startWrite(&write{action: accessWrite, ref: ref, accessTo: granted}, func() func() {
 		_, _, err := g.store.ChangeAccess(g.ctx, []store.Ref{ref}, granted, g.approve)
 		return func() {
-			g.writeAction = ""
 			switch {
 			case err == nil:
 				attributes := g.attributes[ref]
@@ -351,6 +439,7 @@ func (g *gui) changeAccess(ref store.Ref, granted bool) {
 // longer open. A failed write may have changed the Keychain, so the lists
 // reload either way.
 func (g *gui) writeFailed(formOpen bool, verb, done string, ref store.Ref, err error) {
+	g.exit = noExit
 	if !formOpen {
 		title := fmt.Sprintf("Couldn’t %s “%s”", verb, ref.Name)
 		if store.IsKind(err, store.KindUncertain) {
@@ -384,7 +473,16 @@ func (g *gui) installCLI() {
 		return func() {
 			g.cliInstalling = false
 			if err != nil {
+				g.exit = noExit
 				g.showAlert("Couldn’t Install the Command Line Tool", err)
+				return
+			}
+			// The exit that goes ahead now ends the window before it could
+			// show the message; one still held for a write, or for an
+			// answer about unsaved changes, shows it.
+			ends := g.exit != noExit && !g.busy() && !g.unsaved()
+			g.resumeExit()
+			if ends {
 				return
 			}
 			dir := filepath.Dir(link)

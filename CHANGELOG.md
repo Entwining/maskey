@@ -6,6 +6,9 @@
 - `mk set` warns before creating an entry whose name differs from an existing one only in case, such as `github/github_token` beside `github/GITHUB_TOKEN`, which `mk run` would set as two variables.
 - Hints on stderr and `recovery` in JSON errors and warnings use one form: a lowercase fragment without a final period.
 - `mk run` no longer repeats the command in `command_not_found` and `command_not_executable` errors, so a value put after `--` by mistake stays out of stderr and JSON errors. The message says why the command cannot run, and the hint how to fix it, including that `mk run` starts the command without a shell. Error kinds and exit statuses are unchanged; scripts that matched the old message text need the kind instead.
+- `mk setup`, `mk uninstall`, and the window's Install Command Line Tool… that find another of them changing the Keychain service say so; `mk setup` and the window said that the service was already running, and `mk uninstall` did not name another `mk uninstall`. One that starts just as `mk uninstall` finishes no longer goes ahead at the same time as another.
+- `mk uninstall` keeps the activity record when it cannot stop the Keychain service, which writes the record, and reports it `kept`; run it again once the service is stopped.
+- When the connection to the Keychain service ends after `mk grant` or `mk revoke` sent its change, the `uncertain` error says that the change may be incomplete or still running, instead of telling you to check one entry.
 - When `mk grant` or `mk revoke` changes entries but cannot write its result, its `io` error lists the completed changes in `completed`, with an empty `not_attempted`, and how the owner approved them in `auth`. An `io` error from `mk rename` says the entry was renamed. The exit status stays 12.
 - `mk set`, `mk delete`, and `mk uninstall` ask their questions and read hidden values on the terminal instead of stdin and stderr, so redirecting stderr keeps the prompt visible and `--json` keeps stderr to JSON lines. Whether they ask still depends on stdin: without a terminal there, they need `--stdin` or `--yes` as before.
 - `mk skill install` from an `mk` outside Maskey.app says to use the `mk` that Maskey > Install Command Line Tool links into the app, and `mk doctor` reports that case instead of suggesting `mk skill install`.
@@ -16,6 +19,9 @@
 - In the window's entry list, holding Space, Command-C, or Command-Backspace acts once, as a single press does, instead of showing and hiding the value, reading it from the Keychain each time it shows, or copying it over and over.
 - Copy Value, Edit > Copy, and Command-C in the entry list keep the copied value on this Mac, off Universal Clipboard, mark it as confidential for clipboard managers, and clear it after 90 seconds or when Maskey quits, unless something else was copied since. Text selected in a revealed value and copied is ordinary text.
 - A divider dragged quickly and let go between two frames ends where the pointer let go instead of short of it, so a quick drag of the sidebar's line toward the window's edge hides the sidebar.
+- Closing the window or quitting while it saves, deletes, or changes program access of an entry, or installs the command line tool, waits for that to finish and then goes ahead, instead of ending Maskey partway, before `mk activity` records the change. If it fails, the window stays open and shows the failure.
+- After creating an entry, searching before the list shows it no longer brings that entry back when the search is cleared, in place of the entry chosen from the results.
+- Show Value and Copy Value read the value again when the list shows that it was replaced while being read, so they show or copy the new value instead of the replaced one.
 
 ## 0.0.7
 

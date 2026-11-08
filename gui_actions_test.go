@@ -5,6 +5,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/egoist/mygo/ui"
+
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -91,6 +93,25 @@ func TestAddEntryChosenOverTheListChoice(t *testing.T) {
 	created := store.Ref{Namespace: "app", Name: "NEW_KEY"}
 	if h.g.entry != created || h.g.row != slices.Index(h.g.rows(), created) {
 		t.Fatalf("selection %s, row %d, after creating app/NEW_KEY", h.g.entry, h.g.row)
+	}
+}
+
+// A search ends that choice. Otherwise, while the search hides the entry
+// written, a row chosen from its results would give way to that entry
+// whenever the search is cleared, however much later.
+func TestSearchEndsPendingChoice(t *testing.T) {
+	h := newHarness(t)
+	loading, release := h.addWhileNamesLoad("NEW_KEY")
+	h.waitFor(loading)
+	h.typeInto("Search entries", "tok")
+	release()
+	h.settle()
+	h.click("API_TOKEN")
+	h.click("Search entries")
+	h.tt.Key(0, ui.KeyEscape)
+	h.settle()
+	if token := (store.Ref{Namespace: "app", Name: "API_TOKEN"}); h.g.query != "" || h.g.entry != token {
+		t.Fatalf("query %q, selection %s", h.g.query, h.g.entry)
 	}
 }
 
@@ -242,8 +263,8 @@ func TestAccessSwitchWaitsForPendingSave(t *testing.T) {
 	h.waitFor(started)
 	h.click("API_TOKEN")
 	h.click("Program access")
-	if h.dialogs != 0 || h.attributes("app/API_TOKEN").ProgramAccess || h.g.writeAction != "submit" {
-		t.Fatalf("during the Save: %d dialogs, write %q", h.dialogs, h.g.writeAction)
+	if h.dialogs != 0 || h.attributes("app/API_TOKEN").ProgramAccess || !h.g.writing(urlRef) {
+		t.Fatalf("during the Save: %d dialogs, write %+v", h.dialogs, h.g.write)
 	}
 	release()
 	h.settle()

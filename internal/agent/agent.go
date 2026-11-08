@@ -291,6 +291,9 @@ func unavailable() error {
 }
 
 func connectionError(ctx context.Context, req request, sent bool) error {
+	if sent && req.changesAccess() {
+		return &store.Error{Kind: store.KindUncertain, Message: "the Keychain service connection ended after the change was sent; it may be incomplete or still running"}
+	}
 	if sent && keychain.Writes(req.Op) {
 		return &store.Error{Kind: store.KindUncertain, Message: "the Keychain service connection ended after the write was sent; check the entry before deciding whether to repeat it"}
 	}

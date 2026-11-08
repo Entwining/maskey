@@ -42,8 +42,8 @@ func removeService(ctx context.Context, home string, control func(context.Contex
 	}
 	if err != nil {
 		detail := err.Error()
-		if errors.Is(err, errServiceRunning) {
-			detail = "mk setup or the window is installing it"
+		if errors.Is(err, errLocked) {
+			detail = "another mk setup, mk uninstall, or Install Command Line Tool… is changing it"
 		}
 		job := ServiceItem{Item: "Keychain service", Status: "failed", Detail: "cannot lock the Keychain service's configuration: " + detail}
 		return keepWhileLoaded(job, append(serviceFiles(home), lockItem))

@@ -8,6 +8,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -40,6 +41,8 @@ var (
 var (
 	errServiceFiles     = errors.New("the Keychain service files could not be prepared safely")
 	errServiceRunning   = errors.New("the Keychain service is already running")
+	errServiceChanging  = errors.New("another mk setup, mk uninstall, or Install Command Line Tool… is changing the Keychain service; try again once it finishes")
+	errLocked           = errors.New("locked by another process")
 	errServiceInstall   = errors.New("the Keychain service could not be installed; its previous configuration, if any, remains in ~/Library/LaunchAgents")
 	errServiceCollision = errors.New("the Keychain service configuration belongs to a different job; it was not replaced")
 	errJobNotLoaded     = errors.New("the Keychain service is not loaded")
@@ -80,6 +83,9 @@ func serve(ctx context.Context, path string, backend store.Backend, recorder act
 		return err
 	}
 	lock, err := lockFile(filepath.Join(dir, "keychain.lock"))
+	if errors.Is(err, errLocked) {
+		return errServiceRunning
+	}
 	if err != nil {
 		return err
 	}
@@ -172,26 +178,44 @@ func privateDir(path string) error {
 
 func owned(info os.FileInfo) bool { return info.Sys().(*syscall.Stat_t).Uid == uint32(os.Geteuid()) }
 
+// lockFile locks path, creating it, or returns errLocked while another
+// process holds it.
 func lockFile(path string) (*os.File, error) {
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0600)
 	if err != nil {
 		return nil, errServiceFiles
 	}
 	file := os.NewFile(uintptr(fd), path)
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || !owned(info) || info.Sys().(*syscall.Stat_t).Nlink != 1 || file.Chmod(0600) != nil {
+	if err := lockOpened(file, path); err != nil {
 		file.Close()
-		return nil, errServiceFiles
+		return nil, err
 	}
-	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		file.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) {
-			return nil, errServiceRunning
-		}
-		return nil, errServiceFiles
-	}
-	// Keep the inode: unlinking a held lock lets another instance lock a different file.
 	return file, nil
+}
+
+// lockOpened locks file, opened at path. Uninstall unlinks the lock while
+// holding it, so a file opened before that can be locked once another
+// process holds the path again; the lock counts only while path still names
+// the file locked.
+func lockOpened(file *os.File, path string) error {
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return errLocked
+		}
+		return errServiceFiles
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return errServiceFiles
+	}
+	current, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) || err == nil && !os.SameFile(info, current) {
+		return errLocked
+	}
+	if err != nil || !info.Mode().IsRegular() || !owned(info) || info.Sys().(*syscall.Stat_t).Nlink != 1 || file.Chmod(0600) != nil {
+		return errServiceFiles
+	}
+	return nil
 }
 
 func removeStaleSocket(ctx context.Context, path string) error {
@@ -285,6 +309,9 @@ func install(ctx context.Context, executable, path string, control func(context.
 		return errServiceInstall
 	}
 	lock, err := lockFile(path + ".lock")
+	if errors.Is(err, errLocked) {
+		return errServiceChanging
+	}
 	if err != nil {
 		return err
 	}
@@ -409,8 +436,9 @@ func sameJob(data []byte) bool {
 
 // jobPlist is the job's configuration. Umask 63 is 077, so what the service
 // creates, its socket included, is the user's alone. ExitTimeOut stays above
-// requestTimeout, so that launchd lets writes accepted before SIGTERM finish
-// instead of killing them.
+// keychain.Timeout, so that launchd lets a helper run that SIGTERM interrupts
+// finish; a grant or revoke batch can outlast it, and its client then reports
+// the change uncertain.
 func jobPlist(executable string) []byte {
 	var escaped bytes.Buffer
 	_ = xml.EscapeText(&escaped, []byte(executable))

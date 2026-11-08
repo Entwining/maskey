@@ -97,10 +97,13 @@ Maskey.app is still at `+filepath.Dir(filepath.Dir(filepath.Dir(h.executable)))+
 }
 
 // A failed row of the Keychain service fails uninstall after the rest goes,
-// with a hint that names the executable, since the mk link is gone.
+// except the activity record, which the service may still write, with a hint
+// that names the executable, since the mk link is gone.
 func TestUninstallServiceFailure(t *testing.T) {
 	h := newHarness(t)
 	h.run(t, "", "skill", "install")
+	t.Cleanup(func() { h.activity.Remove() })
+	h.activity.Record(context.Background(), activity.Record{Op: "get", Entry: "app/TOKEN", Result: "ok"})
 	var stdout, stderr bytes.Buffer
 	env := h.env(nil, &stdout, &stderr)
 	env.RemoveService = func(context.Context, string) []agent.ServiceItem {
@@ -110,13 +113,17 @@ func TestUninstallServiceFailure(t *testing.T) {
 		}
 	}
 	outcome := Run(context.Background(), []string{"uninstall", "--yes"}, env)
-	rows := "failed   Keychain service\n         synthetic launchctl failure\nkept     service.plist\n         the Keychain service may still be loaded\n"
+	rows := "failed   Keychain service\n         synthetic launchctl failure\nkept     service.plist\n         the Keychain service may still be loaded\n" +
+		"kept     " + h.logs + "\n         the Keychain service may still be loaded\n"
 	hint := "mk: error[prerequisite]: 1 item was not removed\nmk: hint: resolve the failed items, then run " + h.executable + " uninstall again\n"
 	if outcome.Code != 6 || !strings.HasPrefix(stdout.String(), rows) || stderr.String() != hint {
 		t.Fatalf("%+v\n%s%s", outcome, &stdout, &stderr)
 	}
 	if _, err := os.Lstat(filepath.Join(h.home, ".claude", "skills", "maskey")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("the skill link stayed")
+	}
+	if _, err := os.Stat(h.logs); err != nil {
+		t.Fatalf("the activity record went: %v", err)
 	}
 }
 
@@ -148,6 +155,24 @@ func TestUninstallConfirmation(t *testing.T) {
 	prompt := "Remove what Maskey installed on this Mac:\n  Keychain service\n  " + link + "\n  " + filepath.Join(h.home, ".agents", "skills", "maskey") + "\nEntries stay in iCloud Keychain, and Maskey.app stays where it is. Continue? [y/N] "
 	if _, err := os.Lstat(link); outcome.Code != 130 || !strings.HasPrefix(stderr.String(), prompt) || err != nil {
 		t.Fatalf("%+v %q, link %v", outcome, &stderr, err)
+	}
+}
+
+// While the Keychain service may still be loaded, the question leaves out
+// the activity record, which uninstall would keep.
+func TestUninstallConfirmationKeepsActivity(t *testing.T) {
+	h := newHarness(t)
+	h.run(t, "", "skill", "install")
+	t.Cleanup(func() { h.activity.Remove() })
+	h.activity.Record(context.Background(), activity.Record{Op: "get", Entry: "app/TOKEN", Result: "ok"})
+	var stdout, stderr bytes.Buffer
+	env := h.env(terminal(t, "no\n"), &stdout, &stderr)
+	env.ServiceItems = func(context.Context, string) []agent.ServiceItem {
+		return []agent.ServiceItem{{Item: "Keychain service", Status: "failed", Detail: "synthetic launchctl failure"}}
+	}
+	outcome := Run(context.Background(), []string{"uninstall"}, env)
+	if outcome.Code != 130 || !strings.HasPrefix(stderr.String(), "Remove what Maskey installed") || strings.Contains(stderr.String(), h.logs) {
+		t.Fatalf("%+v %q", outcome, &stderr)
 	}
 }
 

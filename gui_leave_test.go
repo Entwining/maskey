@@ -2,7 +2,6 @@ package main
 
 import (
 	"slices"
-	"sync"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -320,48 +319,6 @@ func TestLeavingWhileAnotherWriteRuns(t *testing.T) {
 	h.enter() // Continue Editing
 	if _, added := h.value("app/NEW_KEY"); added || left || !h.g.form.open || h.g.form.value != "synthetic-new-31d2" || h.g.confirmLeave {
 		t.Fatalf("Enter: added %v, left %v, form open %v, asking %v", added, left, h.g.form.open, h.g.confirmLeave)
-	}
-}
-
-// The prompt's Save before the window closes, or the app quits, starts
-// nothing once the window has closed; quitting then quits the app, which
-// another window, such as the updater's, would otherwise keep running.
-func TestSaveBeforeClosing(t *testing.T) {
-	for _, leaving := range []string{"closing the window", "quitting"} {
-		t.Run(leaving, func(t *testing.T) {
-			h := newHarness(t)
-			h.choose("URL", "Edit")
-			h.typeValue("synthetic-url-new")
-			var mu sync.Mutex
-			var ops []string
-			h.backend.Before = func(op, _ string) error {
-				mu.Lock()
-				defer mu.Unlock()
-				ops = append(ops, op)
-				return nil
-			}
-			// close stands in for the window's Close, whose Closed handler it is.
-			quitAfterClosing := false
-			h.g.closeWindow, h.g.quitApp = h.g.close, func() { quitAfterClosing = h.g.closed }
-			then := h.g.closeWindow
-			if leaving == "quitting" {
-				then = h.g.quit
-			}
-			if !h.g.ask(then, true) {
-				t.Fatal("leaving a changed form asked nothing")
-			}
-			h.settle()
-			h.enter() // Save
-			mu.Lock()
-			started := slices.Clone(ops)
-			mu.Unlock()
-			if v, _ := h.value("app/URL"); v != "synthetic-url-new" || !h.g.closed || !slices.Equal(started, []string{"edit"}) {
-				t.Fatalf("stored %q; closed %v; backend operations %q", v, h.g.closed, started)
-			}
-			if leaving == "quitting" && !quitAfterClosing {
-				t.Fatal("the app did not quit after the window closed")
-			}
-		})
 	}
 }
 

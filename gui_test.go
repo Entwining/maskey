@@ -522,3 +522,42 @@ func TestStaleRevealIgnored(t *testing.T) {
 		t.Fatalf("a stale reveal shows under %s", h.g.entry)
 	}
 }
+
+// A value read before another writer replaced it, and arriving after a
+// listing showed the replacement, is read again rather than shown or copied
+// as the entry's, also when the value read for a copy is on show.
+func TestReadAfterReplacementReadsAgain(t *testing.T) {
+	for _, tc := range []struct {
+		button string
+		shown  bool
+		got    func(h *harness) string
+	}{
+		{"Show Value", false, func(h *harness) string { return h.g.revealed }},
+		{"Copy Value", true, func(h *harness) string { return h.clipboard.text }},
+	} {
+		t.Run(tc.button, func(t *testing.T) {
+			h := newHarness(t)
+			h.click("API_TOKEN")
+			if tc.shown {
+				h.click("Show Value")
+			}
+			token := store.Ref{Namespace: "app", Name: "API_TOKEN"}
+			listed := h.g.attributes[token].Modified
+			h.clickWithoutSettling(tc.button)
+			var read func()
+			select {
+			case read = <-h.posted:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the read posted nothing")
+			}
+			h.backend.Put("app/API_TOKEN", []byte("synthetic-replaced-5c1e"))
+			h.g.refresh()
+			h.applyPostedWhile(func() bool { return h.g.attributes[token].Modified.Equal(listed) })
+			read()
+			h.settle()
+			if got := tc.got(h); got != "synthetic-replaced-5c1e" {
+				t.Fatalf("%s gave %q", tc.button, got)
+			}
+		})
+	}
+}

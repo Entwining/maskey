@@ -47,7 +47,10 @@ func (g *gui) detail(c *ui.Context) {
 		search := ui.SearchField(c.Key("search"), &g.query).Bind(&g.search).Label("Search entries").Width(searchWidth).MinWidth(searchMinWidth).Height(28).
 			Padding(0, t.Space(2)).Radius(7).Background(neutral.Alpha(0.12)).Border(1, ui.Transparent).Disabled(len(g.namespaces) == 0)
 		if search.Changed() {
+			// A search ends a pending choice, which would otherwise wait
+			// for as long as the search hides its entry.
 			g.moves++
+			g.pick = store.Ref{}
 		}
 	})
 	// Escape in the search field is the field's, which clears the query.
@@ -148,10 +151,10 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 func (g *gui) accessSwitch(c *ui.Context, ref store.Ref, granted bool) {
 	t := c.Theme()
 	v, h := inputPadding(t)
-	changing := g.writeAction == "access" && g.writeRef == ref
+	changing := g.writing(ref) && g.write.action == accessWrite
 	on := granted
 	if changing {
-		on = g.accessTo
+		on = g.write.accessTo
 	}
 	ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(v+1, h+1).Children(func() {
 		// The icon sits close by the state, as a note on it rather than a
@@ -166,7 +169,7 @@ func (g *gui) accessSwitch(c *ui.Context, ref store.Ref, granted bool) {
 		// The key keeps the switch's focus and animation while the spinner
 		// before it comes and goes.
 		lineRow(c).Key("access").Children(func() {
-			if ui.Switch(c.Key("access"), &on).Disabled(g.writeAction != "").Description(accessCaption).Changed() {
+			if ui.Switch(c.Key("access"), &on).Disabled(g.write != nil).Description(accessCaption).Changed() {
 				g.changeAccess(ref, on)
 			}
 		})
@@ -269,7 +272,7 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 		ui.Text(c, f.err.message).TextColor(t.Danger)
 	}
 	if f.from != (store.Ref{}) {
-		if ui.Button(c, "Delete").AlignSelf(ui.End).TextColor(t.Danger).Disabled(g.writeAction != "").Clicked() {
+		if ui.Button(c, "Delete").AlignSelf(ui.End).TextColor(t.Danger).Disabled(g.write != nil).Clicked() {
 			g.askDelete(f.from)
 		}
 	}

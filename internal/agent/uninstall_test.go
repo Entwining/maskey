@@ -201,9 +201,10 @@ func TestRemoveServiceFailure(t *testing.T) {
 	}
 }
 
-// While an install holds its lock, removing the service fails at once and
+// While mk setup, mk uninstall, or the window holds the configuration's
+// lock, removing or installing the service fails at once, says why, and
 // changes nothing.
-func TestRemoveServiceDuringInstall(t *testing.T) {
+func TestServiceChangeDuringAnother(t *testing.T) {
 	home := t.TempDir()
 	path := plistPath(home)
 	writeFile(t, path, jobPlist("/previous/Maskey"))
@@ -215,7 +216,44 @@ func TestRemoveServiceDuringInstall(t *testing.T) {
 	defer lock.Close()
 	job := launchd{loaded: true}
 	items := removeService(context.Background(), home, job.control)
-	if !slices.Equal(statuses(items), []string{"failed", "kept", "kept", "kept"}) || !strings.Contains(items[0].Detail, "installing") || len(job.calls) != 0 {
+	if !slices.Equal(statuses(items), []string{"failed", "kept", "kept", "kept"}) || !strings.Contains(items[0].Detail, "mk uninstall, or Install Command Line Tool…") || len(job.calls) != 0 {
 		t.Fatalf("%v, launchctl %v", items, job.calls)
+	}
+	executable := filepath.Join(home, "Maskey")
+	writeFile(t, executable, nil)
+	if err := os.Chmod(executable, 0700); err != nil {
+		t.Fatal(err)
+	}
+	ready := func(context.Context) error { t.Error("install waited for the service"); return nil }
+	if err := install(context.Background(), executable, path, job.control, ready); !errors.Is(err, errServiceChanging) || len(job.calls) != 0 {
+		t.Fatalf("install: %v, launchctl %v", err, job.calls)
+	}
+}
+
+// Uninstall unlinks the lock while holding it, so a file opened before that
+// and locked once another process has created and locked the path again
+// must not count as held.
+func TestLockFileIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "service.plist.lock")
+	held, err := lockFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	held.Close()
+	recreated, err := lockFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recreated.Close()
+	if err := lockOpened(opened, path); !errors.Is(err, errLocked) {
+		t.Fatalf("locking the unlinked file: %v", err)
 	}
 }

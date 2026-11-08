@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/Entwining/maskey/internal/agent"
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -33,9 +34,9 @@ mk delete first if they are no longer wanted. Maskey.app stays too; move it
 to the Trash afterwards, or run brew uninstall --cask maskey.
 
 Print one row per item: removed, absent, kept (a file, link, or service
-that is not this Maskey's, or the service's files while it may still be
-loaded), or failed. A failed item does not stop the others; resolve it,
-then run uninstall again.`,
+that is not this Maskey's, or the service's files and the activity record
+while the service may still be loaded), or failed. A failed item does not
+stop the others; resolve it, then run uninstall again.`,
 		DisableFlagsInUseLine: true,
 		Args:                  noArgs("uninstall takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -75,12 +76,13 @@ func uninstall(cmd *cobra.Command, env *Env) error {
 	}
 	if !yes {
 		var prompt strings.Builder
-		for _, item := range env.ServiceItems(ctx, env.Home) {
+		service := env.ServiceItems(ctx, env.Home)
+		for _, item := range service {
 			if item.Status == "" {
 				fmt.Fprintf(&prompt, "  %s\n", item.Item)
 			}
 		}
-		for _, r := range removals(env) {
+		for _, r := range removals(env, service) {
 			if r.remove != nil {
 				fmt.Fprintf(&prompt, "  %s\n", r.Item)
 			}
@@ -95,10 +97,11 @@ func uninstall(cmd *cobra.Command, env *Env) error {
 	// What goes is decided again now: while the owner answers, mk setup can
 	// reinstall the service or a link can come to point at another copy.
 	var items []removal
-	for _, item := range env.RemoveService(ctx, env.Home) {
+	service := env.RemoveService(ctx, env.Home)
+	for _, item := range service {
 		items = append(items, removal{Item: item.Item, Status: item.Status, Detail: item.Detail})
 	}
-	for _, r := range removals(env) {
+	for _, r := range removals(env, service) {
 		if r.remove != nil {
 			r.Status = "removed"
 			if err := r.remove(); err != nil {
@@ -144,12 +147,18 @@ func uninstall(cmd *cobra.Command, env *Env) error {
 	return nil
 }
 
-// removals are the items besides the Keychain service, each with what
-// removing it would do now.
-func removals(env *Env) []removal {
+// removals are the items besides the Keychain service, given its rows,
+// each with what removing it would do now.
+func removals(env *Env, service []agent.ServiceItem) []removal {
+	activity := removePath(env.Activity.Dir(), env.Activity.Remove)
+	// The service writes the activity record, so the record stays while the
+	// service may still be loaded, as the service's own files do.
+	if job := service[0].Status; activity.remove != nil && (job == "kept" || job == "failed") {
+		activity = removal{Item: activity.Item, Status: "kept", Detail: "the Keychain service may still be loaded"}
+	}
 	userData := filepath.Join(env.Home, "Library", "Application Support", env.App)
 	items := []removal{
-		removePath(env.Activity.Dir(), env.Activity.Remove),
+		activity,
 		removePath(userData, func() error { return os.RemoveAll(userData) }),
 	}
 	for _, link := range skillLinks(env.Home) {
