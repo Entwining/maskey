@@ -61,13 +61,13 @@ Like an installed copy, a source build offers to replace itself with each publis
 
 ### Set up the command line
 
-Open Maskey and choose Maskey → Install Command Line Tool…. This links `~/.local/bin/mk` to the app and installs a per-user Keychain service that starts at login without opening a window. Add `~/.local/bin` to your `PATH` if your shell cannot find `mk`. `mk setup` in a terminal installs or reinstalls only the service, which is all a Homebrew install still needs.
+Open Maskey and choose Maskey > Install Command Line Tool. This links `~/.local/bin/mk` to the app and installs a per-user Keychain service that starts at login without opening a window. Add `~/.local/bin` to your `PATH` if your shell cannot find `mk`. `mk setup` in a terminal installs or reinstalls only the service, which is all a Homebrew install still needs.
 
 For coding agents, `mk skill install` links Maskey's skill into `~/.claude/skills` and `~/.agents/skills`. The links point into the app, so the skill always matches the installed `mk`; `mk skill show` prints it for an agent that reads skills from elsewhere.
 
 ### Upgrade
 
-Maskey checks for a new version shortly after it opens and then once a day, and Maskey → Check for Updates… checks at once. It installs a version only after checking its signature, and the new version runs once you restart Maskey. Nothing needs reinstalling: entries stay in the Keychain, `mk` and the skill links point into the app, and the Keychain service restarts from the new version the first time the new `mk` reaches it.
+Maskey checks for a new version shortly after it opens and then once a day, and Maskey > Check for Updates checks at once. It installs a version only after checking its signature, and the new version runs once you restart Maskey. Nothing needs reinstalling: entries stay in the Keychain, `mk` and the skill links point into the app, and the Keychain service restarts from the new version the first time the new `mk` reaches it.
 
 ### Uninstall
 
@@ -77,7 +77,7 @@ Entries stay in iCloud Keychain, on every Mac, when Maskey is gone; delete them 
 
 ### In the window
 
-Click + or choose File → New Entry, and enter a namespace, a name such as `GITHUB_TOKEN`, and the value; the namespace chosen in the sidebar is filled in. Kind describes the value and sets the entry's icon; Maskey suggests one from the name until you choose one. Notes are plain text shown with the entry, so keep secrets in the value. The toolbar's search field (⌘F) matches entry and namespace names across every namespace and stays usable while you edit.
+Click + or choose File > New Entry, and enter a namespace, a name such as `GITHUB_TOKEN`, and the value; the namespace chosen in the sidebar is filled in. Kind describes the value and sets the entry's icon; Maskey suggests one from the name until you choose one. Notes are plain text shown with the entry, so keep secrets in the value. The toolbar's search field (⌘F) matches entry and namespace names across every namespace and stays usable while you edit.
 
 Before you switch entries or namespaces, close the window, or quit, Maskey asks whether to save, discard, or continue editing any unsaved changes. Saving is offered only when the form can be saved. Cancel and Escape in the editor ask before discarding unsaved changes, without offering Save; an unchanged form closes at once. Escape in the search field clears the query.
 
@@ -89,9 +89,9 @@ The value editor accepts multiple lines but refuses to paste CRLF line endings, 
 
 Interactive and full-screen programs work when `mk run` runs in the foreground of the terminal that is its input and output; Ctrl-Z suspends the command and `fg` resumes it. Captured output or selected values containing control characters use pipes instead.
 
-`mk list` prints entry references, and `mk list --json` adds each entry's kind, modification time, and whether it has program access; neither shows values or notes. `mk set`, `mk rename`, and `mk delete` manage entries. `mk set` prompts for each value without echoing it; `mk set --stdin` reads one value from a pipe or file, and a terminal echoes what you type to it. For a private key protected by a passphrase, `mk set --stdin` asks on the terminal whether to store the key without it; press Return to keep it. Deleting an entry removes it from every Mac on your Apple Account and cannot be undone.
+`mk list` prints entry references, and `mk list --json` adds each entry's kind, modification time, and whether it has program access; neither shows values or notes. `mk set`, `mk rename`, and `mk delete` manage entries. `mk set` prompts for each value without echoing it and asks before replacing an existing value; `mk set --stdin` reads one value from a pipe or file and replaces without asking, and a terminal echoes what you type to it. Names are case-sensitive; `mk` warns when a new name differs from an existing one only in case. For a private key protected by a passphrase, `mk set --stdin` asks on the terminal whether to store the key without it; press Return to keep it. Deleting an entry removes it from every Mac on your Apple Account and cannot be undone.
 
-`mk --help` and `mk <command> --help` describe the commands, and `mk help exit-codes` the error kinds and exit statuses that scripts can rely on. Commands that support `--json` list it in their help. With that flag, errors go to stderr as JSON and results to stdout. `mk activity --json` emits one JSON record per line, and `mk doctor --json` keeps failed checks in its stdout report. `mk get` still writes the raw value, and `mk run` passes the command's masked output through.
+`mk --help` and `mk <command> --help` describe the commands, and `mk help exit-codes` the error kinds and exit statuses that scripts can rely on. Commands that support `--json` list it in their help. With that flag, errors go to stderr as JSON and results to stdout. Prompts go to the terminal, not to either stream. `mk activity --json` emits one JSON record per line, and `mk doctor --json` keeps failed checks in its stdout report. `mk get` still writes the raw value, and `mk run` passes the command's masked output through.
 
 ### Program access and activity
 

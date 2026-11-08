@@ -13,7 +13,7 @@ import (
 func grantCommand(env *Env) *cobra.Command {
 	return accessCommand(env, true, &cobra.Command{
 		Use:   "grant [--json] <namespace>/<NAME>...",
-		Short: "Let any program obtain entries' values with mk get",
+		Short: "Give entries program access for mk get",
 		Long: `Grant entries program access, so that mk get writes their values for any
 program that can run mk. Only the owner of this Mac grants it: macOS asks
 for their login password, Touch ID, or Apple Watch.`,
@@ -67,18 +67,22 @@ stops at the first failure. Earlier changes remain.`
 				results[i].Action = done
 			}
 		}
+		// The errors after a change list the completed ones and how the owner
+		// approved them, so they stand if stdout fails.
+		stop := func(err error, next int) error {
+			failure := stopped(err, results, next, len(refs))
+			failure.Auth = auth
+			return failure
+		}
 		var e *store.Error
 		switch {
 		case errors.As(err, &e) && e.Ref != nil && len(changes) < len(refs) && *e.Ref == refs[len(changes)]:
-			// A failure that names an entry is the change to it. The error
-			// lists the completed changes too, so it stands if stdout fails.
+			// A failure that names an entry is the change to it.
 			if !jsonOutput(cmd) {
 				_ = writeResults(env, results)
 				reportReuse(env, auth)
 			}
-			failure := stopped(atArgument(err, len(changes)+1), results, len(changes)+1, len(refs))
-			failure.Auth = auth
-			return failure
+			return stop(atArgument(err, len(changes)+1), len(changes)+1)
 		case store.IsKind(err, store.KindUnavailable):
 			return withHint(err, "run mk setup; program access changes only through the Keychain service")
 		case err != nil:
@@ -90,14 +94,15 @@ stops at the first failure. Earlier changes remain.`
 				document["auth"] = auth
 			}
 			if err := writeJSON(env.Stdout, document); err != nil {
-				return withHint(err, outputHint)
+				return stop(withHint(err, outputHint), len(refs))
 			}
 			return nil
 		}
-		if err := writeResults(env, results); err != nil {
-			return err
-		}
+		err = writeResults(env, results)
 		reportReuse(env, auth)
+		if err != nil {
+			return stop(err, len(refs))
+		}
 		return nil
 	}
 	addJSONFlag(cmd, "Write results or errors as JSON")

@@ -174,7 +174,7 @@ func TestSetOffersToRemovePassphrase(t *testing.T) {
 	}
 
 	h = newHarness(t)
-	warning := "mk: warning: the private key is protected by a passphrase\nmk: hint: mk set --stdin app/KEY < <file> in a terminal offers to store the key without it. Keep it when the program reads the passphrase from another entry.\n"
+	warning := "mk: warning: the private key is protected by a passphrase\nmk: hint: mk set --stdin app/KEY < <file> in a terminal offers to store the key without it; keep it when the program reads the passphrase from another entry\n"
 	if outcome, _, stderr := h.run(t, string(openssh.protected), "set", "--stdin", "app/KEY"); outcome.Code != 0 || stderr != warning || h.value("app/KEY") != string(openssh.protected) {
 		t.Fatalf("no terminal: %+v %q", outcome, stderr)
 	}
@@ -182,7 +182,7 @@ func TestSetOffersToRemovePassphrase(t *testing.T) {
 	h = newHarness(t)
 	h.terminal = terminal(t, passphrase+"\n")
 	outcome, _, stderr = h.run(t, string(pkcs8), "set", "--stdin", "app/KEY")
-	if outcome.Code != 0 || h.terminalOpens != 0 || h.value("app/KEY") != string(pkcs8) || !strings.HasPrefix(stderr, "mk: warning: the private key is protected by a passphrase that mk cannot remove\nmk: hint: openssl pkey -in <file> | mk set --stdin app/KEY ") {
+	if outcome.Code != 0 || h.terminalOpens != 0 || h.value("app/KEY") != string(pkcs8) || !strings.HasPrefix(stderr, "mk: warning: the private key is protected by a passphrase that mk cannot remove\nmk: hint: openssl pkey -in <file> | mk set --stdin app/KEY stores the key without it, with OpenSSL asking for the passphrase on the terminal; keep it when the program reads the passphrase from another entry\n") {
 		t.Fatalf("pkcs8: %+v %d %q", outcome, h.terminalOpens, stderr)
 	}
 
@@ -192,7 +192,7 @@ func TestSetOffersToRemovePassphrase(t *testing.T) {
 	unsupported := pem.EncodeToMemory(block)
 	h = newHarness(t)
 	h.terminal = terminal(t, passphrase+"\n")
-	warning = "mk: warning: mk cannot remove the passphrase from this key\nmk: hint: ssh-keygen -p -f <file> rewrites the key in OpenSSH format with a cipher mk reads, keeping its passphrase; then retry. A security key (sk-) keeps its passphrase.\n"
+	warning = "mk: warning: mk cannot remove the passphrase from this key\nmk: hint: ssh-keygen -p -f <file> rewrites the key in OpenSSH format with a cipher mk reads; enter the same passphrase at its new-passphrase prompts to keep it, then retry; mk cannot remove the passphrase of a security key (sk-)\n"
 	if outcome, _, stderr := h.run(t, string(unsupported), "set", "--stdin", "app/KEY"); outcome.Code != 0 || stderr != warning || h.value("app/KEY") != string(unsupported) {
 		t.Fatalf("cannot remove: %+v %q", outcome, stderr)
 	}

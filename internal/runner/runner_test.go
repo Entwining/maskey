@@ -445,23 +445,27 @@ func TestNoSpawnWhenSetupFails(t *testing.T) {
 	}
 }
 
+// A command that cannot start fails by its cause, in a message that leaves
+// the command out, as it may be a value put after -- by mistake.
 func TestCommandNotStartable(t *testing.T) {
-	dir := t.TempDir()
-	notExecutable := filepath.Join(dir, "script")
+	const name = "synthetic-command-7c2a"
+	dir := filepath.Join(t.TempDir(), name)
+	os.Mkdir(dir, 0o755)
+	notExecutable := filepath.Join(t.TempDir(), name)
 	os.WriteFile(notExecutable, []byte("#!/bin/sh\n"), 0o600)
-	badFormat := filepath.Join(dir, "garbage")
+	badFormat := filepath.Join(t.TempDir(), name)
 	os.WriteFile(badFormat, []byte{0xff, 0xfe, 0, 0}, 0o700)
-	for path, want := range map[string]int{
-		"maskey-no-such-command":      ExitNotFound,
-		filepath.Join(dir, "missing"): ExitNotFound,
-		notExecutable:                 ExitNotExecutable,
-		dir:                           ExitNotExecutable,
-		badFormat:                     ExitNotExecutable,
+	for path, want := range map[string]Error{
+		name:                          {Code: ExitNotFound, Message: "the command was not found in PATH"},
+		filepath.Join(dir, "missing"): {Code: ExitNotFound, Message: "there is no file at the command's path"},
+		notExecutable:                 {Code: ExitNotExecutable, Message: "the command is not executable"},
+		dir:                           {Code: ExitNotExecutable, Message: "the command is a directory"},
+		badFormat:                     {Code: ExitNotExecutable, Message: "the command is not in a format this Mac can run"},
 	} {
 		_, err := Run(context.Background(), Command{Path: path, Entries: entries, Stdout: io.Discard, Stderr: io.Discard})
 		var runErr *Error
-		if !errors.As(err, &runErr) || runErr.Code != want {
-			t.Errorf("%s: error %v, want exit %d", path, err, want)
+		if !errors.As(err, &runErr) || runErr.Code != want.Code || runErr.Message != want.Message || strings.Contains(runErr.Error(), name) {
+			t.Errorf("%s: error %v, want exit %d: %s", path, err, want.Code, want.Message)
 		}
 	}
 }

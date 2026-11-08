@@ -3,8 +3,10 @@ package cli
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -18,9 +20,9 @@ func runCommand(env *Env) *cobra.Command {
 		Use:        "run [--json] <selector>... -- <command> [<arg>...]",
 		SuggestFor: []string{"exec", "env"},
 		Short:      "Run a command with selected credentials and mask its output",
-		Long: `Give the command one entry (github/GITHUB_TOKEN) or a whole namespace
-(github). Put mk flags before the first selector. The first -- is
-required. Everything after it belongs to the command.
+		Long: `Each selector gives the command one entry (github/GITHUB_TOKEN) or a
+whole namespace (github). Put mk flags before the first selector. The
+first -- is required. Everything after it belongs to the command.
 
 Each entry sets NAME in the child's environment, replacing any inherited
 value. An explicit entry overrides all namespace entries with that NAME.
@@ -88,7 +90,16 @@ use 125, 126, or 127. See mk help exit-codes.`,
 				case runner.ExitNotExecutable:
 					kind = kindNotExecutable
 				}
-				return &store.Error{Kind: kind, Message: runErr.Message}
+				failure := &store.Error{Kind: kind, Message: runErr.Message}
+				switch {
+				case errors.Is(runErr, exec.ErrDot):
+					return withHint(failure, "give its path, such as ./<command>")
+				case errors.Is(runErr, syscall.EISDIR):
+					return withHint(failure, "give the path of the executable inside it")
+				case errors.Is(runErr, syscall.ENOEXEC):
+					return withHint(failure, "add a #! line to a script, or run it through its interpreter, such as sh <file>")
+				}
+				return failure
 			}
 			if err != nil {
 				return err

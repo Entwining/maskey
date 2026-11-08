@@ -5,7 +5,7 @@ description: Give commands API keys, tokens, passwords, and other credentials th
 
 # Maskey
 
-`mk run` hands credentials from the user's iCloud Keychain to commands as environment variables and masks their exact values in stdout and stderr. Never ask the user to paste a credential into the conversation, put one in a command line, or write one to a file.
+The owner, as `mk` help and hints call them, is the user you work for: their iCloud Keychain holds the credentials, and only they can approve a change to program access. `mk run` hands credentials from that Keychain to commands as environment variables and masks their exact values in stdout and stderr. Never ask the owner to paste a credential into the conversation, put one in a command line, or write one to a file.
 
 Syntax is in `mk --help` and `mk <command> --help`; error kinds and exit statuses in `mk help exit-codes`. An error with a recovery ends with it, a `mk: hint:` line or `recovery` with `--json`; follow it rather than retrying. Add `--json` for structured output.
 
@@ -18,14 +18,15 @@ Syntax is in `mk --help` and `mk <command> --help`; error kinds and exit statuse
 
 A program configured to run a command for its key, such as Claude Code's `apiKeyHelper`, can run `mk get <namespace>/<NAME>`, which writes the raw value to its stdout. Configure the consumer to run it; never run `mk get` yourself, since its output would enter the conversation. If it fails with `not_granted`, the owner has not granted the entry program access: use `mk run`, and ask the owner to grant it only when a program must read the value from stdout. Never run `mk grant` or `mk revoke` yourself: within 5 minutes of the owner's last approval they change access without asking again.
 
-`mk list --json` gives each entry's kind and whether it has program access. A `pem` entry is a private key: hand it to the tool on stdin inside `sh -c`, such as `sh -c 'printf "%s\n" "$DEPLOY_KEY" | ssh-add -'`. If the tool accepts only a file path, tell the user instead of writing the key to disk. A key stored with its passphrase makes `ssh-add` ask for it, which no variable answers: ask the owner to run `mk set --stdin <namespace>/<NAME> < <file>` in their terminal, where `mk` offers to store the key without the passphrase. A program that reads the passphrase from a variable, such as Snowflake's `PRIVATE_KEY_PASSPHRASE`, takes it from another entry of the namespace.
+`mk list --json` gives each entry's kind and whether it has program access. A `pem` entry is a private key: hand it to the tool on stdin inside `sh -c`, such as `sh -c 'printf "%s\n" "$DEPLOY_KEY" | ssh-add -'`. If the tool accepts only a file path, tell the owner instead of writing the key to disk. A key stored with its passphrase makes `ssh-add` ask for it, which no variable answers: ask the owner to run `mk set --stdin <namespace>/<NAME> < <file>` in their terminal, where `mk` offers to store the key without the passphrase. A program that reads the passphrase from a variable, such as Snowflake's `PRIVATE_KEY_PASSPHRASE`, takes it from another entry of the namespace.
 
-When the user asks what used a credential, `mk activity` shows which programs got, read, or changed which entries on this Mac, without values.
+When the owner asks what used a credential, `mk activity` shows which programs got, read, or changed which entries on this Mac, without values.
 
 ## Store or change a credential
 
-- The user enters a value themselves: ask them to run `mk set <namespace>/<NAME>` in their own terminal, where the prompt hides the input, or to add it in the Maskey window.
-- A value another program prints: `producer | mk set --stdin <namespace>/<NAME>`. A one-line value loses its final line ending; a value of several lines, such as a PEM key, is stored byte for byte.
-- `mk rename old/NAME new/NAME` moves an entry with its value, kind, notes, and program access. `mk delete --yes <namespace>/<NAME>...` deletes entries from every Mac on the user's Apple Account; run it only for entries the user asked to delete.
-- `mk uninstall --yes` stops the Keychain service and removes Maskey's links and records from this Mac, leaving entries and Maskey.app; run it only when the user asks to uninstall Maskey.
+- The owner enters a value themselves: ask them to run `mk set <namespace>/<NAME>` in their own terminal, where the prompt hides the input and `mk` asks before replacing an existing value, or to add it in the Maskey window.
+- A value another program prints: `producer | mk set --stdin <namespace>/<NAME>`, which replaces an existing value without asking. A one-line value loses its final line ending; a value of several lines, such as a PEM key, is stored byte for byte.
+- Names are case-sensitive: `github/github_token` is a second entry beside `github/GITHUB_TOKEN`, and `mk` warns before creating it. Use the exact name `mk list` prints.
+- `mk rename old/NAME new/NAME` moves an entry with its value, kind, notes, and program access. `mk delete --yes <namespace>/<NAME>...` deletes entries from every Mac on the owner's Apple Account; run it only for entries the owner asked to delete.
+- `mk uninstall --yes` stops the Keychain service and removes Maskey's links and records from this Mac, leaving entries and Maskey.app; run it only when the owner asks to uninstall Maskey.
 

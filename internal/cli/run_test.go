@@ -37,6 +37,12 @@ func TestRun(t *testing.T) {
 	}
 
 	marker := filepath.Join(t.TempDir(), "started")
+	dir := t.TempDir()
+	script := filepath.Join(dir, "script")
+	os.WriteFile(script, []byte("#!/bin/sh\n"), 0o600)
+	garbage := filepath.Join(dir, "garbage")
+	os.WriteFile(garbage, []byte{0xff, 0xfe, 0, 0}, 0o700)
+	const notFound = "mk: hint: check the command, the first word after --; mk runs it without a shell, so an alias or shell function needs sh -c\n"
 	for _, test := range []struct {
 		args []string
 		code int
@@ -56,7 +62,11 @@ func TestRun(t *testing.T) {
 		{[]string{"run", "-n", "app", "--", "/usr/bin/touch", marker}, 125, "usage]: run no longer accepts -n, --namespace, -e, or --entry"},
 		{[]string{"run", "app", "--entry=app/TOKEN", "--", "/usr/bin/touch", marker}, 125, "usage]: run no longer accepts -n, --namespace, -e, or --entry"},
 		{[]string{"run", "--bogus", "app", "--", "/usr/bin/touch", marker}, 125, "usage]: unknown flag"},
-		{[]string{"run", "app", "--", "maskey-no-such-command"}, 127, "command_not_found]: "},
+		{[]string{"run", "app", "--", "maskey-no-such-command"}, 127, "command_not_found]: the command was not found in PATH\n" + notFound},
+		{[]string{"run", "app", "--", filepath.Join(dir, "missing")}, 127, "command_not_found]: there is no file at the command's path\n" + notFound},
+		{[]string{"run", "app", "--", script}, 126, "command_not_executable]: the command is not executable\nmk: hint: check the file's permissions\n"},
+		{[]string{"run", "app", "--", dir}, 126, "command_not_executable]: the command is a directory\nmk: hint: give the path of the executable inside it\n"},
+		{[]string{"run", "app", "--", garbage}, 126, "command_not_executable]: the command is not in a format this Mac can run\nmk: hint: add a #! line to a script, or run it through its interpreter, such as sh <file>\n"},
 	} {
 		outcome, stdout, stderr := h.run(t, "", test.args...)
 		if outcome.Code != test.code || stdout != "" || !strings.HasPrefix(stderr, "mk: error["+test.err) {
@@ -65,6 +75,15 @@ func TestRun(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Error("a command started despite a failed selection")
+	}
+
+	// A command found only through a relative PATH entry is not run.
+	os.WriteFile(filepath.Join(dir, "maskey-relative"), []byte("#!/bin/sh\n"), 0o700)
+	t.Chdir(dir)
+	t.Setenv("PATH", ".")
+	want := "mk: error[command_not_found]: the command was found only through a relative PATH entry\nmk: hint: give its path, such as ./<command>\n"
+	if outcome, _, stderr := h.run(t, "", "run", "app", "--", "maskey-relative"); outcome.Code != 127 || stderr != want {
+		t.Errorf("relative PATH entry: %+v %q", outcome, stderr)
 	}
 }
 

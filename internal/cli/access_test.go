@@ -60,11 +60,37 @@ func TestGrantAndRevoke(t *testing.T) {
 	if outcome.Code != 9 || !strings.Contains(errOut.String(), "mk: error[uncertain]: app/B: uncertain\nmk: completed: argument 1 app/A (unchanged)\n") {
 		t.Fatalf("failed grant, failed stdout: %+v %q", outcome, errOut.String())
 	}
+	// A change whose result cannot be written lists the change and its
+	// approval, as a failed change would.
 	h.backend.Before = nil
+	h.run(t, "", "revoke", "app/A")
+	auth = "dialog"
 	errOut.Reset()
 	outcome = Run(context.Background(), []string{"grant", "app/A"}, h.env(nil, failingWriter{}, &errOut))
-	if outcome.Code != 12 || !strings.HasSuffix(errOut.String(), "mk: hint: "+outputHint+"\n") {
+	want = "mk: error[io]: cannot finish writing the result\nmk: completed: argument 1 app/A (granted)\nmk: not attempted: none\nmk: hint: " + outputHint + "\n"
+	if outcome.Code != 12 || errOut.String() != want {
 		t.Fatalf("failed stdout: %+v %q", outcome, errOut.String())
+	}
+	h.run(t, "", "revoke", "app/A")
+	auth = "reused"
+	errOut.Reset()
+	outcome = Run(context.Background(), []string{"grant", "app/A"}, h.env(nil, failingWriter{}, &errOut))
+	if want := "mk: no dialog: the owner approved a change to program access in the last 5 minutes\n" + want; outcome.Code != 12 || errOut.String() != want {
+		t.Fatalf("failed stdout under a reused approval: %+v %q", outcome, errOut.String())
+	}
+	h.run(t, "", "revoke", "app/A")
+	auth = "dialog"
+	errOut.Reset()
+	outcome = Run(context.Background(), []string{"grant", "--json", "app/A"}, h.env(nil, failingWriter{}, &errOut))
+	want = `{"error":{"kind":"io","message":"cannot finish writing the result","exit_code":12,"completed":[{"namespace":"app","name":"A","action":"granted"}],"not_attempted":[],"auth":"dialog","recovery":"` + outputHint + `"}}` + "\n"
+	if outcome.Code != 12 || errOut.String() != want {
+		t.Fatalf("failed stdout --json: %+v %s", outcome, errOut.String())
+	}
+	// Without a change, no approval is reported.
+	errOut.Reset()
+	outcome = Run(context.Background(), []string{"grant", "--json", "app/A"}, h.env(nil, failingWriter{}, &errOut))
+	if body := decode(t, errOut.String())["error"].(map[string]any); outcome.Code != 12 || body["auth"] != nil || len(body["completed"].([]any)) != 1 {
+		t.Fatalf("unchanged, failed stdout --json: %+v %s", outcome, errOut.String())
 	}
 	// A refused approval changes nothing; without the service, mk says how to
 	// install it.

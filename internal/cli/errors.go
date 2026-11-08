@@ -53,7 +53,7 @@ var recoveries = map[store.Kind]string{
 	store.KindUnavailable:  sandboxRecovery + "; mk doctor shows whether the service runs",
 	kindIO:                 "check the output destination before continuing",
 	kindNotExecutable:      "check the file's permissions",
-	kindNotFound:           "check the command name and PATH",
+	kindNotFound:           "check the command, the first word after --; mk runs it without a shell, so an alias or shell function needs sh -c",
 }
 
 const sandboxRecovery = "run mk outside the sandbox, or let the sandbox connect to the Unix socket ~/Library/Application Support/" + store.Service + "/keychain.sock"
@@ -218,6 +218,8 @@ func recovery(env *Env, cmd *cobra.Command, err error, e *store.Error) string {
 		return "use mk run " + e.Ref.String() + " -- <command>, or ask the owner to grant program access"
 	case e.Kind == store.KindConflict && cmd.Name() == "run":
 		return "select only the entry you intend for that NAME, as <namespace>/<NAME>"
+	case e.Kind == store.KindExists && cmd.Name() == "set":
+		return "it was created after mk checked; run mk set again to replace it"
 	case e.Kind == store.KindExists && cmd.Name() == "install":
 		return "move it away, then run mk skill install again"
 	}

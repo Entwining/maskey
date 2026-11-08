@@ -14,7 +14,7 @@ import (
 )
 
 const rootHelp = `Usage:
-  mk [command] [flags]
+  mk <command> [flags]
 
 Maskey stores credentials in iCloud Keychain. Each entry is <namespace>/<NAME>.
 With mk run, github/GITHUB_TOKEN sets GITHUB_TOKEN in the child's environment.
@@ -26,7 +26,7 @@ Core commands:
   get         Write a granted entry's raw value to non-terminal stdout
   rename      Rename an entry or move it to another namespace
   delete      Delete entries from this Mac and Macs syncing its Keychain
-  grant       Let any program obtain entries' values with mk get
+  grant       Give entries program access for mk get
   revoke      Take program access away from entries
   activity    Show which programs used entries on this Mac
 
@@ -70,8 +70,8 @@ func TestHelp(t *testing.T) {
 	}
 	_, set, _ := h.run(t, "", "set", "--help")
 	if _, viaHelp, _ := h.run(t, "", "help", "set"); viaHelp != set ||
-		!strings.HasPrefix(set, "Usage:\n  mk set [--json] <namespace>/<NAME>...\n  mk set --stdin [--json] <namespace>/<NAME>\n\nCreate entries") ||
-		!strings.HasSuffix(set, "\n\nFlags:\n  -h, --help   Show help\n      --stdin  Read one value from standard input\n      --json   Write results or errors as JSON\n") {
+		!strings.HasPrefix(set, "Usage:\n  mk set [--yes] [--json] <namespace>/<NAME>...\n  mk set --stdin [--json] <namespace>/<NAME>\n\nCreate entries") ||
+		!strings.HasSuffix(set, "\n\nFlags:\n  -h, --help   Show help\n      --stdin  Read one value from standard input\n  -y, --yes    Replace existing entries without asking\n      --json   Write results or errors as JSON\n") {
 		t.Errorf("set help %q, help set %q", set, viaHelp)
 	}
 	if _, skill, _ := h.run(t, "", "help", "skill"); !strings.Contains(skill, "\n\nCommands:\n  show     Print the skill\n  install  Link ") {
@@ -80,6 +80,11 @@ func TestHelp(t *testing.T) {
 	if _, completion, _ := h.run(t, "", "completion", "--help"); !strings.Contains(completion, "\n\nShells:\n  bash        Bash completion\n") ||
 		!strings.HasSuffix(completion, "\n\nFlags:\n  -h, --help  Show help\n\nUse mk completion <shell> --help for loading instructions.\n") {
 		t.Errorf("completion help %q", completion)
+	}
+	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
+		if _, help, _ := h.run(t, "", "completion", shell, "--help"); !strings.Contains(help, "for this shell session:\n") || !strings.Contains(help, " every session") {
+			t.Errorf("completion %s help %q", shell, help)
+		}
 	}
 	if _, get, _ := h.run(t, "", "get", "--help"); !strings.Contains(get, "\n\nHelper command to configure:\n  mk get anthropic/ANTHROPIC_API_KEY\n\nFlags:\n") {
 		t.Errorf("get help %q", get)

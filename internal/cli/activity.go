@@ -18,11 +18,14 @@ import (
 
 func activityCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "activity [--since <time>] [--full] [--json] [<namespace>|<namespace>/<NAME>]...",
+		Use:   "activity [--since <duration|time>] [--full] [--json] [<selector>...]",
 		Short: "Show which programs used entries on this Mac",
 		Long: `Show what Maskey recorded on this Mac: each get, read, add, update, edit,
 delete, grant, and revoke of an entry, its result, and the program that
-asked, with the programs that started it and its terminal. The record never
+asked, with the programs that started it and its terminal. add is a new
+entry from mk set or the window, update is mk set replacing a value, edit
+is mk rename or a change saved in the window, read is mk run or the window
+showing, copying, or editing a value, and get is mk get. The record never
 holds values, notes, arguments, or environment variables, and mk activity
 never reads the Keychain.
 
@@ -30,8 +33,9 @@ By default, mk groups the records by entry, operation, result, and caller,
 with a count and the latest time, newest first; CALLER names each program
 by its file name, nearest first, and the window as Maskey. --full lists
 each record instead, with full paths, the terminal, and how the owner
-approved a grant or revoke. Operands keep only those entries or namespaces.
---since takes a duration such as 24h or 30d, or an RFC 3339 time.
+approved a grant or revoke. Selectors, each a namespace or
+<namespace>/<NAME>, keep only their records. --since takes a duration such
+as 24h or 30d, or an RFC 3339 time.
 
 Maskey keeps the current month's file and the 12 before it, and removes
 older ones when it writes a new month's first record. --json writes each
@@ -93,7 +97,7 @@ files in ~/Library/Logs/` + store.Service + `.`,
 			}
 		},
 	}
-	cmd.Flags().String("since", "7d", "Show records since this duration ago or `time` (default 7d)")
+	cmd.Flags().String("since", "7d", "Show records since `<duration|time>`, such as 24h, 7d, or an RFC 3339 time (default 7d)")
 	cmd.Flags().Bool("full", false, "List each record instead of groups")
 	addJSONFlag(cmd, "Write matching records or errors as JSON Lines")
 	return cmd

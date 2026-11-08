@@ -47,6 +47,12 @@ func TestEntryCommands(t *testing.T) {
 	if outcome, _, stderr := h.run(t, "", "rename", "app/MISSING", "app/MISSING"); outcome.Code != 2 || errorKind(stderr) != "usage" {
 		t.Fatalf("rename onto itself: %+v %q", outcome, stderr)
 	}
+	// A rename whose result cannot be written was still done.
+	var errOut bytes.Buffer
+	outcome = Run(context.Background(), []string{"rename", "app/DB_PASSWORD", "app/PASSWORD"}, h.env(nil, failingWriter{}, &errOut))
+	if outcome.Code != 12 || !strings.HasSuffix(errOut.String(), "mk: hint: the entry was renamed; mk list shows it under the new reference\n") || !strings.Contains(h.list(t), "app/PASSWORD\n") {
+		t.Fatalf("rename, failed stdout: %+v %q %q", outcome, errOut.String(), h.list(t))
+	}
 
 	if outcome, stdout, _ := h.run(t, "", "delete", "--yes", "app/API_TOKEN"); outcome.Code != 0 || stdout != "deleted app/API_TOKEN\n" {
 		t.Fatalf("delete: %+v %q", outcome, stdout)
@@ -88,6 +94,84 @@ func TestNamespaceCase(t *testing.T) {
 	}
 	if _, _, stderr := h.run(t, "", "run", "GitHub", "github", "--", "true"); !strings.HasPrefix(stderr, "mk: error[conflict]: GitHub and github both supply TOKEN\n") {
 		t.Fatalf("run GitHub github: %q", stderr)
+	}
+}
+
+// set warns before creating an entry whose name differs from existing ones
+// only in case, in its namespace, NAME, or both.
+func TestSetCaseWarning(t *testing.T) {
+	const hint = "mk: hint: names are case-sensitive, so this creates a second entry; mk delete removes the one you do not need\n"
+	for _, ref := range []string{"app/token", "App/TOKEN", "App/token"} {
+		h := newHarness(t)
+		h.set(t, "app/TOKEN")
+		outcome, stdout, stderr := h.run(t, "v", "set", "--stdin", ref)
+		if want := "mk: warning: " + ref + " differs only in case from app/TOKEN\n" + hint; outcome.Code != 0 || stdout != "created "+ref+"\n" || stderr != want || strings.Count(h.list(t), "\n") != 2 {
+			t.Errorf("%s: %+v %q %q %q", ref, outcome, stdout, stderr, h.list(t))
+		}
+	}
+
+	h := newHarness(t)
+	h.set(t, "app/TOKEN")
+	outcome, _, stderr := h.runOn(terminal(t, "v\n"), "set", "app/token")
+	if want := "mk: warning: app/token differs only in case from app/TOKEN\n" + hint + "Value for app/token (input hidden): \n"; outcome.Code != 0 || stderr != want {
+		t.Fatalf("hidden prompt: %+v %q", outcome, stderr)
+	}
+	// The warning stays on stderr when the prompt is on the controlling
+	// terminal.
+	h = newHarness(t)
+	h.set(t, "app/TOKEN")
+	outcome, _, stderr, onTerminal := h.runAsking(t, "v\n", "set", "app/token")
+	if want := "mk: warning: app/token differs only in case from app/TOKEN\n" + hint; outcome.Code != 0 || stderr != want || !strings.Contains(onTerminal, "Value for app/token (input hidden): ") || strings.Contains(onTerminal, "warning") {
+		t.Fatalf("prompt on the terminal: %+v %q %q", outcome, stderr, onTerminal)
+	}
+
+	// The warning comes before the write.
+	h = newHarness(t)
+	h.set(t, "app/TOKEN")
+	var stdout, errOut bytes.Buffer
+	h.backend.Before = func(op, _ string) error {
+		if op == "add" && errOut.Len() == 0 {
+			t.Error("written before the warning")
+		}
+		return nil
+	}
+	outcome = Run(context.Background(), []string{"set", "--stdin", "--json", "app/token"}, h.env(stdinHolding(t, "v"), &stdout, &errOut))
+	wantOut := `{"results":[{"namespace":"app","name":"token","action":"created"}]}` + "\n"
+	wantErr := `{"warning":{"message":"app/token differs only in case from app/TOKEN","recovery":"names are case-sensitive, so this creates a second entry; mk delete removes the one you do not need"}}` + "\n"
+	if outcome.Code != 0 || stdout.String() != wantOut || errOut.String() != wantErr {
+		t.Fatalf("JSON: %+v %s %s", outcome, stdout.String(), errOut.String())
+	}
+
+	// Replacing an entry, or creating one with no twin, warns of nothing.
+	h = newHarness(t)
+	h.set(t, "app/TOKEN")
+	for _, ref := range []string{"app/TOKEN", "app/OTHER"} {
+		if outcome, _, stderr := h.run(t, "v", "set", "--stdin", ref); outcome.Code != 0 || stderr != "" {
+			t.Errorf("%s: %+v %q", ref, outcome, stderr)
+		}
+	}
+
+	h = newHarness(t)
+	h.set(t, "app/TOKEN", "App/TOKEN")
+	if _, _, stderr := h.run(t, "v", "set", "--stdin", "app/token"); !strings.HasPrefix(stderr, "mk: warning: app/token differs only in case from App/TOKEN and app/TOKEN\n") {
+		t.Errorf("two twins: %q", stderr)
+	}
+}
+
+// A listing that fails fails set before it writes.
+func TestSetListingFails(t *testing.T) {
+	h := newHarness(t)
+	h.backend.Before = func(op, _ string) error {
+		switch op {
+		case "items":
+			return &store.Error{Kind: store.KindLocked, Message: "injected"}
+		case "add", "update":
+			t.Error("written after the listing failed")
+		}
+		return nil
+	}
+	if outcome, _, stderr := h.run(t, "v", "set", "--stdin", "app/X"); outcome.Code != 7 || errorKind(stderr) != "locked" {
+		t.Fatalf("%+v %q", outcome, stderr)
 	}
 }
 

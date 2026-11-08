@@ -42,7 +42,7 @@ then run uninstall again.`,
 			return uninstall(cmd, env)
 		},
 	}
-	cmd.Flags().BoolP("yes", "y", false, "Skip confirmation")
+	cmd.Flags().BoolP("yes", "y", false, "Uninstall without asking")
 	addJSONFlag(cmd, "Write the report or errors as JSON")
 	return cmd
 }

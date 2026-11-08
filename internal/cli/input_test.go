@@ -34,6 +34,61 @@ func openTerminal(t *testing.T, typed string) (master, tty *os.File) {
 	return master, tty
 }
 
+// shown is what was written on the terminal whose other side is master,
+// with its line endings turned back into \n.
+func shown(t *testing.T, master *os.File) string {
+	t.Helper()
+	buf := make([]byte, 4096)
+	n, err := master.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.ReplaceAll(string(buf[:n]), "\r\n", "\n")
+}
+
+// runAsking runs a command whose stdin is a terminal nobody types on, and
+// whose controlling terminal is another, where typed is typed. A command
+// that waits for stdin ends cancelled after a few seconds.
+func (h *harness) runAsking(t *testing.T, typed string, args ...string) (outcome Outcome, stdout, stderr, onTerminal string) {
+	t.Helper()
+	stdinMaster, stdin := openTerminal(t, "")
+	// Ends a read of stdin, which would otherwise keep it from closing.
+	t.Cleanup(func() { _, _ = stdinMaster.WriteString("\n") })
+	master, tty := openTerminal(t, typed)
+	h.terminal, h.terminalOpens = tty, 0
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out, errOut bytes.Buffer
+	outcome = Run(ctx, args, h.env(stdin, &out, &errOut))
+	return outcome, out.String(), errOut.String(), shown(t, master)
+}
+
+// Questions and hidden prompts appear on the controlling terminal, which
+// mk also reads, so with --json stderr holds only JSON lines.
+func TestPromptsOnTerminal(t *testing.T) {
+	h := newHarness(t)
+	h.set(t, "app/A", "app/B")
+	const prompt = "Delete 1 entry from this Mac and Macs syncing this Keychain:\n  app/A\nThis cannot be undone. Continue? [y/N] "
+	outcome, stdout, stderr, onTerminal := h.runAsking(t, "n\n", "delete", "--json", "app/A")
+	if body := decode(t, stderr)["error"].(map[string]any); outcome.Code != 130 || stdout != "" || body["kind"] != "cancelled" || !strings.Contains(onTerminal, prompt) || h.list(t) != "app/A\napp/B\n" {
+		t.Fatalf("declined delete: %+v %q %q %q", outcome, stdout, stderr, onTerminal)
+	}
+	outcome, stdout, stderr, onTerminal = h.runAsking(t, "y\n", "delete", "app/A")
+	if outcome.Code != 0 || stdout != "deleted app/A\n" || stderr != "" || !strings.Contains(onTerminal, prompt) {
+		t.Fatalf("confirmed delete: %+v %q %q %q", outcome, stdout, stderr, onTerminal)
+	}
+
+	outcome, stdout, stderr, onTerminal = h.runAsking(t, "y\nv\n", "set", "--json", "app/B")
+	if want := "Replace the value of 1 entry:\n  app/B\nThe current value is not kept. Continue? [y/N] "; outcome.Code != 0 || stdout != `{"results":[{"namespace":"app","name":"B","action":"replaced"}]}`+"\n" || stderr != "" || !strings.Contains(onTerminal, want) || !strings.Contains(onTerminal, "Value for app/B (input hidden): ") || h.value("app/B") != "v" {
+		t.Fatalf("set: %+v %q %q %q", outcome, stdout, stderr, onTerminal)
+	}
+	// One command opens the terminal once, however often it asks.
+	outcome, _, stderr, onTerminal = h.runAsking(t, "one\ntwo\n", "set", "app/C", "app/D")
+	if outcome.Code != 0 || h.terminalOpens != 1 || !strings.Contains(onTerminal, "Value for app/D (2 of 2, input hidden): ") || h.value("app/D") != "two" {
+		t.Fatalf("set two entries: %+v %d %q %q", outcome, h.terminalOpens, stderr, onTerminal)
+	}
+}
+
 // A piped value of one line loses its line ending, as gh auth token or echo
 // adds one; a value of several lines keeps every byte.
 func TestSetStdinLineEnding(t *testing.T) {
@@ -68,11 +123,11 @@ func TestSetPrompts(t *testing.T) {
 	if want := "Value for app/ONE (1 of 2, input hidden): \nValue for app/TWO (2 of 2, input hidden): \n"; stderr != want {
 		t.Fatalf("batch prompts %q, want %q", stderr, want)
 	}
-	if outcome, _, stderr := h.runOn(terminal(t, "three\n"), "set", "app/ONE"); outcome.Code != 0 || stderr != "Value for app/ONE (input hidden): \n" || h.value("app/ONE") != "three" {
+	if outcome, _, stderr := h.runOn(terminal(t, "y\nthree\n"), "set", "app/ONE"); outcome.Code != 0 || stderr != "Replace the value of 1 entry:\n  app/ONE\nThe current value is not kept. Continue? [y/N] Value for app/ONE (input hidden): \n" || h.value("app/ONE") != "three" {
 		t.Fatalf("single: %+v %q", outcome, stderr)
 	}
 	// An empty value fails before anything is written.
-	if outcome, _, stderr := h.runOn(terminal(t, "four\n\n"), "set", "app/ONE", "app/TWO"); outcome.Code != 2 || !strings.HasSuffix(stderr, "mk: error[invalid]: argument 2: the value is empty\n") || h.value("app/ONE") != "three" {
+	if outcome, _, stderr := h.runOn(terminal(t, "y\nfour\n\n"), "set", "app/ONE", "app/TWO"); outcome.Code != 2 || !strings.HasSuffix(stderr, "mk: error[invalid]: argument 2: the value is empty\n") || h.value("app/ONE") != "three" {
 		t.Fatalf("empty second value: %+v %q", outcome, stderr)
 	}
 	if outcome, _, stderr := h.runOn(terminal(t, "five\n"), "set", "app/ONE", ".app/TWO"); outcome.Code != 2 || strings.Contains(stderr, "Value for") {
@@ -116,11 +171,81 @@ func TestDeleteConfirmation(t *testing.T) {
 	}
 }
 
+// set at its hidden prompt asks once, before the first value, about the
+// entries it would replace, and only about those.
+func TestSetReplaceConfirmation(t *testing.T) {
+	h := newHarness(t)
+	h.set(t, "app/A")
+	outcome, stdout, stderr := h.runOn(terminal(t, "y\none\ntwo\n"), "set", "app/A", "app/NEW")
+	want := "Replace the value of 1 entry:\n  app/A\nThe current value is not kept. Continue? [y/N] Value for app/A (1 of 2, input hidden): \nValue for app/NEW (2 of 2, input hidden): \n"
+	if outcome.Code != 0 || stdout != "replaced app/A\ncreated app/NEW\n" || stderr != want || h.value("app/A") != "one" || h.value("app/NEW") != "two" {
+		t.Fatalf("confirmed: %+v %q %q", outcome, stdout, stderr)
+	}
+
+	h = newHarness(t)
+	h.set(t, "app/A", "app/B")
+	outcome, _, stderr = h.runOn(terminal(t, "y\none\ntwo\n"), "set", "app/A", "app/B")
+	if want := "Replace the values of 2 entries:\n  app/A\n  app/B\nTheir current values are not kept. Continue? [y/N] Value for app/A "; outcome.Code != 0 || !strings.HasPrefix(stderr, want) {
+		t.Fatalf("plural: %+v %q", outcome, stderr)
+	}
+
+	for _, test := range []struct{ name, answer string }{
+		{"no", "n\n"},
+		{"empty", "\n"},
+		{"unterminated yes", "yes\x04\x04"},
+		{"end of input", "\x04"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.set(t, "app/A")
+			// The values typed after the answer are there for a set that
+			// would prompt anyway.
+			outcome, _, stderr := h.runOn(terminal(t, test.answer+"one\ntwo\n"), "set", "app/A", "app/NEW")
+			if outcome.Code != 130 || !strings.HasSuffix(stderr, "mk: error[cancelled]: no entries were written\n") || strings.Contains(stderr, "Value for") || h.list(t) != "app/A\n" || h.value("app/A") != "synthetic-app/A" {
+				t.Fatalf("%+v %q %q", outcome, stderr, h.list(t))
+			}
+		})
+	}
+
+	h = newHarness(t)
+	h.set(t, "app/A")
+	if outcome, stdout, stderr := h.runOn(terminal(t, "v\n"), "set", "-y", "app/A"); outcome.Code != 0 || stdout != "replaced app/A\n" || stderr != "Value for app/A (input hidden): \n" || h.value("app/A") != "v" {
+		t.Fatalf("--yes: %+v %q %q", outcome, stdout, stderr)
+	}
+
+	// A piped rotation never asks, not even on the controlling terminal.
+	h = newHarness(t)
+	h.set(t, "app/A")
+	h.terminal = terminal(t, "n\n")
+	if outcome, stdout, stderr := h.run(t, "v", "set", "--stdin", "app/A"); outcome.Code != 0 || stdout != "replaced app/A\n" || stderr != "" || h.terminalOpens != 0 || h.value("app/A") != "v" {
+		t.Fatalf("--stdin: %+v %q %q %d", outcome, stdout, stderr, h.terminalOpens)
+	}
+}
+
+// An entry created after the check was not confirmed, so set leaves it.
+func TestSetEntryCreatedAfterCheck(t *testing.T) {
+	h := newHarness(t)
+	h.backend.Before = func(op, account string) error {
+		if op == "add" && account == "app/NEW" {
+			h.backend.Put(account, []byte("other"))
+		}
+		return nil
+	}
+	outcome, _, stderr := h.runOn(terminal(t, "v\n"), "set", "app/NEW")
+	want := "Value for app/NEW (input hidden): \nmk: error[exists]: app/NEW: the entry already exists\nmk: completed: none\nmk: not attempted: none\nmk: hint: it was created after mk checked; run mk set again to replace it\n"
+	if outcome.Code != 4 || stderr != want || h.value("app/NEW") != "other" {
+		t.Fatalf("%+v %q %q", outcome, stderr, h.value("app/NEW"))
+	}
+}
+
 // Without a terminal to prompt on, set needs --stdin, and delete and
 // uninstall --yes.
 func TestNonInteractiveNeedsFlags(t *testing.T) {
 	h := newHarness(t)
 	h.set(t, "app/TOKEN")
+	// A controlling terminal does not make mk ask: a caller without one on
+	// stdin may have no one at it.
+	h.terminal = terminal(t, "y\n")
 	for _, test := range []struct {
 		args []string
 		flag string
@@ -133,8 +258,8 @@ func TestNonInteractiveNeedsFlags(t *testing.T) {
 			t.Errorf("%q: %+v %q", test.args, outcome, stderr)
 		}
 	}
-	if h.list(t) != "app/TOKEN\n" || h.value("app/TOKEN") != "synthetic-app/TOKEN" {
-		t.Fatal("the entry changed")
+	if h.list(t) != "app/TOKEN\n" || h.value("app/TOKEN") != "synthetic-app/TOKEN" || h.terminalOpens != 0 {
+		t.Fatalf("the entry changed, or the terminal was opened %d times", h.terminalOpens)
 	}
 }
 

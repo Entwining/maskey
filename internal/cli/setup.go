@@ -78,7 +78,7 @@ func doctor(cmd *cobra.Command, env *Env) error {
 		for _, n := range namespaces {
 			entries += n.Entries
 		}
-		checks = append(checks, check{Check: "keychain", Status: "ok", Detail: fmt.Sprintf("%d entries in %d namespaces", entries, len(namespaces))})
+		checks = append(checks, check{Check: "keychain", Status: "ok", Detail: count(entries, "entry", "entries") + " in " + count(len(namespaces), "namespace", "namespaces")})
 	}
 	// Direct access, the keychain row, decides whether mk works; the service
 	// adds grants, revokes, and access from a sandbox, so its row is a
@@ -217,11 +217,23 @@ func skillSource(executable string) string {
 	return filepath.Join(filepath.Dir(filepath.Dir(executable)), "Resources", "skills", "maskey")
 }
 
+// Without the skill's directory beside it, mk skill install fails however
+// often it runs, so mk doctor reports that rather than suggest installing.
+const (
+	noSkillSource         = "this mk is not inside Maskey.app, which holds the skill"
+	noSkillSourceRecovery = "run mk skill install with the mk that Maskey > Install Command Line Tool links into the app; reinstall Maskey if the app lacks the skill"
+)
+
+func hasSkillSource(env *Env) bool {
+	info, err := os.Stat(skillSource(env.Executable))
+	return err == nil && info.IsDir()
+}
+
 func installSkill(env *Env) ([]string, error) {
-	source := skillSource(env.Executable)
-	if info, err := os.Stat(source); err != nil || !info.IsDir() {
-		return nil, &store.Error{Kind: store.KindPrerequisite, Message: "this mk is not inside Maskey.app, which holds the skill"}
+	if !hasSkillSource(env) {
+		return nil, withHint(&store.Error{Kind: store.KindPrerequisite, Message: noSkillSource}, noSkillSourceRecovery)
 	}
+	source := skillSource(env.Executable)
 	links := skillLinks(env.Home)
 	for _, link := range links {
 		if info, err := os.Lstat(link); err == nil {
@@ -246,6 +258,9 @@ func installSkill(env *Env) ([]string, error) {
 }
 
 func skillCheck(env *Env) check {
+	if !hasSkillSource(env) {
+		return check{Check: "skill", Status: "warning", Detail: noSkillSource, Recovery: noSkillSourceRecovery}
+	}
 	source := skillSource(env.Executable)
 	for _, link := range skillLinks(env.Home) {
 		target, err := os.Readlink(link)

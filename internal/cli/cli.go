@@ -14,6 +14,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -52,8 +53,8 @@ type Env struct {
 	// Home is the user's home directory, or "" if it is unknown.
 	Home  string
 	Stdin *os.File
-	// Terminal opens the controlling terminal, where set asks for a
-	// passphrase while stdin carries the key.
+	// Terminal opens the controlling terminal, where mk asks its questions
+	// and reads hidden input.
 	Terminal func() (*os.File, error)
 	Stdout   io.Writer
 	Stderr   io.Writer
@@ -73,6 +74,10 @@ func init() {
 
 // Run executes the command line args, without the program name.
 func Run(ctx context.Context, args []string, env Env) Outcome {
+	// A command opens the terminal once however often it asks, and never
+	// closes it: after Ctrl-C a read still waits on it, and on macOS closing
+	// it waits for that read.
+	env.Terminal = sync.OnceValues(env.Terminal)
 	root := newRoot(&env)
 	// A nil slice would make Cobra read os.Args.
 	root.SetArgs(append([]string{}, args...))
@@ -94,7 +99,7 @@ func (e *exitError) Error() string { return fmt.Sprintf("exit %d", e.outcome.Cod
 
 func newRoot(env *Env) *cobra.Command {
 	root := &cobra.Command{
-		Use: "mk [command] [flags]",
+		Use: "mk <command> [flags]",
 		Long: `Maskey stores credentials in iCloud Keychain. Each entry is <namespace>/<NAME>.
 With mk run, github/GITHUB_TOKEN sets GITHUB_TOKEN in the child's environment.`,
 		Example: `  mk set github/GITHUB_TOKEN

@@ -178,10 +178,10 @@ func exitCodesTopic() *cobra.Command {
   4    exists                  an entry or installation path already exists
   5    conflict                concurrent change or conflicting selection
   6    prerequisite            this Mac lacks something mk needs
-  7    locked                  unlock this Mac before retrying
+  7    locked                  the Keychain is locked until this Mac is unlocked
   8    keychain                another Keychain failure
   9    uncertain               a write may have happened; check before retrying
-  10   unavailable             the Keychain and its service cannot be reached
+  10   unavailable             the Keychain and mk's service are unreachable
   11   not_granted             program access is not granted
   12   io                      reading input or writing output failed
   130  cancelled               interrupted or confirmation declined
@@ -192,35 +192,48 @@ command_not_executable, and 127 for command_not_found. A child can also
 return those numbers; the exit status alone does not identify its source.
 
 Errors go to stderr as mk: error[<kind>]: <message>, with mk: hint: <recovery>
-when a next step applies. --json uses an error object with kind, message,
-exit_code, and optional recovery, argument, entry, or numeric os_status.
-Check kind, not message text. argument is a 1-based operand position,
-excluding flags and command names; for run it counts selectors before --.
-Unknown or invalid operands are never repeated. Typo hints suggest only;
-they never apply a correction. A warning, such as an operation that was not
-recorded, goes to stderr as mk: warning: <message>, with a hint as errors
-have, or with --json as one {"warning":{"message":...}} line with optional
-recovery, and changes neither output nor status.
+when a next step applies. --json writes one {"error":{...}} line with kind,
+message, exit_code, and optional recovery, argument, entry as
+{"namespace","name"}, or numeric os_status. Check kind, not message text.
+argument is a 1-based operand position, excluding flags and command names;
+for run it counts selectors before --. Unknown or invalid operands, and the
+command after --, are never repeated. Typo hints suggest only; they never
+apply a correction. A warning, such as an operation that was not recorded,
+goes to stderr as mk: warning: <message>, with a hint as errors have, or
+with --json as one {"warning":{"message":...}} line with optional recovery,
+and changes neither output nor status.
+
+Questions and hidden value prompts appear on the controlling terminal, not
+on stdout or stderr, so with --json stderr holds only JSON lines; mk falls
+back to stdin and stderr only when it cannot open that terminal. Without a
+terminal on stdin, set needs --stdin, and delete and uninstall need --yes;
+set --stdin asks on the terminal only for a private key's passphrase.
 
 set, delete, grant, and revoke validate all references and collect
-required input before writing. Writes run in argument order and stop at
-the first failure; earlier writes remain. A batch is not a transaction. A
-write failure reports completed and not_attempted, even when either list
-is empty. The failed argument is in neither list. Preflight failures
-change nothing. Never replay an uncertain write without checking it in
-Maskey; mk list --json shows program_access but not whether a value was
-replaced.
+required input before writing. set without --stdin or --yes asks once
+before replacing existing values, and warns before creating an entry
+whose name differs only in case from an existing one. Writes run in
+argument order and stop at the first failure; earlier writes remain. A
+batch is not a transaction. A write failure reports completed and
+not_attempted, even when either list is empty. The failed argument is in
+neither list. Preflight failures change nothing. Never replay an
+uncertain write without checking it in Maskey; mk list --json shows
+program_access but not whether a value was replaced.
 
 In text mode, each confirmed write prints its result on stdout. With
 --json, full success prints one {"results":[...]} document on stdout;
-operation failure leaves stdout empty and prints the error on stderr. Its
-completed items include namespace, name, and action; not_attempted
-contains operand positions. grant and revoke report unchanged for an
-entry already in the requested state. Their document, and their error
-after a change, add auth when an entry changed: dialog when the owner
-approved in a dialog, reused under an approval from the last 5 minutes.
+operation failure leaves stdout empty and prints the error on stderr.
+Results and completed items have namespace, name, and action: created,
+replaced, deleted, granted, revoked, or unchanged. not_attempted contains
+operand positions. grant and revoke report unchanged for an entry already
+in the requested state. Their document, and their error after a change,
+add auth when an entry changed: dialog when the owner approved in a
+dialog, reused under an approval from the last 5 minutes.
 An output failure may leave partial results on stdout; it does not undo
-confirmed writes.
+confirmed writes. rename, setup, skill install, and uninstall write their
+result only after the operation, so when they cannot write it, the
+operation was done: mk list shows a rename, and setup, skill install, and
+uninstall can run again for their report.
 
 doctor keeps check failures in its stdout report and returns the first
 failed interpreter or Keychain status. Service and skill warnings do not
@@ -257,10 +270,10 @@ Keychain cannot be reached, entry completion returns no candidates.`
 	groupOfCommands(completion)
 	completion.AddGroup(&cobra.Group{ID: "shells", Title: "Shells:"})
 	shells := map[string]struct{ title, load string }{
-		"bash":       {"Bash", "Requires bash-completion. Load for this shell session:\n  source <(mk completion bash)"},
-		"zsh":        {"Zsh", "Enable completion and load for this shell session:\n  autoload -Uz compinit && compinit\n  source <(mk completion zsh)"},
-		"fish":       {"Fish", "Load for this shell session:\n  mk completion fish | source"},
-		"powershell": {"PowerShell", "Load for this shell session:\n  mk completion powershell | Out-String | Invoke-Expression"},
+		"bash":       {"Bash", "Requires bash-completion. Load for this shell session:\n  source <(mk completion bash)\nLoad for every session, once:\n  mk completion bash > $(brew --prefix)/etc/bash_completion.d/mk"},
+		"zsh":        {"Zsh", "Enable completion and load for this shell session:\n  autoload -Uz compinit && compinit\n  source <(mk completion zsh)\nAdd both lines to ~/.zshrc to load for every session."},
+		"fish":       {"Fish", "Load for this shell session:\n  mk completion fish | source\nLoad for every session, once:\n  mk completion fish > ~/.config/fish/completions/mk.fish"},
+		"powershell": {"PowerShell", "Load for this shell session:\n  mk completion powershell | Out-String | Invoke-Expression\nAdd that line to your PowerShell profile to load for every session."},
 	}
 	for _, shell := range completion.Commands() {
 		name, text := shell.Name(), shells[shell.Name()]

@@ -19,12 +19,16 @@ func TestDoctor(t *testing.T) {
 	h.run(t, "", "skill", "install")
 	outcome, stdout, _ := h.run(t, "", "doctor")
 	want := `ok       interpreter  /usr/bin/python3
-ok       keychain     1 entries in 1 namespaces
+ok       keychain     1 entry in 1 namespace
 ok       service      running this build
 ok       skill        linked in ~/.claude/skills and ~/.agents/skills
 `
 	if outcome.Code != 0 || stdout != want {
 		t.Fatalf("doctor: %+v\n%s", outcome, stdout)
+	}
+	h.set(t, "app/OTHER", "work/TOKEN")
+	if _, stdout, _ := h.run(t, "", "doctor"); !strings.Contains(stdout, "\nok       keychain     3 entries in 2 namespaces\n") {
+		t.Fatalf("doctor, several entries:\n%s", stdout)
 	}
 
 	// A missing service is a warning; the first failed check decides the
@@ -109,9 +113,15 @@ func TestSkill(t *testing.T) {
 	if outcome, _, stderr := h.run(t, "", "skill", "install"); outcome.Code != 4 || errorKind(stderr) != "exists" {
 		t.Fatalf("install over a directory: %+v %q", outcome, stderr)
 	}
+	// Outside the app, installing cannot succeed, so neither the error nor
+	// mk doctor suggests it alone.
 	h.executable = filepath.Join(t.TempDir(), "Maskey")
-	if outcome, _, stderr := h.run(t, "", "skill", "install"); outcome.Code != 6 || errorKind(stderr) != "prerequisite" {
+	const recovery = "run mk skill install with the mk that Maskey > Install Command Line Tool links into the app; reinstall Maskey if the app lacks the skill"
+	if outcome, _, stderr := h.run(t, "", "skill", "install"); outcome.Code != 6 || stderr != "mk: error[prerequisite]: this mk is not inside Maskey.app, which holds the skill\nmk: hint: "+recovery+"\n" {
 		t.Fatalf("install outside the app: %+v %q", outcome, stderr)
+	}
+	if _, stdout, _ := h.run(t, "", "doctor"); !strings.HasSuffix(stdout, "warning  skill        this mk is not inside Maskey.app, which holds the skill\n                      hint: "+recovery+"\n") {
+		t.Fatalf("doctor outside the app:\n%s", stdout)
 	}
 }
 

@@ -62,13 +62,18 @@ type Exit struct {
 	Signal syscall.Signal
 }
 
-// Error is a runner failure; Code is the status to exit with.
+// Error is a runner failure; Code is the status to exit with. Message
+// never quotes the command, which may be a value put after -- by mistake;
+// Err, the failure it describes, may.
 type Error struct {
 	Code    int
 	Message string
+	Err     error
 }
 
 func (e *Error) Error() string { return e.Message }
+
+func (e *Error) Unwrap() error { return e.Err }
 
 // Run starts the command and waits for it. It returns an *Error when the
 // command could not start or its output could not be passed on whole; the
@@ -200,16 +205,33 @@ func runPipes(cmd *exec.Cmd, stdin *os.File, j *job, stdout, stderr io.Writer) (
 }
 
 // execError classifies a failure to find or start the command: 127 when
-// nothing is there, 126 when something is but cannot run.
+// nothing is there, 126 when something is but cannot run. Its message
+// names the cause without the command or its path.
 func execError(err error, otherwise int) *Error {
-	code := otherwise
+	e := &Error{Code: otherwise, Err: err}
 	switch {
-	case errors.Is(err, exec.ErrNotFound), errors.Is(err, os.ErrNotExist):
-		code = ExitNotFound
-	case errors.Is(err, os.ErrPermission), errors.Is(err, syscall.EISDIR), errors.Is(err, syscall.ENOEXEC):
-		code = ExitNotExecutable
+	case errors.Is(err, exec.ErrNotFound):
+		e.Code, e.Message = ExitNotFound, "the command was not found in PATH"
+	case errors.Is(err, exec.ErrDot):
+		e.Code, e.Message = ExitNotFound, "the command was found only through a relative PATH entry"
+	case errors.Is(err, os.ErrNotExist):
+		e.Code, e.Message = ExitNotFound, "there is no file at the command's path"
+	case errors.Is(err, os.ErrPermission):
+		e.Code, e.Message = ExitNotExecutable, "the command is not executable"
+	case errors.Is(err, syscall.EISDIR):
+		e.Code, e.Message = ExitNotExecutable, "the command is a directory"
+	case errors.Is(err, syscall.ENOEXEC):
+		e.Code, e.Message = ExitNotExecutable, "the command is not in a format this Mac can run"
+	default:
+		// The innermost error is the system's, such as an errno, which
+		// os/exec and os wrap with the command's name or path.
+		cause := err
+		for inner := errors.Unwrap(cause); inner != nil; inner = errors.Unwrap(cause) {
+			cause = inner
+		}
+		e.Message = "starting the command failed: " + cause.Error()
 	}
-	return &Error{Code: code, Message: err.Error()}
+	return e
 }
 
 // foreground reports whether f is the runner's controlling terminal, by

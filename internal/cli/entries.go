@@ -90,7 +90,7 @@ no stderr message.`,
 func setCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "set",
-		Annotations: map[string]string{usageAnnotation: `mk set [--json] <namespace>/<NAME>...
+		Annotations: map[string]string{usageAnnotation: `mk set [--yes] [--json] <namespace>/<NAME>...
 mk set --stdin [--json] <namespace>/<NAME>`},
 		SuggestFor: []string{"add", "put", "create"},
 		Short:      "Create entries or replace their values",
@@ -111,6 +111,17 @@ passphrase from another entry. A key stored without its passphrase keeps
 its format but loses its comment. Without a terminal, or for a PKCS#8 key
 (ENCRYPTED PRIVATE KEY), which only OpenSSL can decrypt, mk stores the
 key as it is and warns how to proceed.
+
+When stdin is a terminal, mk lists the entries that already exist and
+asks once before replacing their values, which the Keychain does not
+keep. Type y or yes and press Return to confirm, ignoring case; --yes
+skips the question. With --stdin, mk replaces without asking, and the
+result line says replaced.
+
+Names are case-sensitive: github/github_token is a different entry
+from github/GITHUB_TOKEN, and mk run sets both. mk warns before creating an
+entry whose name differs only in case from an existing one; press
+Ctrl-C at the value prompt to stop.
 
 A namespace starts with an ASCII letter or digit, followed by ASCII
 letters, digits, '.', '_' or '-'. NAME starts with an ASCII letter or
@@ -138,12 +149,52 @@ access. New entries start without program access.`,
 				return err
 			}
 			fromStdin, _ := cmd.Flags().GetBool("stdin")
+			yes, _ := cmd.Flags().GetBool("yes")
 			switch {
 			case fromStdin && len(refs) > 1:
 				return withHint(usageError("set --stdin takes exactly one entry"), "usage: mk set --stdin [--json] <namespace>/<NAME>")
 			case !fromStdin && !term.IsTerminal(int(env.Stdin.Fd())):
 				return withHint(usageError("standard input is not a terminal and set needs --stdin"),
 					"pipe one value to mk set --stdin <namespace>/<NAME>, or have the owner run mk set <namespace>/<NAME> in their terminal")
+			}
+			_, existing, _, err := env.Store.Listing(cmd.Context())
+			if err != nil {
+				return err
+			}
+			var replacing []store.Ref
+			for _, ref := range refs {
+				if slices.Contains(existing, ref) {
+					replacing = append(replacing, ref)
+					continue
+				}
+				var twins []string
+				for _, other := range existing {
+					if strings.EqualFold(ref.String(), other.String()) {
+						twins = append(twins, other.String())
+					}
+				}
+				if len(twins) > 0 {
+					warn(cmd, env, fmt.Sprintf("%s differs only in case from %s", ref, strings.Join(twins, " and ")),
+						"names are case-sensitive, so this creates a second entry; mk delete removes the one you do not need")
+				}
+			}
+			// Asked before the first value is typed, so a declined answer
+			// leaves nothing to discard.
+			ask := !fromStdin && !yes
+			if ask && len(replacing) > 0 {
+				noun, consequence := "value", "The current value is not kept."
+				if len(replacing) > 1 {
+					noun, consequence = "values", "Their current values are not kept."
+				}
+				var prompt strings.Builder
+				fmt.Fprintf(&prompt, "Replace the %s of %s:\n", noun, count(len(replacing), "entry", "entries"))
+				for _, ref := range replacing {
+					fmt.Fprintf(&prompt, "  %s\n", ref)
+				}
+				prompt.WriteString(consequence + " Continue? [y/N] ")
+				if err := confirm(cmd.Context(), env, prompt.String(), "no entries were written"); err != nil {
+					return err
+				}
 			}
 			values := make([][]byte, len(refs))
 			for i, ref := range refs {
@@ -158,7 +209,7 @@ access. New entries start without program access.`,
 					}
 				case unremovable:
 					warn(cmd, env, "the private key is protected by a passphrase that mk cannot remove",
-						fmt.Sprintf("openssl pkey -in <file> | mk set --stdin %s stores the key without it; OpenSSL asks for the passphrase on the terminal. Keep it when the program reads the passphrase from another entry.", ref))
+						fmt.Sprintf("openssl pkey -in <file> | mk set --stdin %s stores the key without it, with OpenSSL asking for the passphrase on the terminal; keep it when the program reads the passphrase from another entry", ref))
 				}
 				if err := store.ValidateValue(value); err != nil {
 					return atArgument(err, i+1)
@@ -166,6 +217,11 @@ access. New entries start without program access.`,
 				values[i] = value
 			}
 			return writeEach(cmd, env, refs, func(i int, ref store.Ref) (string, error) {
+				if ask && !slices.Contains(replacing, ref) {
+					// Unconfirmed, so an entry created since the listing
+					// fails rather than being replaced.
+					return "created", env.Store.Create(cmd.Context(), ref, values[i], store.Details{Kind: store.InferValueKind(ref.Name)})
+				}
 				created, err := env.Store.Set(cmd.Context(), ref, values[i])
 				if created {
 					return "created", err
@@ -175,6 +231,7 @@ access. New entries start without program access.`,
 		},
 	}
 	cmd.Flags().Bool("stdin", false, "Read one value from standard input")
+	cmd.Flags().BoolP("yes", "y", false, "Replace existing entries without asking")
 	addJSONFlag(cmd, "Write results or errors as JSON")
 	return cmd
 }
@@ -207,7 +264,7 @@ newline, label, or JSON wrapper.`,
 			// Checked before the lookup, so a refused value is never read.
 			if f, ok := env.Stdout.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 				return withHint(usageError("get cannot write a raw value to terminal stdout"),
-					"use mk run <namespace>/<NAME> -- <command>, or configure the helper to capture mk get directly. To view the value yourself, use Reveal in Maskey.")
+					"use mk run <namespace>/<NAME> -- <command>, or have the helper capture mk get itself; to see the value yourself, use Reveal in Maskey")
 			}
 			value, err := env.Store.GrantedValue(cmd.Context(), ref)
 			if err != nil {
@@ -257,7 +314,10 @@ letters, digits, '.', '_' or '-'. NAME starts with an ASCII letter or
 				}
 				return atArgument(err, 1)
 			}
-			return writeResult(cmd, env, map[string]any{"from": from, "to": to}, fmt.Sprintf("renamed %s to %s\n", from, to))
+			if err := writeResult(cmd, env, map[string]any{"from": from, "to": to}, fmt.Sprintf("renamed %s to %s\n", from, to)); err != nil {
+				return withHint(err, "the entry was renamed; mk list shows it under the new reference")
+			}
+			return nil
 		},
 	}
 	addJSONFlag(cmd, "Write the result or errors as JSON")
@@ -322,7 +382,7 @@ the initial check.`,
 			})
 		},
 	}
-	cmd.Flags().BoolP("yes", "y", false, "Skip confirmation")
+	cmd.Flags().BoolP("yes", "y", false, "Delete without asking")
 	addJSONFlag(cmd, "Write results or errors as JSON")
 	return cmd
 }
@@ -333,7 +393,7 @@ type result struct {
 	Action string `json:"action"`
 }
 
-const outputHint = "check the output destination before continuing. Do not repeat confirmed writes."
+const outputHint = "check the output destination before continuing; do not repeat confirmed writes"
 
 // writeEach writes refs in order, each with write, which returns the action
 // it performs, and stops at the first failure. In text, each confirmed

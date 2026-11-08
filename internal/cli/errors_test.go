@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -56,7 +58,7 @@ func TestUsageErrors(t *testing.T) {
 		{[]string{"help", "bogus"}, "usage", "usage: mk help [<command> [<subcommand>]] or mk help exit-codes"},
 		{[]string{"exit-codes", "extra"}, "usage", "usage: mk help exit-codes"},
 		{[]string{"list", "a", "b"}, "usage", "usage: mk list [--json] [<namespace>]"},
-		{[]string{"set"}, "usage", "usage: mk set [--json] <namespace>/<NAME>... or mk set --stdin [--json] <namespace>/<NAME>"},
+		{[]string{"set"}, "usage", "usage: mk set [--yes] [--json] <namespace>/<NAME>... or mk set --stdin [--json] <namespace>/<NAME>"},
 		{[]string{"set", "--stdin", "app/A", "app/B"}, "usage", "usage: mk set --stdin [--json] <namespace>/<NAME>"},
 		{[]string{"set", "--stdin", "app/A", "app/B", "app/A"}, "usage", "pass each entry once"},
 		{[]string{"set", "--stdin", "app", "TOKEN"}, "usage", "enter the value at the hidden prompt or pipe one value to mk set --stdin <namespace>/<NAME>"},
@@ -82,6 +84,14 @@ func TestErrorsNeverQuoteArguments(t *testing.T) {
 	h := newHarness(t)
 	h.set(t, "github/TOKEN")
 	const value = "synthetic-value-5e1d"
+	// Commands named by the value: a directory, a file without execute
+	// permission, and one in no format a Mac runs.
+	directory := filepath.Join(t.TempDir(), value)
+	os.Mkdir(directory, 0o755)
+	script := filepath.Join(t.TempDir(), value)
+	os.WriteFile(script, []byte("#!/bin/sh\n"), 0o600)
+	garbage := filepath.Join(t.TempDir(), value)
+	os.WriteFile(garbage, []byte{0xff, 0xfe, 0, 0}, 0o700)
 	for _, args := range [][]string{
 		{value},
 		{"GITHUB_TOKEN=" + value, "gh", "auth", "status"},
@@ -100,6 +110,10 @@ func TestErrorsNeverQuoteArguments(t *testing.T) {
 		{"run", "github/TOKEN=" + value, "--", "true"},
 		{"run", "github", "-n" + value, "--", "true"},
 		{"run", "github", "--" + value, "--", "true"},
+		{"run", "github", "--", value},
+		{"run", "github", "--", directory},
+		{"run", "github", "--", script},
+		{"run", "github", "--", garbage},
 		{"list", value + "/"},
 		{"list", "a" + value},
 		{"help", value},

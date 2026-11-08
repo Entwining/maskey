@@ -2,6 +2,17 @@
 
 ## 0.0.8
 
+- `mk set` at its hidden prompt lists the entries that already exist and asks once before replacing their values, which the Keychain does not keep; `--yes` skips the question. `mk set --stdin` still replaces without asking, so scripts that rotate a value keep working.
+- `mk set` warns before creating an entry whose name differs from an existing one only in case, such as `github/github_token` beside `github/GITHUB_TOKEN`, which `mk run` would set as two variables.
+- Hints on stderr and `recovery` in JSON errors and warnings use one form: a lowercase fragment without a final period.
+- `mk run` no longer repeats the command in `command_not_found` and `command_not_executable` errors, so a value put after `--` by mistake stays out of stderr and JSON errors. The message says why the command cannot run, and the hint how to fix it, including that `mk run` starts the command without a shell. Error kinds and exit statuses are unchanged; scripts that matched the old message text need the kind instead.
+- When `mk grant` or `mk revoke` changes entries but cannot write its result, its `io` error lists the completed changes in `completed`, with an empty `not_attempted`, and how the owner approved them in `auth`. An `io` error from `mk rename` says the entry was renamed. The exit status stays 12.
+- `mk set`, `mk delete`, and `mk uninstall` ask their questions and read hidden values on the terminal instead of stdin and stderr, so redirecting stderr keeps the prompt visible and `--json` keeps stderr to JSON lines. Whether they ask still depends on stdin: without a terminal there, they need `--stdin` or `--yes` as before.
+- `mk skill install` from an `mk` outside Maskey.app says to use the `mk` that Maskey > Install Command Line Tool links into the app, and `mk doctor` reports that case instead of suggesting `mk skill install`.
+- When `mk set` cannot remove a key's passphrase, its hint no longer claims that `ssh-keygen -p` keeps the passphrase: it says to enter the same one at the new-passphrase prompts.
+- `mk doctor` reports `1 entry in 1 namespace` instead of `1 entries in 1 namespaces`, in its text and in the JSON `detail`.
+- `mk help exit-codes` shows the `{"error":{...}}` wrapper of JSON errors, the shape of `entry`, every `action` a result can have, and where prompts go; its `locked` and `unavailable` rows describe the state and name mk's Keychain service.
+- Command help uses consistent usage lines, operand names, and wording. `mk activity --help` says which commands its operations come from, and each `mk completion <shell> --help` says how to load completion in every session.
 - In the window's entry list, holding Space, Command-C, or Command-Backspace acts once, as a single press does, instead of showing and hiding the value, reading it from the Keychain each time it shows, or copying it over and over.
 - A divider dragged quickly and let go between two frames ends where the pointer let go instead of short of it, so a quick drag of the sidebar's line toward the window's edge hides the sidebar.
 
