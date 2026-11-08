@@ -44,14 +44,33 @@ func (g *gui) toggleReveal() {
 	g.read(g.entry, "reveal", func(value []byte) { g.revealed = string(value) })
 }
 
-// copy puts ref's value on the clipboard; the chosen entry's card confirms
-// it.
+const clipboardClearDelay = 90 * time.Second
+
+// valueClipboard is the clipboard as the window's Copy uses it. The change
+// count identifies a write, so clearing it leaves a later copy alone, even
+// one of the same value.
+type valueClipboard interface {
+	// write replaces the clipboard's contents with value and returns the
+	// clipboard's change count after the write.
+	write(value []byte) (change int, err error)
+	// clearIf clears the clipboard if its change count is still change.
+	clearIf(change int)
+}
+
+// copy puts ref's value on the clipboard; only the chosen entry's card
+// confirms it.
 func (g *gui) copy(ref store.Ref) {
-	services := g.services
 	chosen := ref == g.entry
 	g.copied = false
 	g.read(ref, "copy", func(value []byte) {
-		services.WriteClipboard(string(value))
+		change, err := g.clipboard.write(value)
+		if err != nil {
+			g.showAlert(fmt.Sprintf("Couldn’t Copy “%s”", ref.Name), err)
+			return
+		}
+		clipboard := g.clipboard
+		g.clearCopy = func() { clipboard.clearIf(change) }
+		g.clearLater(clipboardClearDelay, g.clearCopy)
 		if chosen {
 			g.copied, g.copiedUntil = true, time.Time{}
 		}

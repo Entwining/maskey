@@ -159,7 +159,7 @@ func TestCopyFeedbackExpiresAndFollowsSelection(t *testing.T) {
 		t.Fatal("the copy action is absent")
 	}
 	h.click("Copy Value")
-	if got := h.tt.Clipboard(); got != tokenValue || h.tt.HasText(tokenValue) {
+	if got := h.clipboard.text; got != tokenValue || h.tt.HasText(tokenValue) {
 		t.Fatalf("clipboard %q; the value shows %v", got, h.tt.HasText(tokenValue))
 	}
 	copied, ok := h.tt.Find("Copied")

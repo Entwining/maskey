@@ -14,6 +14,7 @@
 - `mk help exit-codes` shows the `{"error":{...}}` wrapper of JSON errors, the shape of `entry`, every `action` a result can have, and where prompts go; its `locked` and `unavailable` rows describe the state and name mk's Keychain service.
 - Command help uses consistent usage lines, operand names, and wording. `mk activity --help` says which commands its operations come from, and each `mk completion <shell> --help` says how to load completion in every session.
 - In the window's entry list, holding Space, Command-C, or Command-Backspace acts once, as a single press does, instead of showing and hiding the value, reading it from the Keychain each time it shows, or copying it over and over.
+- Copy Value, Edit > Copy, and Command-C in the entry list keep the copied value on this Mac, off Universal Clipboard, mark it as confidential for clipboard managers, and clear it after 90 seconds or when Maskey quits, unless something else was copied since. Text selected in a revealed value and copied is ordinary text.
 - A divider dragged quickly and let go between two frames ends where the pointer let go instead of short of it, so a quick drag of the sidebar's line toward the window's edge hides the sidebar.
 
 ## 0.0.7

@@ -81,6 +81,7 @@ func runGUI() {
 		})
 		g.post = win.Update
 		g.showMessage = func(a alert) (int, error) { return showSheet(win, a) }
+		g.clipboard = generalPasteboard{}
 		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 			{Role: mygo.RoleAppMenu, Submenu: []*mygo.MenuItem{
 				{Role: mygo.RoleAbout},
@@ -144,6 +145,11 @@ func runGUI() {
 			}
 		})
 		win.OnClosed(g.close)
+		// A copy's timer ends with the app, so quitting clears the copy
+		// early rather than leave it on the clipboard with nothing to clear
+		// it. Closing the window while another, such as the update window,
+		// keeps the app running leaves the timer running.
+		mygo.App.OnWillQuit(func(*mygo.QuitEvent) { g.clearCopy() })
 		g.refresh()
 	})
 	if err := mygo.App.Run(); err != nil {
@@ -155,13 +161,16 @@ func runGUI() {
 // their results through post, which runs a function on the UI thread.
 type gui struct {
 	// ctx is every operation's context, which names the window's caller.
-	ctx      context.Context
-	store    *store.Store
-	approve  store.Approve
-	post     func(func())
-	services ui.Services
-	closed   bool
-	pending  int
+	ctx     context.Context
+	store   *store.Store
+	approve store.Approve
+	post    func(func())
+	// clipboard takes the values the window copies; clearLater runs a
+	// function after a delay, on a goroutine of its own.
+	clipboard  valueClipboard
+	clearLater func(time.Duration, func())
+	closed     bool
+	pending    int
 	// closeWindow closes the window at once; quitApp starts a quit, which
 	// runs later.
 	closeWindow, quitApp func()
@@ -211,6 +220,9 @@ type gui struct {
 	revealed    string
 	copied      bool
 	copiedUntil time.Time
+	// clearCopy clears the clipboard if it still holds the latest value
+	// copied.
+	clearCopy func()
 
 	writeAction string // "submit", "delete", or "access"
 	writeRef    store.Ref
@@ -313,6 +325,7 @@ func (e formError) on(field string) string {
 func newGUI(ctx context.Context, s *store.Store, approve store.Approve, layoutPath string) *gui {
 	l := loadLayout(layoutPath)
 	g := &gui{ctx: ctx, store: s, approve: approve, namespace: allNamespaces, layoutPath: layoutPath,
+		clearLater: func(delay time.Duration, fn func()) { time.AfterFunc(delay, fn) }, clearCopy: func() {},
 		sidebarHidden: l.SidebarHidden, sidebarWidth: l.SidebarWidth, listWidth: l.ListWidth}
 	g.entryItems = newEntryItems(g)
 	g.sidebarItem = &mygo.MenuItem{Label: g.sidebarLabel(), Accelerator: "Ctrl+Cmd+S", Click: g.onMenu(g.toggleSidebar)}
@@ -515,7 +528,6 @@ func (g *gui) rows() []store.Ref {
 
 func (g *gui) view(c *ui.Context) {
 	c.SetTheme(theme(c.Theme()))
-	g.services = c.Services()
 	if g.copied {
 		if g.copiedUntil.IsZero() {
 			g.copiedUntil = c.Now().Add(2 * time.Second)

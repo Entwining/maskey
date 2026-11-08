@@ -461,7 +461,7 @@ func TestRowMenuBesideForm(t *testing.T) {
 	h.typeValue("synthetic-draft")
 	row := h.g.row
 	h.choose("PASSWORD", "Copy Value")
-	if got := h.tt.Clipboard(); got != "synthetic-db-0a7f" {
+	if got := h.clipboard.text; got != "synthetic-db-0a7f" {
 		t.Fatalf("Copy Value copied %q", got)
 	}
 	// The card of the form's entry, back once the form closes, did not copy.
@@ -471,7 +471,7 @@ func TestRowMenuBesideForm(t *testing.T) {
 	h.focusList()
 	h.tt.Key(ui.Cmd, ui.KeyC)
 	h.settle()
-	if got := h.tt.Clipboard(); got != urlValue {
+	if got := h.clipboard.text; got != urlValue {
 		t.Fatalf("Cmd-C beside the form copied %q", got)
 	}
 	h.tt.Key(ui.Cmd, ui.KeyBackspace)

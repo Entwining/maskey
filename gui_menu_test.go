@@ -55,7 +55,7 @@ func TestEntryItems(t *testing.T) {
 	}
 	h.tt.Command("copy")
 	h.settle()
-	if got := h.tt.Clipboard(); got != urlValue {
+	if got := h.clipboard.text; got != urlValue {
 		t.Fatalf("Edit ▸ Copy copied %q", got)
 	}
 	click(m.delete)

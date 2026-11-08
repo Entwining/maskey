@@ -14,7 +14,7 @@ An entry is `<namespace>/<NAME>`. The name becomes the environment variable, and
 
 ## What Maskey protects, and what it does not
 
-`mk run` replaces each exact value in the command's stdout and stderr with a marker before passing the output on. The window shows a value when you reveal, copy, or edit it. `mk get` prints one only for an entry you granted program access, for a program that runs a command to obtain its key; once granted, any program that can run `mk` can obtain that value. Changes to program access require your login password, Touch ID, or Apple Watch; one approval covers further changes from the same place for 5 minutes.
+`mk run` replaces each exact value in the command's stdout and stderr with a marker before passing the output on. The window shows a value when you reveal or edit it. Copy Value keeps the value on this Mac, marks it as confidential for clipboard managers, and clears it after 90 seconds; text you select in a revealed value and copy is ordinary text. `mk get` prints a value only for an entry you granted program access, for a program that runs a command to obtain its key; once granted, any program that can run `mk` can obtain that value. Changes to program access require your login password, Touch ID, or Apple Watch; one approval covers further changes from the same place for 5 minutes.
 
 The command you run still receives the credentials and can do anything with them. Masking does not catch a value the command encodes or transforms, writes to a file, or sends over the network. A terminal program that inserts line breaks or styling within a value can also show it unmasked. Use Maskey with commands you trust, and wrap the tool that needs the credential rather than a whole agent, whose own logs `mk` cannot mask.
 
