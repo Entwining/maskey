@@ -53,7 +53,7 @@ func TestClientDirectRoundTrip(t *testing.T) {
 			t.Fatal(err)
 		}
 		values, err := client.Read(ctx, []string{account})
-		if err != nil || !bytes.Equal(values[account], test.value) {
+		if err != nil || !bytes.Equal(values[account].Value, test.value) {
 			t.Fatalf("direct read: %v", err)
 		}
 	}
@@ -182,7 +182,7 @@ func TestClientWithoutServicePerformsDirectly(t *testing.T) {
 	client := New(direct, func(err error) { warnings = append(warnings, err) }, false)
 	client.path = filepath.Join(t.TempDir(), "missing.sock")
 	values, err := client.Read(context.Background(), []string{"test/NAME"})
-	if err != nil || !bytes.Equal(values["test/NAME"], []byte("synthetic-value")) || len(direct.Reads) != 1 {
+	if err != nil || !bytes.Equal(values["test/NAME"].Value, []byte("synthetic-value")) || len(direct.Reads) != 1 {
 		t.Fatalf("read %q, %v after %d direct reads", values, err, len(direct.Reads))
 	}
 	if len(warnings) != 1 || !errors.Is(warnings[0], unix.ENOTDIR) || !store.IsKind(warnings[0], store.KindUnavailable) {

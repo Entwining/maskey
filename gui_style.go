@@ -43,6 +43,7 @@ var kinds = []kindChoice{
 	{store.ValueToken, "API Key", keyIcon},
 	{store.ValuePassword, "Password", icon("rectangle-ellipsis")},
 	{store.ValuePEM, "Private Key", icon("file-key")},
+	{store.ValueSSH, "SSH Key", icon("square-terminal")},
 	{store.ValueURL, "URL", icon("link")},
 	{store.ValueIdentifier, "Identifier", icon("id-card")},
 	{store.ValueSetting, "Other", icon("ellipsis")},

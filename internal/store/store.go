@@ -113,8 +113,16 @@ type Item struct {
 	Attributes
 }
 
+// Stored is an item's value and the kind stored in the same item.
+type Stored struct {
+	Value []byte    `json:"value"`
+	Kind  ValueKind `json:"kind,omitempty"`
+}
+
 // Backend stores values under account strings. Read omits accounts that do
-// not exist from its result; Items never loads values. Get returns the
+// not exist from its result and takes each value's kind from the same
+// lookup, since mk run hands a value to the command by its kind; Items
+// never loads values. Get returns the
 // value of an item that has program access, which it checks in the same
 // lookup, and fails with KindNotGranted for another. Add fails with
 // KindExists, and Get, Update, SetProgramAccess and Delete with
@@ -124,7 +132,7 @@ type Item struct {
 // account. No write but SetProgramAccess changes program access.
 type Backend interface {
 	Items(ctx context.Context) ([]Item, error)
-	Read(ctx context.Context, accounts []string) (map[string][]byte, error)
+	Read(ctx context.Context, accounts []string) (map[string]Stored, error)
 	Get(ctx context.Context, account string) ([]byte, error)
 	Add(ctx context.Context, account string, value []byte, details Details) error
 	Update(ctx context.Context, account string, value []byte) error
@@ -275,9 +283,10 @@ func (s *Store) Delete(ctx context.Context, ref Ref) error {
 	return s.backend.Delete(ctx, ref.account())
 }
 
-// Entry is a credential with its value.
+// Entry is a credential with its value and its kind.
 type Entry struct {
 	Ref
+	Kind  ValueKind
 	Value []byte
 }
 
@@ -464,11 +473,11 @@ func (s *Store) read(ctx context.Context, refs []Ref) ([]Entry, error) {
 	}
 	entries := make([]Entry, len(refs))
 	for i, ref := range refs {
-		value, ok := values[ref.account()]
+		stored, ok := values[ref.account()]
 		if !ok {
 			return nil, &Error{Kind: KindNotFound, Ref: &ref, Message: "the entry does not exist"}
 		}
-		entries[i] = Entry{Ref: ref, Value: value}
+		entries[i] = Entry{Ref: ref, Kind: ValueKindOf(ref.Name, stored.Kind), Value: stored.Value}
 	}
 	return entries, nil
 }

@@ -65,13 +65,13 @@ func (r request) timeout() time.Duration {
 }
 
 type response struct {
-	OK      bool                 `json:"ok"`
-	Items   []store.Item         `json:"items,omitempty"`
-	Value   []byte               `json:"value,omitempty"`
-	Values  map[string][]byte    `json:"values,omitempty"`
-	Changes []store.AccessChange `json:"changes,omitempty"`
-	Auth    string               `json:"auth,omitempty"`
-	Error   *store.Error         `json:"error,omitempty"`
+	OK      bool                    `json:"ok"`
+	Items   []store.Item            `json:"items,omitempty"`
+	Value   []byte                  `json:"value,omitempty"`
+	Values  map[string]store.Stored `json:"values,omitempty"`
+	Changes []store.AccessChange    `json:"changes,omitempty"`
+	Auth    string                  `json:"auth,omitempty"`
+	Error   *store.Error            `json:"error,omitempty"`
 	// Warning is the service's failure to record the request, which names
 	// files, never a value.
 	Warning string `json:"warning,omitempty"`
@@ -172,7 +172,7 @@ func (c *Client) Items(ctx context.Context) ([]store.Item, error) {
 	return r.Items, err
 }
 
-func (c *Client) Read(ctx context.Context, accounts []string) (map[string][]byte, error) {
+func (c *Client) Read(ctx context.Context, accounts []string) (map[string]store.Stored, error) {
 	r, err := c.perform(ctx, request{Op: "read", Accounts: accounts, Via: activity.ViaOf(ctx)}, func(ctx context.Context) (r response, err error) {
 		r.Values, err = c.direct.Read(ctx, accounts)
 		return r, err

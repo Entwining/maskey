@@ -319,7 +319,7 @@ type recordingReads struct {
 	log *activity.Log
 }
 
-func (b recordingReads) Read(ctx context.Context, accounts []string) (map[string][]byte, error) {
+func (b recordingReads) Read(ctx context.Context, accounts []string) (map[string]store.Stored, error) {
 	values, err := b.Backend.Read(ctx, accounts)
 	b.log.Record(ctx, activity.Record{Op: "read", Entry: accounts[0], Result: "ok"})
 	return values, err
@@ -340,7 +340,7 @@ func TestServiceFailureToRecordReachesClient(t *testing.T) {
 	var warnings []error
 	client := &Client{path: path, failed: func(err error) { warnings = append(warnings, err) }}
 	r, err := client.remote(context.Background(), request{Op: "read", Accounts: []string{"fixture/NAME"}})
-	if err != nil || string(r.Values["fixture/NAME"]) != "synthetic" {
+	if err != nil || string(r.Values["fixture/NAME"].Value) != "synthetic" {
 		t.Fatalf("read: %+v, %v", r, err)
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0].Error(), "not a directory") || serviceWarnings.Load() != 0 {

@@ -196,8 +196,12 @@ class Keychain:
         true = self.constant("kCFBooleanTrue", self.cf)
         values = {}
         for account in accounts:
+            # The kind comes from the lookup that returns the value, so a
+            # value saved with another kind since the listing is never
+            # handed to a command by the old one.
             query = self.query(service, account, [
                 ("kSecReturnData", true),
+                ("kSecReturnAttributes", true),
                 ("kSecMatchLimit", self.constant("kSecMatchLimitOne")),
             ])
             result = ctypes.c_void_p()
@@ -207,7 +211,12 @@ class Keychain:
             if status != 0:
                 return status, None
             self.own(result.value)
-            values[account] = base64.b64encode(self.data(result)).decode("ascii")
+            value = self.cf.CFDictionaryGetValue(result, self.constant("kSecValueData"))
+            stored = {"value": base64.b64encode(self.data(value)).decode("ascii")}
+            kind = self.item(result).get("kind")
+            if kind:
+                stored["kind"] = kind
+            values[account] = stored
         return 0, values
 
     def value_data(self, value):

@@ -103,14 +103,15 @@ github/GITHUB_TOKEN stores the token alone. A value of several lines,
 such as a PEM key, is stored byte for byte. Empty values and NUL bytes
 are rejected.
 
-For a private key protected by a passphrase, mk asks on the terminal
-whether to store the key without it, since ssh-add and most programs that
-load a key cannot answer a passphrase prompt. Enter the passphrase once,
-or press Return to keep the key as it is for a program that reads the
-passphrase from another entry. A key stored without its passphrase keeps
-its format but loses its comment. Without a terminal, or for a PKCS#8 key
-(ENCRYPTED PRIVATE KEY), which only OpenSSL can decrypt, mk stores the
-key as it is and warns how to proceed.
+For a private key protected by a passphrase, mk asks on the terminal for
+the passphrase and stores the key without it, in its format but without
+its comment. An entry of kind ssh, such as a new one named DEPLOY_SSH_KEY,
+is stored only that way, since mk run's SSH agent cannot ask for the
+passphrase. For another entry, press Return to keep the key as it is for
+a program that reads the passphrase from another entry. Without a
+terminal, or for a PKCS#8 key (ENCRYPTED PRIVATE KEY), which only OpenSSL
+can decrypt, mk writes no entry of kind ssh and stores any other key as
+it is, warning how to proceed.
 
 When stdin is a terminal, mk lists the entries that already exist and
 asks once before replacing their values, which the Keychain does not
@@ -157,7 +158,7 @@ access. New entries start without program access.`,
 				return withHint(usageError("standard input is not a terminal and set needs --stdin"),
 					"pipe one value to mk set --stdin <namespace>/<NAME>, or have the owner run mk set <namespace>/<NAME> in their terminal")
 			}
-			_, existing, _, err := env.Store.Listing(cmd.Context())
+			_, existing, attributes, err := env.Store.Listing(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -202,14 +203,19 @@ access. New entries start without program access.`,
 				if err != nil {
 					return err
 				}
+				sshKey := store.ValueKindOf(ref.Name, attributes[ref].Kind) == store.ValueSSH
 				switch protectionOf(value) {
 				case removable:
-					if value, err = offerToRemovePassphrase(cmd, env, ref, value); err != nil {
+					if value, err = removePassphrase(cmd, env, ref, value, sshKey); err != nil {
 						return err
 					}
 				case unremovable:
-					warn(cmd, env, "the private key is protected by a passphrase that mk cannot remove",
-						fmt.Sprintf("openssl pkey -in <file> | mk set --stdin %s stores the key without it, with OpenSSL asking for the passphrase on the terminal; keep it when the program reads the passphrase from another entry", ref))
+					const message = "the private key is protected by a passphrase that mk cannot remove"
+					hint := fmt.Sprintf("openssl pkey -in <file> | mk set --stdin %s stores the key without it, with OpenSSL asking for the passphrase on the terminal", ref)
+					if sshKey {
+						return withHint(&store.Error{Kind: store.KindInvalid, Ref: &ref, Message: message}, hint)
+					}
+					warn(cmd, env, message, hint+"; keep it when the program reads the passphrase from another entry")
 				}
 				if err := store.ValidateValue(value); err != nil {
 					return atArgument(err, i+1)

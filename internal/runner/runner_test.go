@@ -148,27 +148,39 @@ func child(mode string, args []string) {
 		}
 	case "release":
 		// Ready with its own and its monitor's process IDs; on SIGUSR1,
-		// write a line, then stop as on Ctrl-Z, or, given args[0], create
-		// that file once mk has read the line.
+		// write a line, then stop as on Ctrl-Z and, once continued, wait.
+		// With "queued", it first writes a second line once mk has read the
+		// first, which stays in the terminal. Given a file instead, it
+		// creates that file once mk has read the line, then waits through
+		// the hangup that its monitor's end brings.
 		proceed := make(chan os.Signal, 1)
 		signal.Notify(proceed, syscall.SIGUSR1)
 		fmt.Printf("ready %d %d\n", os.Getpid(), os.Getppid())
 		<-proceed
 		fmt.Println("released")
-		if len(args) == 0 {
-			syscall.Kill(os.Getpid(), syscall.SIGTSTP)
+		switch {
+		case len(args) == 0:
+		case args[0] == "queued":
+			unix.IoctlSetInt(1, unix.TIOCDRAIN, 0)
+			fmt.Println("queued")
+		default:
+			signal.Ignore(syscall.SIGHUP)
+			unix.IoctlSetInt(1, unix.TIOCDRAIN, 0)
+			os.WriteFile(args[0], nil, 0o600)
+			time.Sleep(10 * time.Second)
 			return
 		}
-		unix.IoctlSetInt(1, unix.TIOCDRAIN, 0)
-		os.WriteFile(args[0], nil, 0o600)
+		syscall.Kill(os.Getpid(), syscall.SIGTSTP)
 		time.Sleep(10 * time.Second)
 	case "mk":
 		// mk itself, running args with its own stdio; it exits with its
 		// outcome, a signal as 128+n. With "control", the value has a
 		// control character; with "devtty", stderr is /dev/tty; with
-		// "stdout <path>", stdout is that file.
+		// "stdout <path>", stdout is that file; with "exited <path>",
+		// Exited creates that file.
 		selected := entries
 		stdout, stderr := os.Stdout, os.Stderr
+		var exited func()
 	options:
 		for ; ; args = args[1:] {
 			switch args[0] {
@@ -179,11 +191,22 @@ func child(mode string, args []string) {
 			case "stdout":
 				stdout, _ = os.OpenFile(args[1], os.O_WRONLY, 0)
 				args = args[1:]
+			case "exited":
+				marker := args[1]
+				exited = func() {
+					// Exited runs once: a second run ends mk with status 99.
+					f, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+					if err != nil {
+						os.Exit(99)
+					}
+					f.Close()
+				}
+				args = args[1:]
 			default:
 				break options
 			}
 		}
-		exit, err := Run(context.Background(), Command{Path: args[0], Args: args[1:], Entries: selected, Stdin: os.Stdin, Stdout: stdout, Stderr: stderr})
+		exit, err := Run(context.Background(), Command{Path: args[0], Args: args[1:], Entries: selected, Stdin: os.Stdin, Stdout: stdout, Stderr: stderr, Exited: exited})
 		var runErr *Error
 		switch {
 		case errors.As(err, &runErr):

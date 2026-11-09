@@ -138,18 +138,19 @@ func TestAgentRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(result.Values, map[string][]byte{account: test.value}) {
+		if !reflect.DeepEqual(result.Values, map[string]store.Stored{account: {Value: test.value}}) {
 			t.Fatal("the service changed value bytes")
 		}
 	}
-	// An edit without a value keeps the stored one.
+	// An edit without a value keeps the stored one, and a read returns the
+	// kind with it.
 	details := store.Details{Kind: store.ValuePassword, Notes: "synthetic notes\nsecond line"}
 	if _, err := agentRoundTrip(t, backend, request{Op: "edit", Account: account, To: "test/OTHER", Details: &details}); err != nil {
 		t.Fatal(err)
 	}
 	account = "test/OTHER"
 	result, err := agentRoundTrip(t, backend, request{Op: "read", Accounts: []string{account}})
-	if err != nil || !reflect.DeepEqual(result.Values, map[string][]byte{account: second}) {
+	if err != nil || !reflect.DeepEqual(result.Values, map[string]store.Stored{account: {Value: second, Kind: store.ValuePassword}}) {
 		t.Fatalf("read after the edit: %v", err)
 	}
 	backend.SetProgramAccess(context.Background(), account, true)

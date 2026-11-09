@@ -264,6 +264,7 @@ func TestInferValueKind(t *testing.T) {
 		"CLIENT_SECRET":         store.ValuePassword,
 		"AWS_SECRET_ACCESS_KEY": store.ValueToken,
 		"DEPLOY_PRIVATE_KEY":    store.ValuePEM,
+		"GITHUB_SSH_KEY":        store.ValueSSH,
 		"TLS_CERT":              store.ValueSetting, // a certificate is public
 		"DATABASE_URL":          store.ValueURL,
 		"SENTRY_DSN":            store.ValueURL,
@@ -495,6 +496,25 @@ func TestValuesSelection(t *testing.T) {
 		if len(backend.Reads) != 0 {
 			t.Errorf("Values(%v) read values before rejecting the selection", test.selections)
 		}
+	}
+}
+
+// A value saved with another kind after the listing arrives with that kind,
+// so mk run never hands an SSH key to a command as a variable.
+func TestValuesTakesKindFromRead(t *testing.T) {
+	backend := storetest.New()
+	s := store.New(backend, nil)
+	s.Create(ctx, ref("app", "DEPLOY_KEY"), []byte("old"), store.Details{Kind: store.ValuePEM})
+	backend.Before = func(op, account string) error {
+		if op == "read" {
+			backend.Before = nil
+			return backend.Edit(ctx, "app/DEPLOY_KEY", "app/DEPLOY_KEY", []byte("new"), &store.Details{Kind: store.ValueSSH})
+		}
+		return nil
+	}
+	entries, err := s.Values(ctx, []store.Ref{{Namespace: "app"}})
+	if err != nil || len(entries) != 1 || entries[0].Kind != store.ValueSSH || string(entries[0].Value) != "new" {
+		t.Fatalf("Values: %+v, %v", entries, err)
 	}
 }
 

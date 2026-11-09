@@ -3,12 +3,15 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/store"
@@ -115,7 +118,7 @@ type taggedReads struct {
 	reads *[]string
 }
 
-func (b taggedReads) Read(ctx context.Context, accounts []string) (map[string][]byte, error) {
+func (b taggedReads) Read(ctx context.Context, accounts []string) (map[string]store.Stored, error) {
 	*b.reads = append(*b.reads, activity.ViaOf(ctx))
 	return b.Backend.Read(ctx, accounts)
 }
@@ -128,5 +131,90 @@ func TestRunTagsReads(t *testing.T) {
 	h.store = store.New(taggedReads{h.backend, &reads}, nil)
 	if outcome, _, stderr := h.run(t, "", "run", "app", "--", "true"); outcome.Code != 0 || !slices.Equal(reads, []string{"run"}) {
 		t.Fatalf("run: %+v %q, reads for %q", outcome, stderr, reads)
+	}
+}
+
+// An entry of kind ssh reaches the command as an SSH agent that signs with
+// its key, and as its public key under its name, never as the key itself.
+func TestRunLendsSSHKeys(t *testing.T) {
+	h := newHarness(t)
+	fixtures := keyFixtures(t)
+	h.run(t, string(fixtures[0].plain), "set", "--stdin", "deploy/ED_SSH_KEY")
+	h.run(t, string(fixtures[1].plain), "set", "--stdin", "deploy/RSA_SSH_KEY")
+	h.set(t, "deploy/TOKEN")
+
+	dir := t.TempDir()
+	// ssh-keygen signs through the agent given a public key, as git does
+	// for SSH commit signatures; both are checked against their public keys.
+	script := `set -e
+env > "$1/env"
+ssh-add -L > "$1/listed"
+for name in ED_SSH_KEY RSA_SSH_KEY; do
+  eval 'printf "%s\n" "$'$name'"' > "$1/$name.pub"
+  echo signed > "$1/$name"
+  ssh-keygen -q -Y sign -n test -f "$1/$name.pub" "$1/$name"
+  ssh-keygen -q -Y check-novalidate -n test -s "$1/$name.sig" < "$1/$name" > /dev/null
+done
+printf '%s' "$TOKEN"`
+	outcome, stdout, stderr := h.run(t, "", "run", "deploy", "--", "/bin/sh", "-c", script, "sh", dir)
+	if outcome.Code != 0 || stdout != "***" {
+		t.Fatalf("run: %+v stdout %q stderr %q", outcome, stdout, stderr)
+	}
+	environment, _ := os.ReadFile(filepath.Join(dir, "env"))
+	listed, _ := os.ReadFile(filepath.Join(dir, "listed"))
+	for _, fixture := range fixtures {
+		key, _ := ssh.ParseRawPrivateKey(fixture.plain)
+		signer, _ := ssh.NewSignerFromKey(key)
+		public := strings.TrimSuffix(string(ssh.MarshalAuthorizedKey(signer.PublicKey())), "\n")
+		if !bytes.Contains(environment, []byte("_SSH_KEY="+public+"\n")) || !bytes.Contains(listed, []byte(public)) {
+			t.Errorf("%s: environment %q, listed %q, want its public key in both", fixture.name, environment, listed)
+		}
+		if bytes.Contains(environment, bytes.TrimSpace(bytes.Split(fixture.plain, []byte("\n"))[1])) {
+			t.Errorf("%s: the private key reached the environment", fixture.name)
+		}
+	}
+	for _, comment := range []string{"deploy/ED_SSH_KEY", "deploy/RSA_SSH_KEY"} {
+		if !bytes.Contains(listed, []byte(" "+comment+"\n")) {
+			t.Errorf("listed %q, want the comment %s", listed, comment)
+		}
+	}
+	socket, _, _ := strings.Cut(string(environment[bytes.Index(environment, []byte("SSH_AUTH_SOCK="))+len("SSH_AUTH_SOCK="):]), "\n")
+	if _, err := os.Stat(socket); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the agent's socket %s outlived the command: %v", socket, err)
+	}
+}
+
+// A process the command leaves behind holding its output, which mk waits
+// for, finds no agent once the command has exited.
+func TestRunEndsSSHAgentWithCommand(t *testing.T) {
+	h := newHarness(t)
+	h.run(t, string(keyFixtures(t)[0].plain), "set", "--stdin", "deploy/DEPLOY_SSH_KEY")
+	dir := t.TempDir()
+	script := `(sleep 1; ssh-add -L > /dev/null 2>&1; echo $? > "$1/listed") &`
+	if outcome, _, stderr := h.run(t, "", "run", "deploy", "--", "/bin/sh", "-c", script, "sh", dir); outcome.Code != 0 {
+		t.Fatalf("run: %+v %q", outcome, stderr)
+	}
+	if status, err := os.ReadFile(filepath.Join(dir, "listed")); err != nil || string(status) == "0\n" {
+		t.Fatalf("ssh-add -L after the command exited: status %q, %v", status, err)
+	}
+}
+
+// An entry of kind ssh that holds no key the agent can use stops mk before
+// the command starts.
+func TestRunRejectsUnusableSSHKeys(t *testing.T) {
+	h := newHarness(t)
+	h.store.Create(context.Background(), store.Ref{Namespace: "deploy", Name: "PROTECTED"}, keyFixtures(t)[0].protected, store.Details{Kind: store.ValueSSH})
+	h.store.Create(context.Background(), store.Ref{Namespace: "deploy", Name: "PUBLIC"}, []byte("ssh-ed25519 AAAA synthetic"), store.Details{Kind: store.ValueSSH})
+	marker := filepath.Join(t.TempDir(), "started")
+	for _, test := range []struct{ ref, want string }{
+		{"deploy/PROTECTED", "mk: error[invalid]: deploy/PROTECTED: the SSH key is protected by a passphrase, which mk run cannot ask for\nmk: hint: mk set --stdin deploy/PROTECTED < <file> in a terminal stores the key without it\n"},
+		{"deploy/PUBLIC", "mk: error[invalid]: deploy/PUBLIC: the value of an entry of kind ssh is not an SSH private key\nmk: hint: replace it with mk set --stdin deploy/PUBLIC < <file>, or choose another kind in Maskey\n"},
+	} {
+		if outcome, _, stderr := h.run(t, "", "run", test.ref, "--", "/usr/bin/touch", marker); outcome.Code != 125 || stderr != test.want {
+			t.Errorf("%s: %+v %q", test.ref, outcome, stderr)
+		}
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("a command started with an unusable SSH key")
 	}
 }

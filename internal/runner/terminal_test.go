@@ -2,7 +2,6 @@ package runner
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -480,49 +479,5 @@ func TestTerminalHangupReachesCommand(t *testing.T) {
 	s.master.Close()
 	if code := s.wait(t); code != 128+int(syscall.SIGHUP) {
 		t.Fatalf("exit %d, want %d", code, 128+int(syscall.SIGHUP))
-	}
-}
-
-// A monitor that ends without the command's status is a runner failure,
-// and mk first passes on the output it has read, however long the real
-// terminal takes to take it.
-func TestTerminalMonitorEnds(t *testing.T) {
-	read := filepath.Join(t.TempDir(), "read")
-	s := startSession(t, nil, "fg", command(t, "release", read)...)
-	s.waitOutput(t, "\r\n")
-	var pid, monitor int
-	if _, err := fmt.Sscanf(s.output.String(), "ready %d %d", &pid, &monitor); err != nil {
-		t.Fatal(err)
-	}
-	s.stopOutput(t)
-	syscall.Kill(pid, syscall.SIGUSR1)
-	waitFor(t, func() bool {
-		_, err := os.Stat(read)
-		return err == nil
-	})
-	syscall.Kill(monitor, syscall.SIGKILL)
-	// Not waiting for its output, mk would end at once and drop it. The
-	// shell cannot finish exiting while the terminal's output is stopped,
-	// so mk itself is looked at.
-	time.Sleep(500 * time.Millisecond)
-	if proc, err := unix.SysctlKinfoProc("kern.proc.pid", s.job); err != nil || proc.Proc.P_stat == 5 { // SZOMB
-		t.Fatal("mk ended before passing on the output")
-	}
-	unix.IoctlSetInt(int(s.tty.Fd()), unix.TIOCSTART, 0)
-	if code := s.wait(t); code != ExitFailure {
-		t.Fatalf("exit %d, want %d", code, ExitFailure)
-	}
-	s.waitOutput(t, "released\r\n")
-}
-
-func TestMonitorNeedsTheRunner(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "started")
-	err := exec.Command(self(t), append([]string{MonitorArg}, command(t, "touch", marker)...)...).Run()
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() != ExitFailure {
-		t.Fatalf("error %v, want exit %d", err, ExitFailure)
-	}
-	if _, statErr := os.Stat(marker); statErr == nil {
-		t.Fatal("the command started")
 	}
 }

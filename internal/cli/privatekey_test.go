@@ -17,6 +17,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
+
+	"github.com/Entwining/maskey/internal/store"
 )
 
 const passphrase = "synthetic passphrase"
@@ -251,5 +253,40 @@ func TestSetCancelledAtPassphrase(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("set kept asking after it was cancelled")
+	}
+}
+
+// set stores an SSH key, which mk run's agent cannot unlock, only without
+// its passphrase: an empty answer asks again, and where set cannot ask or
+// cannot decrypt, it writes nothing.
+func TestSetRemovesSSHKeyPassphrase(t *testing.T) {
+	openssh := keyFixtures(t)[0]
+	h := newHarness(t)
+	master, tty := openTerminal(t, "\n"+passphrase+"\n")
+	h.terminal = tty
+	outcome, stdout, stderr := h.run(t, string(openssh.protected), "set", "--stdin", "app/DEPLOY_SSH_KEY")
+	if outcome.Code != 0 || stdout != "created app/DEPLOY_SSH_KEY\n" || stderr != "" || publicKey(t, []byte(h.value("app/DEPLOY_SSH_KEY"))) != publicKey(t, openssh.plain) {
+		t.Fatalf("removed: %+v %q %q", outcome, stdout, stderr)
+	}
+	shown := make([]byte, 4096)
+	n, _ := master.Read(shown)
+	if want := "app/DEPLOY_SSH_KEY is protected by a passphrase, which mk run cannot ask for. Enter the passphrase to store the key without it, or press Ctrl-C to stop."; !strings.Contains(string(shown[:n]), want) {
+		t.Errorf("terminal %q lacks %q", shown[:n], want)
+	}
+
+	// An existing entry's kind decides, whatever its name suggests.
+	h = newHarness(t)
+	h.store.Create(context.Background(), store.Ref{Namespace: "app", Name: "KEY"}, openssh.plain, store.Details{Kind: store.ValueSSH})
+	for _, test := range []struct {
+		name  string
+		value []byte
+		want  string
+	}{
+		{"no terminal", openssh.protected, "mk: error[invalid]: app/KEY: the SSH key is protected by a passphrase, which mk run cannot ask for\nmk: hint: mk set --stdin app/KEY < <file> in a terminal stores the key without it\n"},
+		{"pkcs8", pkcs8, "mk: error[invalid]: app/KEY: the private key is protected by a passphrase that mk cannot remove\nmk: hint: openssl pkey -in <file> | mk set --stdin app/KEY stores the key without it, with OpenSSL asking for the passphrase on the terminal\n"},
+	} {
+		if outcome, _, stderr := h.run(t, string(test.value), "set", "--stdin", "app/KEY"); outcome.Code != 2 || stderr != test.want || h.value("app/KEY") != string(openssh.plain) {
+			t.Errorf("%s: %+v %q", test.name, outcome, stderr)
+		}
 	}
 }

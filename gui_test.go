@@ -98,7 +98,7 @@ type taggedReads struct {
 	reads *[]string
 }
 
-func (b taggedReads) Read(ctx context.Context, accounts []string) (map[string][]byte, error) {
+func (b taggedReads) Read(ctx context.Context, accounts []string) (map[string]store.Stored, error) {
 	*b.reads = append(*b.reads, activity.ViaOf(ctx))
 	return b.Backend.Read(ctx, accounts)
 }
@@ -363,7 +363,7 @@ func (h *harness) attributes(account string) store.Attributes {
 func (h *harness) value(account string) (string, bool) {
 	values, _ := h.backend.Read(context.Background(), []string{account})
 	v, ok := values[account]
-	return string(v), ok
+	return string(v.Value), ok
 }
 
 func TestNamespaceNavigation(t *testing.T) {

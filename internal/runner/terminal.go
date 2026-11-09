@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"slices"
+	"sync"
 	"syscall"
 	"time"
 
@@ -117,6 +118,12 @@ func runTerminal(cmd *exec.Cmd, c Command, j *job, stdout, stderr io.Writer) (sy
 	}
 	slave.Close()
 	reportsW.Close()
+	var exited func()
+	if c.Exited != nil {
+		exited = sync.OnceFunc(c.Exited)
+		// The monitor ends after the command, or without telling.
+		watchExit(cmd.Process.Pid, exited)
+	}
 	events := make(chan report)
 	go func() {
 		defer close(events)
@@ -147,6 +154,13 @@ func runTerminal(cmd *exec.Cmd, c Command, j *job, stdout, stderr io.Writer) (sy
 		return 0, execError(&os.PathError{Op: "fork/exec", Path: path, Err: syscall.Errno(r.Value)}, ExitFailure)
 	}
 	j.start(int(r.Value))
+	if exited != nil {
+		// The command's exit is watched rather than taken from its report,
+		// which follows a stop's report and the terminal taking what the
+		// command wrote before that stop. The monitor may already have
+		// reaped the command; a pid that names no process counts as its exit.
+		watchExit(int(r.Value), exited)
+	}
 	// Input is read only now: a key such as Ctrl-C would otherwise reach
 	// the monitor, which leads the terminal's foreground until the command
 	// takes it over.

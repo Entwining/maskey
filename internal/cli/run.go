@@ -3,15 +3,19 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"slices"
 	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/runner"
+	"github.com/Entwining/maskey/internal/sshagent"
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -29,6 +33,12 @@ value. An explicit entry overrides all namespace entries with that NAME.
 Two namespaces that still supply one NAME conflict, as do two different
 explicit entries with one NAME. Repeating a selector has no effect.
 A missing entry or empty namespace stops mk before the command starts.
+
+An entry of kind ssh sets NAME to its public key instead. mk keeps the
+private key and signs with it for the command through an SSH agent at
+SSH_AUTH_SOCK, for ssh, git, and ssh-keygen -Y sign, until the command
+ends. An IdentityAgent in ssh_config takes precedence over SSH_AUTH_SOCK,
+and ssh -A lends the agent to the remote host too.
 
 mk runs the command directly. For shell syntax, use sh -c '...' so the
 child shell interprets the script. Keep credentials out of child arguments.
@@ -70,13 +80,30 @@ use 125, 126, or 127. See mk help exit-codes.`,
 			if err != nil {
 				return err
 			}
+			entries, keys, variables, err := sshKeys(entries)
+			if err != nil {
+				return err
+			}
+			var exited func()
+			if len(keys) > 0 {
+				sshAgent, err := sshagent.Start(keys)
+				if err != nil {
+					return withHint(&store.Error{Kind: kindRunFailed, Message: "the SSH agent could not start: " + err.Error()},
+						"let the sandbox create Unix sockets in TMPDIR, or set TMPDIR to a directory where it can")
+				}
+				defer sshAgent.Close()
+				exited = func() { sshAgent.Close() }
+				variables = append(variables, "SSH_AUTH_SOCK="+sshAgent.Socket())
+			}
 			exit, err := runner.Run(cmd.Context(), runner.Command{
-				Path:    command[0],
-				Args:    command[1:],
-				Entries: entries,
-				Stdin:   env.Stdin,
-				Stdout:  env.Stdout,
-				Stderr:  env.Stderr,
+				Path:      command[0],
+				Args:      command[1:],
+				Entries:   entries,
+				Variables: variables,
+				Stdin:     env.Stdin,
+				Stdout:    env.Stdout,
+				Stderr:    env.Stderr,
+				Exited:    exited,
 			})
 			if errors.Is(err, context.Canceled) {
 				return &store.Error{Kind: store.KindCancelled, Message: "cancelled before the command started"}
@@ -115,6 +142,42 @@ use 125, 126, or 127. See mk help exit-codes.`,
 	cmd.Flags().SetInterspersed(false)
 	addJSONFlag(cmd, "Write mk's own errors as JSON")
 	return cmd
+}
+
+// sshKeys takes the entries of kind ssh out of entries, as keys for an SSH
+// agent and their public keys as the variables that set their names.
+func sshKeys(entries []store.Entry) ([]store.Entry, []agent.AddedKey, []string, error) {
+	var values []store.Entry
+	var keys []agent.AddedKey
+	var variables []string
+	for _, entry := range entries {
+		if entry.Kind != store.ValueSSH {
+			values = append(values, entry)
+			continue
+		}
+		key, err := ssh.ParseRawPrivateKey(entry.Value)
+		var signer ssh.Signer
+		if err == nil {
+			signer, err = ssh.NewSignerFromKey(key)
+		}
+		var missing *ssh.PassphraseMissingError
+		switch {
+		case errors.As(err, &missing):
+			return nil, nil, nil, sshPassphraseError(entry.Ref)
+		case err != nil:
+			return nil, nil, nil, withHint(&store.Error{Kind: store.KindInvalid, Ref: &entry.Ref, Message: "the value of an entry of kind ssh is not an SSH private key"},
+				fmt.Sprintf("replace it with mk set --stdin %s < <file>, or choose another kind in Maskey", entry.Ref))
+		}
+		keys = append(keys, agent.AddedKey{PrivateKey: key, Comment: entry.String()})
+		public := strings.TrimSuffix(string(ssh.MarshalAuthorizedKey(signer.PublicKey())), "\n")
+		variables = append(variables, entry.Name+"="+public)
+	}
+	return values, keys, variables, nil
+}
+
+func sshPassphraseError(ref store.Ref) error {
+	return withHint(&store.Error{Kind: store.KindInvalid, Ref: &ref, Message: "the SSH key is protected by a passphrase, which mk run cannot ask for"},
+		fmt.Sprintf("mk set --stdin %s < <file> in a terminal stores the key without it", ref))
 }
 
 // runOperands splits run's operands at the first -- into selectors, each an

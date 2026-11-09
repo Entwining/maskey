@@ -45,14 +45,22 @@ var (
 	killGrace   = 2 * time.Second
 )
 
-// Command describes what to run.
+// Command describes what to run. Each entry sets its name to its value,
+// which the command's output masks; Variables are NAME=value pairs set after
+// them, which it does not.
 type Command struct {
-	Path    string
-	Args    []string
-	Entries []store.Entry
-	Stdin   *os.File
-	Stdout  io.Writer
-	Stderr  io.Writer
+	Path      string
+	Args      []string
+	Entries   []store.Entry
+	Variables []string
+	Stdin     *os.File
+	Stdout    io.Writer
+	Stderr    io.Writer
+	// Exited, if set, runs once the command has exited, or the monitor that
+	// reports its exit has ended without a report. That can be well before
+	// Run returns: processes the command started may hold its output pipes
+	// open for up to outputGrace, and passing output on can block.
+	Exited func()
 }
 
 // Exit is how the command ended: an exit code, or the signal that ended
@@ -103,6 +111,7 @@ func Run(ctx context.Context, c Command) (Exit, error) {
 	for _, entry := range c.Entries {
 		cmd.Env = append(cmd.Env, entry.Name+"="+string(entry.Value))
 	}
+	cmd.Env = append(cmd.Env, c.Variables...)
 
 	j := &job{started: make(chan struct{})}
 	interrupts := make(chan os.Signal, 4)
@@ -150,7 +159,7 @@ func Run(ctx context.Context, c Command) (Exit, error) {
 	if interactive(c, values) {
 		status, err = runTerminal(cmd, c, j, out, errOut)
 	} else {
-		status, err = runPipes(cmd, c.Stdin, j, out, errOut)
+		status, err = runPipes(cmd, c, j, out, errOut)
 	}
 
 	failure := j.finish()
@@ -178,13 +187,13 @@ func Run(ctx context.Context, c Command) (Exit, error) {
 }
 
 // runPipes runs cmd with the runner's stdin and its output through pipes.
-func runPipes(cmd *exec.Cmd, stdin *os.File, j *job, stdout, stderr io.Writer) (syscall.WaitStatus, error) {
+func runPipes(cmd *exec.Cmd, c Command, j *job, stdout, stderr io.Writer) (syscall.WaitStatus, error) {
 	// Sharing the terminal's foreground process group lets the command read
 	// the terminal and receive Ctrl-C and Ctrl-Z directly. Otherwise the
 	// command gets a group of its own, so interruptions and cleanup reach
 	// the processes it starts without touching the runner's caller.
-	j.group = !foreground(stdin)
-	cmd.Stdin = stdin
+	j.group = !foreground(c.Stdin)
+	cmd.Stdin = c.Stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: j.group}
@@ -193,6 +202,9 @@ func runPipes(cmd *exec.Cmd, stdin *os.File, j *job, stdout, stderr io.Writer) (
 		return 0, execError(err, ExitFailure)
 	}
 	j.start(cmd.Process.Pid)
+	if c.Exited != nil {
+		watchExit(cmd.Process.Pid, c.Exited)
+	}
 	waitErr := cmd.Wait()
 	if cmd.ProcessState == nil {
 		// Waiting itself failed, so the command's status is unknown.
@@ -202,6 +214,35 @@ func runPipes(cmd *exec.Cmd, stdin *os.File, j *job, stdout, stderr io.Writer) (
 	// still hold its output pipes. Their later output is dropped, which
 	// exposes nothing, and the command's own status stands.
 	return cmd.ProcessState.Sys().(syscall.WaitStatus), nil
+}
+
+// watchExit calls exited once the process pid exits. cmd.Wait returns only
+// once the child's output pipes close or WaitDelay passes, too late for
+// exited, and a kqueue reaps nothing. Registered for a child before
+// cmd.Wait can reap it, the watch names no other process. Where the exit
+// cannot be watched, exited runs at once, ending early rather than late.
+func watchExit(pid int, exited func()) {
+	kq, err := unix.Kqueue()
+	if err != nil {
+		exited()
+		return
+	}
+	watch := unix.Kevent_t{Ident: uint64(pid), Filter: unix.EVFILT_PROC, Flags: unix.EV_ADD | unix.EV_ONESHOT, Fflags: unix.NOTE_EXIT}
+	if _, err := unix.Kevent(kq, []unix.Kevent_t{watch}, nil, nil); err != nil {
+		unix.Close(kq)
+		exited()
+		return
+	}
+	go func() {
+		defer unix.Close(kq)
+		events := make([]unix.Kevent_t, 1)
+		for {
+			if _, err := unix.Kevent(kq, nil, events, nil); err != unix.EINTR {
+				break
+			}
+		}
+		exited()
+	}()
 }
 
 // execError classifies a failure to find or start the command: 127 when

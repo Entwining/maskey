@@ -131,12 +131,25 @@ echo '{"value": "`+base64.StdEncoding.EncodeToString(value)+`"}'`)
 	}
 }
 
+func TestRead(t *testing.T) {
+	value := []byte("synthetic-value\n")
+	k := fakeInterpreter(t, `cat >/dev/null
+echo '{"ready": true}'
+echo '{"values": {"ns/A": {"value": "`+base64.StdEncoding.EncodeToString(value)+`", "kind": "ssh"}, "ns/B": {"value": "dg=="}}}'`)
+	got, err := k.Read(context.Background(), []string{"ns/A", "ns/B", "ns/C"})
+	want := map[string]store.Stored{"ns/A": {Value: value, Kind: store.ValueSSH}, "ns/B": {Value: []byte("v")}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Read: %+v, %v", got, err)
+	}
+}
+
 // The helper writes and reads program access with Core Foundation and
 // Security replaced by Python objects, so no Keychain call runs. Only a
 // CFData holding a JSON object whose program_access member is true grants
 // it; any other content of kSecAttrGeneric, as another tool or a later
 // version may write, does not. Only grant and revoke write it, and get
-// returns no value without it.
+// returns no value without it. read returns each value with the kind of
+// the item it came from.
 func TestHelperProgramAccess(t *testing.T) {
 	if _, err := os.Stat(Interpreter); err != nil {
 		t.Skip("no Apple interpreter")
@@ -190,7 +203,10 @@ print(helper["MARKS"] in change("edit", details={}, program_access=True))
 print(get(b'{"program_access":true}'), get(b'{"program_access":false}'))
 print(granted('{"program_access":true}'))
 for marks in sys.argv[1:]:
-    print(granted(bytes.fromhex(marks)))`
+    print(granted(bytes.fromhex(marks)))
+found.clear()
+found.update({"kSecAttrAccount": "ns/A", "kSecAttrDescription": "ssh", "kSecValueData": b"v"})
+print(helper["handle"](Fake(), dict(op="read", service="s", accounts=["ns/A"]))[1])`
 	marks := []string{`{"program_access":true}`, `{"program_access":true,"other":1}`, `{"program_access":false}`, `{"program_access":"true"}`, `{}`, `[true]`, `true`, `{"program_access":tru`, "\xff", ""}
 	args := []string{"-I", "-S", "-c", script}
 	for _, m := range marks {
@@ -203,8 +219,9 @@ for marks in sys.argv[1:]:
 		t.Fatal(err)
 	}
 	// Granted, revoked, untouched by an edit that names it, a value only
-	// with it, not granted by a string, then the marks above in order.
-	if want := "True\nFalse\nFalse\ndg== None\nFalse\nTrue\nTrue\n" + strings.Repeat("False\n", len(marks)-2); string(output) != want {
+	// with it, not granted by a string, the marks above in order, then a
+	// read.
+	if want := "True\nFalse\nFalse\ndg== None\nFalse\nTrue\nTrue\n" + strings.Repeat("False\n", len(marks)-2) + "{'values': {'ns/A': {'value': 'dg==', 'kind': 'ssh'}}}\n"; string(output) != want {
 		t.Fatalf("program access read as\n%s", output)
 	}
 }
@@ -283,7 +300,7 @@ func TestRecordsEveryOperation(t *testing.T) {
 			t.Errorf("helper operation %s is not exercised here", op)
 			continue
 		}
-		k := fakeInterpreter(t, `cat >/dev/null; echo '{"ready": true}'; echo '{"values": {"ns/A": "dg=="}, "value": "dg=="}'`)
+		k := fakeInterpreter(t, `cat >/dev/null; echo '{"ready": true}'; echo '{"values": {"ns/A": {"value": "dg=="}}, "value": "dg=="}'`)
 		if err := call(k); err != nil {
 			t.Fatalf("%s: %v", op, err)
 		}

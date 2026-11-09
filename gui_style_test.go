@@ -2,7 +2,10 @@ package main
 
 import (
 	"math"
+	"slices"
 	"testing"
+
+	"github.com/Entwining/maskey/internal/store"
 )
 
 // Every tile's white icon has the 3:1 contrast WCAG 2.2 asks of graphics.
@@ -19,5 +22,16 @@ func TestTileColorsContrastWithWhite(t *testing.T) {
 		if ratio := 1.05 / (luminance + 0.05); ratio < 3 {
 			t.Errorf("white on #%02X%02X%02X has contrast %.2f:1", c.R, c.G, c.B, ratio)
 		}
+	}
+}
+
+// The window offers every kind an entry can have, in the store's order.
+func TestKindsCoverEveryValueKind(t *testing.T) {
+	offered := make([]store.ValueKind, len(kinds))
+	for i, k := range kinds {
+		offered[i] = k.kind
+	}
+	if !slices.Equal(offered, store.ValueKinds) {
+		t.Errorf("the window offers %q, want %q", offered, store.ValueKinds)
 	}
 }

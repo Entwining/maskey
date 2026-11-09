@@ -83,10 +83,10 @@ func (i item) attributes() store.Attributes {
 }
 
 type response struct {
-	Ready  bool              `json:"ready"`
-	Items  []item            `json:"items"`
-	Value  []byte            `json:"value"`
-	Values map[string][]byte `json:"values"`
+	Ready  bool                    `json:"ready"`
+	Items  []item                  `json:"items"`
+	Value  []byte                  `json:"value"`
+	Values map[string]store.Stored `json:"values"`
 	Error  *struct {
 		Stage    string `json:"stage"`
 		Message  string `json:"message"`
@@ -106,7 +106,7 @@ func (k *Keychain) Items(ctx context.Context) ([]store.Item, error) {
 	return items, nil
 }
 
-func (k *Keychain) Read(ctx context.Context, accounts []string) (map[string][]byte, error) {
+func (k *Keychain) Read(ctx context.Context, accounts []string) (map[string]store.Stored, error) {
 	result, err := k.call(ctx, request{Op: "read", Accounts: accounts})
 	if err != nil {
 		return nil, err
@@ -187,8 +187,10 @@ func (k *Keychain) record(ctx context.Context, req request, result *response, er
 		records := make([]activity.Record, len(req.Accounts))
 		for i, account := range req.Accounts {
 			outcome := outcome
-			if err == nil && result.Values[account] == nil {
-				outcome = string(store.KindNotFound)
+			if err == nil {
+				if _, read := result.Values[account]; !read {
+					outcome = string(store.KindNotFound)
+				}
 			}
 			records[i] = activity.Record{Op: req.Op, Entry: account, Result: outcome}
 		}

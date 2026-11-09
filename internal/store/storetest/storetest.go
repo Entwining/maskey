@@ -54,17 +54,17 @@ func (b *Backend) Items(ctx context.Context) ([]store.Item, error) {
 	return items, nil
 }
 
-func (b *Backend) Read(ctx context.Context, accounts []string) (map[string][]byte, error) {
+func (b *Backend) Read(ctx context.Context, accounts []string) (map[string]store.Stored, error) {
 	if err := b.before("read", ""); err != nil {
 		return nil, err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.Reads = append(b.Reads, slices.Clone(accounts))
-	values := map[string][]byte{}
+	values := map[string]store.Stored{}
 	for _, account := range accounts {
 		if item, ok := b.items[account]; ok {
-			values[account] = slices.Clone(item.value)
+			values[account] = store.Stored{Value: slices.Clone(item.value), Kind: item.Kind}
 		}
 	}
 	return values, nil

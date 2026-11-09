@@ -77,18 +77,26 @@ func readError(ctx context.Context, err error) error {
 	return nil
 }
 
-// offerToRemovePassphrase asks on the terminal for the passphrase of the
-// private key value, which is ref's, and returns the key without it, or as
-// it is when the owner answers with an empty line. Where mk cannot ask, or
-// cannot decrypt, it keeps the key and warns how to proceed.
-func offerToRemovePassphrase(cmd *cobra.Command, env *Env, ref store.Ref, value []byte) ([]byte, error) {
+// removePassphrase asks on the terminal for the passphrase of the private
+// key value, which is ref's, and returns the key without it. An SSH key,
+// which mk run lends through an agent that cannot ask for the passphrase,
+// is stored only without it. Any other key stays as it is when the owner
+// answers with an empty line, and where mk cannot ask or cannot decrypt,
+// mk keeps it and warns how to proceed.
+func removePassphrase(cmd *cobra.Command, env *Env, ref store.Ref, value []byte, sshKey bool) ([]byte, error) {
 	tty, err := env.Terminal()
-	if err != nil {
+	switch {
+	case err != nil && sshKey:
+		return nil, sshPassphraseError(ref)
+	case err != nil:
 		warn(cmd, env, "the private key is protected by a passphrase",
 			fmt.Sprintf("mk set --stdin %s < <file> in a terminal offers to store the key without it; keep it when the program reads the passphrase from another entry", ref))
 		return value, nil
+	case sshKey:
+		fmt.Fprintf(tty, "%s is protected by a passphrase, which mk run cannot ask for. Enter the passphrase to store the key without it, or press Ctrl-C to stop.\n", ref)
+	default:
+		fmt.Fprintf(tty, "%s is protected by a passphrase. Enter the passphrase to store the key without it, or press Return to store the key as it is.\n", ref)
 	}
-	fmt.Fprintf(tty, "%s is protected by a passphrase. Enter the passphrase to store the key without it, or press Return to store the key as it is.\n", ref)
 	prompt := "Passphrase (input hidden): "
 	for {
 		passphrase, err := readHidden(cmd.Context(), tty, tty, prompt)
@@ -96,6 +104,9 @@ func offerToRemovePassphrase(cmd *cobra.Command, env *Env, ref store.Ref, value 
 			return nil, err
 		}
 		if len(passphrase) == 0 {
+			if sshKey {
+				continue
+			}
 			return value, nil
 		}
 		plain, err := withoutPassphrase(value, passphrase)
@@ -103,8 +114,12 @@ func offerToRemovePassphrase(cmd *cobra.Command, env *Env, ref store.Ref, value 
 		case errors.Is(err, x509.IncorrectPasswordError):
 			prompt = "Bad passphrase, try again (input hidden): "
 		case err != nil:
-			warn(cmd, env, "mk cannot remove the passphrase from this key",
-				"ssh-keygen -p -f <file> rewrites the key in OpenSSH format with a cipher mk reads; enter the same passphrase at its new-passphrase prompts to keep it, then retry; mk cannot remove the passphrase of a security key (sk-)")
+			const message = "mk cannot remove the passphrase from this key"
+			const hint = "ssh-keygen -p -f <file> rewrites the key in OpenSSH format with a cipher mk reads; enter the same passphrase at its new-passphrase prompts to keep it, then retry; mk cannot remove the passphrase of a security key (sk-)"
+			if sshKey {
+				return nil, withHint(&store.Error{Kind: store.KindInvalid, Ref: &ref, Message: message}, hint)
+			}
+			warn(cmd, env, message, hint)
 			return value, nil
 		default:
 			return plain, nil
