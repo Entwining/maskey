@@ -42,7 +42,15 @@ func (g *gui) updateButton(c *ui.Context) {
 	t := c.Theme()
 	label := "Update to " + g.update
 	b := ui.ButtonBase(c.Key("update")).Margin(t.Space(2)).Padding(t.Space(1.5), t.Space(2.5)).Gap(t.Space(2)).Radius(6).Label(label)
-	tint(b)
+	// A tint of the accent, since the accent itself fills the selected row.
+	switch {
+	case b.Pressed():
+		b.Background(t.Accent.Alpha(0.44))
+	case b.Hovered():
+		b.Background(t.Accent.Alpha(0.32))
+	default:
+		b.Background(t.Accent.Alpha(0.2))
+	}
 	if b.Children(func() {
 		ui.Box(c).Size(8, 8).Shrink(0).Radius(4).Background(t.Accent)
 		ui.Text(c, label).FontSize(t.FontSize - 1).SingleLine().MinWidth(0)
