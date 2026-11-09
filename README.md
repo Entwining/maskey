@@ -75,7 +75,7 @@ In the window, click + or choose File > New Entry and enter a namespace, a name 
 
 The window asks what to do with unsaved changes before switching entries or namespaces, closing, or quitting. You can save when the form is valid, discard, or continue editing. Cancel and Escape in the editor ask before discarding changes without offering Save; an unchanged form closes at once.
 
-The value editor accepts multiple lines but refuses to paste CRLF line endings, which it would change to LF. An existing value containing carriage returns stays unchanged when you edit the entry; replace it with `mk set --stdin` to preserve its line endings. Private keys pasted into the window keep their passphrase, which an SSH Key entry cannot use with `mk run`.
+The value editor accepts multiple lines but refuses to paste CRLF line endings, which it would change to LF. An existing value containing carriage returns stays unchanged when you edit the entry; replace it with `mk set --stdin` to preserve its line endings. The window does not remove a private key's passphrase, so it refuses a protected key for an SSH Key entry; import that key from your terminal with `mk set --stdin`.
 
 You can reveal or edit a value in the window without granting program access. Copy Value keeps it on this Mac, marks it as confidential for clipboard managers, and clears it after 90 seconds or when Maskey quits, unless something else was copied since. Text selected in a revealed value and copied is ordinary text.
 
@@ -109,7 +109,7 @@ mk set --stdin deploy/DEPLOY_SSH_KEY < /path/to/private-key
 mk run deploy/DEPLOY_SSH_KEY -- ssh user@host
 ```
 
-`mk set` stores an SSH Key entry only without its passphrase. When importing a protected key, it asks for the passphrase on the terminal and removes it before storing the key. If it cannot ask or cannot decrypt the key, it writes no entry and explains how to proceed. Removing the passphrase keeps the key's format but drops its comment; the source file is unchanged.
+An SSH Key entry holds only a private key `mk run` can lend, without its passphrase. When importing a protected key, `mk set` asks for the passphrase on the terminal and removes it before storing the key. If it cannot ask or cannot decrypt the key, or the value is not a private key, such as a `.pub` file, it writes no entry and explains how to proceed. Removing the passphrase keeps the key's format but drops its comment; the source file is unchanged.
 
 `mk run` sets `DEPLOY_SSH_KEY` to the public key in `authorized_keys` form and `SSH_AUTH_SOCK` to its own SSH agent. The private key does not enter the command's environment or a temporary file. The agent works with `ssh`, Git over SSH, and `ssh-keygen -Y sign`; it ends with the command, closing open agent connections too.
 

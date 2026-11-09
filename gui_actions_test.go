@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/pem"
 	"slices"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/Entwining/maskey/internal/store"
 )
@@ -320,6 +324,66 @@ func TestKind(t *testing.T) {
 	}
 	if v, _ := h.value("app/DEPLOY_URL"); v != "synthetic-new-31d2" {
 		t.Fatalf("the value became %q", v)
+	}
+}
+
+// An SSH Key entry gets only a key mk run can lend, whether its value is
+// typed in or SSH Key is chosen for a stored one; the form keeps the draft
+// and says why.
+func TestSSHKeyNeedsUsableKey(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := ssh.MarshalPrivateKey(private, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := ssh.MarshalPrivateKeyWithPassphrase(private, "", []byte("synthetic passphrase"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	protected := string(pem.EncodeToMemory(encrypted))
+	const notKey = "This is not an SSH private key. Paste the private key itself, not its public key, or choose another kind."
+	const passphrase = "This SSH key is protected by a passphrase, which mk run does not ask for. Store it with mk set --stdin in Terminal, which removes the passphrase."
+	const pkcs8 = "This SSH key is protected by a passphrase that Maskey cannot remove. In Terminal, pipe openssl pkey -in <file> to mk set --stdin, which stores it without the passphrase."
+
+	h := newHarness(t)
+	h.newInApp("DEPLOY_SSH_KEY")
+	for _, tc := range []struct{ value, message string }{
+		{"ssh-ed25519 AAAA synthetic", notKey},
+		{protected, passphrase},
+		{string(pem.EncodeToMemory(&pem.Block{Type: "ENCRYPTED PRIVATE KEY", Bytes: []byte("synthetic")})), pkcs8},
+	} {
+		h.typeValue(tc.value)
+		h.click("Add")
+		if f := h.g.form; !f.open || f.value != tc.value || f.err != (formError{"value", tc.message}) || !h.tt.HasText(tc.message) {
+			t.Fatalf("form after adding %q: open %v, error %+v", tc.value, f.open, f.err)
+		}
+		if _, ok := h.value("app/DEPLOY_SSH_KEY"); ok {
+			t.Fatalf("%q was stored", tc.value)
+		}
+	}
+	h.typeValue(string(pem.EncodeToMemory(plain)))
+	h.click("Add")
+	if v, _ := h.value("app/DEPLOY_SSH_KEY"); v != string(pem.EncodeToMemory(plain)) {
+		t.Fatalf("stored %q", v)
+	}
+
+	if err := h.backend.Add(context.Background(), "app/SIGNING_KEY", []byte(protected), store.Details{Kind: store.ValuePEM}); err != nil {
+		t.Fatal(err)
+	}
+	h.g.refresh()
+	h.settle()
+	h.choose("SIGNING_KEY", "Edit")
+	h.click("Private Key")
+	h.click("SSH Key")
+	h.click("Save")
+	if f := h.g.form; !f.open || f.err != (formError{"value", passphrase}) {
+		t.Fatalf("form after choosing SSH Key: open %v, error %+v", f.open, f.err)
+	}
+	if got := h.attributes("app/SIGNING_KEY").Kind; got != store.ValuePEM {
+		t.Fatalf("stored kind %q", got)
 	}
 }
 

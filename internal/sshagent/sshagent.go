@@ -5,15 +5,53 @@
 package sshagent
 
 import (
+	"encoding/pem"
+	"errors"
 	"io"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 )
+
+var (
+	// ErrPassphrase is Key's error for a private key protected by a
+	// passphrase in a format other than PKCS#8.
+	ErrPassphrase = errors.New("the SSH key is protected by a passphrase")
+	// ErrPKCS8 is Key's error for an encrypted PKCS#8 key, which x/crypto
+	// cannot decrypt and reports as an unsupported type.
+	ErrPKCS8 = errors.New("the SSH key is an encrypted PKCS#8 key")
+)
+
+// Key reads the private key in value's first PEM block, as the agent can
+// lend it, and its public key. Writers check an SSH key with it too, so
+// that the window and mk set refuse what mk run would.
+func Key(value []byte) (key any, public ssh.PublicKey, err error) {
+	block, _ := pem.Decode(value)
+	if block != nil && block.Type == "ENCRYPTED PRIVATE KEY" {
+		return nil, nil, ErrPKCS8
+	}
+	key, err = ssh.ParseRawPrivateKey(value)
+	var missing *ssh.PassphraseMissingError
+	// x/crypto asks for a passphrase for any block with an encrypted
+	// Proc-Type, though only a private key is what mk set decrypts.
+	if errors.As(err, &missing) && strings.HasSuffix(block.Type, "PRIVATE KEY") {
+		return nil, nil, ErrPassphrase
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	signer, err := ssh.NewSignerFromKey(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return key, signer.PublicKey(), nil
+}
 
 // Agent serves its keys on a Unix socket in a directory of its own, which
 // only this user can enter.

@@ -79,8 +79,8 @@ func readError(ctx context.Context, err error) error {
 
 // removePassphrase asks on the terminal for the passphrase of the private
 // key value, which is ref's, and returns the key without it. An SSH key,
-// which mk run lends through an agent that cannot ask for the passphrase,
-// is stored only without it. Any other key stays as it is when the owner
+// which mk run lends without asking for the passphrase, is stored only
+// without it. Any other key stays as it is when the owner
 // answers with an empty line, and where mk cannot ask or cannot decrypt,
 // mk keeps it and warns how to proceed.
 func removePassphrase(cmd *cobra.Command, env *Env, ref store.Ref, value []byte, sshKey bool) ([]byte, error) {
@@ -93,7 +93,7 @@ func removePassphrase(cmd *cobra.Command, env *Env, ref store.Ref, value []byte,
 			fmt.Sprintf("mk set --stdin %s < <file> in a terminal offers to store the key without it; keep it when the program reads the passphrase from another entry", ref))
 		return value, nil
 	case sshKey:
-		fmt.Fprintf(tty, "%s is protected by a passphrase, which mk run cannot ask for. Enter the passphrase to store the key without it, or press Ctrl-C to stop.\n", ref)
+		fmt.Fprintf(tty, "%s is protected by a passphrase, which mk run does not ask for. Enter the passphrase to store the key without it, or press Ctrl-C to stop.\n", ref)
 	default:
 		fmt.Fprintf(tty, "%s is protected by a passphrase. Enter the passphrase to store the key without it, or press Return to store the key as it is.\n", ref)
 	}
@@ -105,6 +105,7 @@ func removePassphrase(cmd *cobra.Command, env *Env, ref store.Ref, value []byte,
 		}
 		if len(passphrase) == 0 {
 			if sshKey {
+				prompt = "Enter the passphrase or press Ctrl-C (input hidden): "
 				continue
 			}
 			return value, nil

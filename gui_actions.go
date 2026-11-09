@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/agent"
 	"github.com/Entwining/maskey/internal/cli"
+	"github.com/Entwining/maskey/internal/sshagent"
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -328,6 +330,26 @@ func (g *gui) submit(then func()) {
 		}
 	}
 	details := store.Details{Kind: kindOf(f.kind), Notes: f.notes}
+	// A write that gives an SSH Key entry its value or its kind stores only
+	// a key mk run can lend, as mk set does; the window cannot remove a
+	// passphrase. A value kept for its carriage returns is not here to check.
+	if details.Kind == store.ValueSSH && (value != nil || f.kind != f.kindFrom && !f.keepValue) {
+		key := value
+		if key == nil {
+			key = []byte(f.original)
+		}
+		if _, _, err := sshagent.Key(key); err != nil {
+			f.err = formError{"value", "This is not an SSH private key. Paste the private key itself, not its public key, or choose another kind."}
+			switch {
+			case errors.Is(err, sshagent.ErrPassphrase):
+				f.err.message = "This SSH key is protected by a passphrase, which mk run does not ask for. Store it with mk set --stdin in Terminal, which removes the passphrase."
+			case errors.Is(err, sshagent.ErrPKCS8):
+				f.err.message = "This SSH key is protected by a passphrase that Maskey cannot remove. In Terminal, pipe openssl pkey -in <file> to mk set --stdin, which stores it without the passphrase."
+			}
+			g.valueField.Focus()
+			return
+		}
+	}
 	var editedDetails *store.Details // nil keeps the stored details
 	if f.detailsChanged() {
 		editedDetails = &details

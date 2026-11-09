@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -57,13 +59,13 @@ func keyFixtures(t *testing.T) []keyFixture {
 	der := x509.MarshalPKCS1PrivateKey(rsaKey)
 	return []keyFixture{
 		{"openssh", pem.EncodeToMemory(openssh), pem.EncodeToMemory(opensshPlain)},
-		{"legacy", legacyEncrypted(t, der), pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der})},
+		{"legacy", legacyEncrypted(t, "RSA PRIVATE KEY", der), pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der})},
 	}
 }
 
-func legacyEncrypted(t *testing.T, der []byte) []byte {
+func legacyEncrypted(t *testing.T, blockType string, der []byte) []byte {
 	t.Helper()
-	block, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY", der, []byte(passphrase), x509.PEMCipherAES256) //nolint:staticcheck // the legacy format set reads has no other writer
+	block, err := x509.EncryptPEMBlock(rand.Reader, blockType, der, []byte(passphrase), x509.PEMCipherAES256) //nolint:staticcheck // the legacy format set reads has no other writer
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +110,7 @@ func TestWithoutPassphrase(t *testing.T) {
 		}
 	}
 	// What a wrong passphrase that passes the padding check decrypts.
-	if _, err := withoutPassphrase(legacyEncrypted(t, []byte("synthetic")), []byte(passphrase)); !errors.Is(err, x509.IncorrectPasswordError) {
+	if _, err := withoutPassphrase(legacyEncrypted(t, "RSA PRIVATE KEY", []byte("synthetic")), []byte(passphrase)); !errors.Is(err, x509.IncorrectPasswordError) {
 		t.Errorf("not DER: %v", err)
 	}
 }
@@ -256,11 +258,19 @@ func TestSetCancelledAtPassphrase(t *testing.T) {
 	}
 }
 
-// set stores an SSH key, which mk run's agent cannot unlock, only without
-// its passphrase: an empty answer asks again, and where set cannot ask or
-// cannot decrypt, it writes nothing.
+// set stores an SSH key, which mk run lends without asking for its
+// passphrase, only without it: an empty answer asks again, and where set
+// cannot ask or cannot decrypt, it writes nothing.
 func TestSetRemovesSSHKeyPassphrase(t *testing.T) {
 	openssh := keyFixtures(t)[0]
+	p224, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p224DER, err := x509.MarshalECPrivateKey(p224)
+	if err != nil {
+		t.Fatal(err)
+	}
 	h := newHarness(t)
 	master, tty := openTerminal(t, "\n"+passphrase+"\n")
 	h.terminal = tty
@@ -270,8 +280,10 @@ func TestSetRemovesSSHKeyPassphrase(t *testing.T) {
 	}
 	shown := make([]byte, 4096)
 	n, _ := master.Read(shown)
-	if want := "app/DEPLOY_SSH_KEY is protected by a passphrase, which mk run cannot ask for. Enter the passphrase to store the key without it, or press Ctrl-C to stop."; !strings.Contains(string(shown[:n]), want) {
-		t.Errorf("terminal %q lacks %q", shown[:n], want)
+	for _, want := range []string{"app/DEPLOY_SSH_KEY is protected by a passphrase, which mk run does not ask for. Enter the passphrase to store the key without it, or press Ctrl-C to stop.", "Enter the passphrase or press Ctrl-C (input hidden): "} {
+		if !strings.Contains(string(shown[:n]), want) {
+			t.Errorf("terminal %q lacks %q", shown[:n], want)
+		}
 	}
 
 	// An existing entry's kind decides, whatever its name suggests.
@@ -280,13 +292,32 @@ func TestSetRemovesSSHKeyPassphrase(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		value []byte
+		opens int
 		want  string
 	}{
-		{"no terminal", openssh.protected, "mk: error[invalid]: app/KEY: the SSH key is protected by a passphrase, which mk run cannot ask for\nmk: hint: mk set --stdin app/KEY < <file> in a terminal stores the key without it\n"},
-		{"pkcs8", pkcs8, "mk: error[invalid]: app/KEY: the private key is protected by a passphrase that mk cannot remove\nmk: hint: openssl pkey -in <file> | mk set --stdin app/KEY stores the key without it, with OpenSSL asking for the passphrase on the terminal\n"},
+		{"no terminal", openssh.protected, 0, "mk: error[invalid]: app/KEY: the SSH key is protected by a passphrase, which mk run does not ask for\nmk: hint: mk set --stdin app/KEY < <file> in a terminal stores the key without it\n"},
+		{"pkcs8", pkcs8, 0, "mk: error[invalid]: app/KEY: the private key is protected by a passphrase that mk cannot remove\nmk: hint: openssl pkey -in <file> | mk set --stdin app/KEY stores the key without it, with OpenSSL asking for the passphrase on the terminal\n"},
+		{"public key", []byte("ssh-ed25519 AAAA synthetic\n"), 0, "mk: error[invalid]: app/KEY: the value of an entry of kind ssh is not an SSH private key\nmk: hint: store the private key itself, not its .pub file or a certificate before the key\n"},
+		// mk run reads the first PEM block, so set asks for no passphrase.
+		{"certificate first", []byte(certificate + string(openssh.protected)), 0, "mk: error[invalid]: app/KEY: the value of an entry of kind ssh is not an SSH private key\nmk: hint: store the private key itself, not its .pub file or a certificate before the key\n"},
+		// x/crypto asks a passphrase for any encrypted block, which set
+		// decrypts only in a private key.
+		{"encrypted other block", pem.EncodeToMemory(&pem.Block{Type: "SYNTHETIC", Headers: map[string]string{"Proc-Type": "4,ENCRYPTED"}, Bytes: []byte("synthetic")}), 0, "mk: error[invalid]: app/KEY: the value of an entry of kind ssh is not an SSH private key\nmk: hint: store the private key itself, not its .pub file or a certificate before the key\n"},
+		// The agent lends no P-224 key, which decrypts all the same.
+		{"unlendable once decrypted", legacyEncrypted(t, "EC PRIVATE KEY", p224DER), 1, "mk: error[invalid]: app/KEY: the value of an entry of kind ssh is not an SSH private key\nmk: hint: store the private key itself, not its .pub file or a certificate before the key\n"},
 	} {
-		if outcome, _, stderr := h.run(t, string(test.value), "set", "--stdin", "app/KEY"); outcome.Code != 2 || stderr != test.want || h.value("app/KEY") != string(openssh.plain) {
-			t.Errorf("%s: %+v %q", test.name, outcome, stderr)
+		h.terminal = terminal(t, passphrase+"\n")
+		if test.name == "no terminal" {
+			h.terminal = nil
 		}
+		h.terminalOpens = 0
+		if outcome, _, stderr := h.run(t, string(test.value), "set", "--stdin", "app/KEY"); outcome.Code != 2 || stderr != test.want || h.value("app/KEY") != string(openssh.plain) || test.name != "no terminal" && h.terminalOpens != test.opens {
+			t.Errorf("%s: %+v %d %q", test.name, outcome, h.terminalOpens, stderr)
+		}
+	}
+	// The hidden prompt reads a key's first line alone.
+	h.terminal = nil
+	if outcome, _, stderr := h.runOn(terminal(t, "y\n"+strings.SplitAfter(string(openssh.plain), "\n")[0]), "set", "app/KEY"); outcome.Code != 2 || !strings.HasSuffix(stderr, "mk: error[invalid]: app/KEY: the value of an entry of kind ssh is not an SSH private key\nmk: hint: an SSH key has several lines, which the hidden prompt does not read; pipe it with mk set --stdin app/KEY < <file>\n") {
+		t.Errorf("hidden prompt: %+v %q", outcome, stderr)
 	}
 }

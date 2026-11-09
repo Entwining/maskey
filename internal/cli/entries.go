@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/Entwining/maskey/internal/sshagent"
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -100,18 +102,18 @@ entry at a hidden prompt, in argument order. This requires terminal stdin.
 With --stdin, pipe or redirect one value for one entry. A one-line value
 loses its final line ending, so gh auth token | mk set --stdin
 github/GITHUB_TOKEN stores the token alone. A value of several lines,
-such as a PEM key, is stored byte for byte. Empty values and NUL bytes
-are rejected.
+such as a PEM key, is stored byte for byte, unless mk removes a private
+key's passphrase as below. Empty values and NUL bytes are rejected.
 
 For a private key protected by a passphrase, mk asks on the terminal for
 the passphrase and stores the key without it, in its format but without
 its comment. An entry of kind ssh, such as a new one named DEPLOY_SSH_KEY,
-is stored only that way, since mk run's SSH agent cannot ask for the
-passphrase. For another entry, press Return to keep the key as it is for
-a program that reads the passphrase from another entry. Without a
-terminal, or for a PKCS#8 key (ENCRYPTED PRIVATE KEY), which only OpenSSL
-can decrypt, mk writes no entry of kind ssh and stores any other key as
-it is, warning how to proceed.
+is stored only that way, since mk run does not ask for the passphrase,
+and holds only a private key mk run can lend. For another entry, press
+Return to keep the key as it is for a program that reads the passphrase
+from another entry. Without a terminal, or for a PKCS#8 key (ENCRYPTED
+PRIVATE KEY), which mk cannot decrypt, mk writes no entry of kind ssh and
+stores any other key as it is, warning how to proceed.
 
 When stdin is a terminal, mk lists the entries that already exist and
 asks once before replacing their values, which the Keychain does not
@@ -203,22 +205,36 @@ access. New entries start without program access.`,
 				if err != nil {
 					return err
 				}
-				sshKey := store.ValueKindOf(ref.Name, attributes[ref].Kind) == store.ValueSSH
-				switch protectionOf(value) {
-				case removable:
-					if value, err = removePassphrase(cmd, env, ref, value, sshKey); err != nil {
-						return err
-					}
-				case unremovable:
-					const message = "the private key is protected by a passphrase that mk cannot remove"
-					hint := fmt.Sprintf("openssl pkey -in <file> | mk set --stdin %s stores the key without it, with OpenSSL asking for the passphrase on the terminal", ref)
-					if sshKey {
-						return withHint(&store.Error{Kind: store.KindInvalid, Ref: &ref, Message: message}, hint)
-					}
-					warn(cmd, env, message, hint+"; keep it when the program reads the passphrase from another entry")
-				}
 				if err := store.ValidateValue(value); err != nil {
 					return atArgument(err, i+1)
+				}
+				if store.ValueKindOf(ref.Name, attributes[ref].Kind) == store.ValueSSH {
+					// What mk run lends decides, so a key after a certificate
+					// is refused before its passphrase is asked for.
+					_, _, err := sshagent.Key(value)
+					if errors.Is(err, sshagent.ErrPassphrase) {
+						if value, err = removePassphrase(cmd, env, ref, value, true); err != nil {
+							return err
+						}
+						// A key that decrypts can still be one the agent
+						// cannot lend, such as a P-224 key.
+						_, _, err = sshagent.Key(value)
+					}
+					switch {
+					case err != nil && fromStdin:
+						return sshKeyError(ref, err, "store the private key itself, not its .pub file or a certificate before the key")
+					case err != nil:
+						return sshKeyError(ref, err, fmt.Sprintf("an SSH key has several lines, which the hidden prompt does not read; pipe it with mk set --stdin %s < <file>", ref))
+					}
+				} else {
+					switch protectionOf(value) {
+					case removable:
+						if value, err = removePassphrase(cmd, env, ref, value, false); err != nil {
+							return err
+						}
+					case unremovable:
+						warn(cmd, env, unremovableMessage, unremovableHint(ref)+"; keep it when the program reads the passphrase from another entry")
+					}
 				}
 				values[i] = value
 			}

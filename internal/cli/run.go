@@ -155,28 +155,30 @@ func sshKeys(entries []store.Entry) ([]store.Entry, []agent.AddedKey, []string, 
 			values = append(values, entry)
 			continue
 		}
-		key, err := ssh.ParseRawPrivateKey(entry.Value)
-		var signer ssh.Signer
-		if err == nil {
-			signer, err = ssh.NewSignerFromKey(key)
-		}
-		var missing *ssh.PassphraseMissingError
-		switch {
-		case errors.As(err, &missing):
-			return nil, nil, nil, sshPassphraseError(entry.Ref)
-		case err != nil:
-			return nil, nil, nil, withHint(&store.Error{Kind: store.KindInvalid, Ref: &entry.Ref, Message: "the value of an entry of kind ssh is not an SSH private key"},
-				fmt.Sprintf("replace it with mk set --stdin %s < <file>, or choose another kind in Maskey", entry.Ref))
+		key, public, err := sshagent.Key(entry.Value)
+		if err != nil {
+			return nil, nil, nil, sshKeyError(entry.Ref, err, fmt.Sprintf("replace it with mk set --stdin %s < <file>, or choose another kind in Maskey", entry.Ref))
 		}
 		keys = append(keys, agent.AddedKey{PrivateKey: key, Comment: entry.String()})
-		public := strings.TrimSuffix(string(ssh.MarshalAuthorizedKey(signer.PublicKey())), "\n")
-		variables = append(variables, entry.Name+"="+public)
+		variables = append(variables, entry.Name+"="+strings.TrimSuffix(string(ssh.MarshalAuthorizedKey(public)), "\n"))
 	}
 	return values, keys, variables, nil
 }
 
+// sshKeyError is the error of ref's value, which sshagent.Key refused with
+// err; hint is how to replace a value that is no SSH private key.
+func sshKeyError(ref store.Ref, err error, hint string) error {
+	switch {
+	case errors.Is(err, sshagent.ErrPassphrase):
+		return sshPassphraseError(ref)
+	case errors.Is(err, sshagent.ErrPKCS8):
+		return withHint(&store.Error{Kind: store.KindInvalid, Ref: &ref, Message: unremovableMessage}, unremovableHint(ref))
+	}
+	return withHint(&store.Error{Kind: store.KindInvalid, Ref: &ref, Message: "the value of an entry of kind ssh is not an SSH private key"}, hint)
+}
+
 func sshPassphraseError(ref store.Ref) error {
-	return withHint(&store.Error{Kind: store.KindInvalid, Ref: &ref, Message: "the SSH key is protected by a passphrase, which mk run cannot ask for"},
+	return withHint(&store.Error{Kind: store.KindInvalid, Ref: &ref, Message: "the SSH key is protected by a passphrase, which mk run does not ask for"},
 		fmt.Sprintf("mk set --stdin %s < <file> in a terminal stores the key without it", ref))
 }
 

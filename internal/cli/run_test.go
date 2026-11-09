@@ -204,10 +204,12 @@ func TestRunEndsSSHAgentWithCommand(t *testing.T) {
 func TestRunRejectsUnusableSSHKeys(t *testing.T) {
 	h := newHarness(t)
 	h.store.Create(context.Background(), store.Ref{Namespace: "deploy", Name: "PROTECTED"}, keyFixtures(t)[0].protected, store.Details{Kind: store.ValueSSH})
+	h.store.Create(context.Background(), store.Ref{Namespace: "deploy", Name: "PKCS8"}, pkcs8, store.Details{Kind: store.ValueSSH})
 	h.store.Create(context.Background(), store.Ref{Namespace: "deploy", Name: "PUBLIC"}, []byte("ssh-ed25519 AAAA synthetic"), store.Details{Kind: store.ValueSSH})
 	marker := filepath.Join(t.TempDir(), "started")
 	for _, test := range []struct{ ref, want string }{
-		{"deploy/PROTECTED", "mk: error[invalid]: deploy/PROTECTED: the SSH key is protected by a passphrase, which mk run cannot ask for\nmk: hint: mk set --stdin deploy/PROTECTED < <file> in a terminal stores the key without it\n"},
+		{"deploy/PROTECTED", "mk: error[invalid]: deploy/PROTECTED: the SSH key is protected by a passphrase, which mk run does not ask for\nmk: hint: mk set --stdin deploy/PROTECTED < <file> in a terminal stores the key without it\n"},
+		{"deploy/PKCS8", "mk: error[invalid]: deploy/PKCS8: the private key is protected by a passphrase that mk cannot remove\nmk: hint: openssl pkey -in <file> | mk set --stdin deploy/PKCS8 stores the key without it, with OpenSSL asking for the passphrase on the terminal\n"},
 		{"deploy/PUBLIC", "mk: error[invalid]: deploy/PUBLIC: the value of an entry of kind ssh is not an SSH private key\nmk: hint: replace it with mk set --stdin deploy/PUBLIC < <file>, or choose another kind in Maskey\n"},
 	} {
 		if outcome, _, stderr := h.run(t, "", "run", test.ref, "--", "/usr/bin/touch", marker); outcome.Code != 125 || stderr != test.want {
