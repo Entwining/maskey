@@ -6,31 +6,11 @@ import (
 	"encoding/asn1"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
-
-	"github.com/Entwining/maskey/internal/store"
 )
-
-// protection is what set can do for a value that holds a private key.
-type protection int
-
-const (
-	unprotected protection = iota // no private key, or one without a passphrase
-	removable                     // an OpenSSH or legacy PEM key, whose passphrase mk can remove
-	unremovable                   // a PKCS#8 key, whose encryption mk cannot decrypt
-)
-
-// unremovableMessage and unremovableHint describe a PKCS#8 key, whose
-// passphrase OpenSSL removes where mk cannot.
-const unremovableMessage = "the private key is protected by a passphrase that mk cannot remove"
-
-func unremovableHint(ref store.Ref) string {
-	return fmt.Sprintf("openssl pkey -in <file> | mk set --stdin %s stores the key without it, with OpenSSL asking for the passphrase on the terminal", ref)
-}
 
 // privateKey finds value's private key, the first PEM block whose type ends
 // in PRIVATE KEY, wherever it is, as after its certificate, and the offsets
@@ -49,25 +29,19 @@ func privateKey(value []byte) (block *pem.Block, start, end int) {
 	}
 }
 
-// protectionOf classifies value. A PKCS#8 ENCRYPTED PRIVATE KEY block is
-// known by its type alone: neither the standard library nor x/crypto
-// decrypts PKCS#8 (golang/go#8860).
-func protectionOf(value []byte) protection {
+// protected reports whether value holds a private key protected by a
+// passphrase, in PKCS#8, legacy PEM, or OpenSSH format.
+func protected(value []byte) bool {
 	block, start, end := privateKey(value)
 	switch {
 	case block == nil:
-		return unprotected
-	case block.Type == "ENCRYPTED PRIVATE KEY":
-		return unremovable
-	case x509.IsEncryptedPEMBlock(block): //nolint:staticcheck // the legacy encryption is what mk removes
-		return removable
+		return false
+	case block.Type == "ENCRYPTED PRIVATE KEY" || x509.IsEncryptedPEMBlock(block): //nolint:staticcheck // the legacy encryption is what mk removes
+		return true
 	}
 	_, err := ssh.ParseRawPrivateKey(value[start:end])
 	var missing *ssh.PassphraseMissingError
-	if errors.As(err, &missing) {
-		return removable
-	}
-	return unprotected
+	return errors.As(err, &missing)
 }
 
 // withoutPassphrase is value with its private key stored without the

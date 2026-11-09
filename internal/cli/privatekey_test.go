@@ -72,21 +72,53 @@ func legacyEncrypted(t *testing.T, blockType string, der []byte) []byte {
 	return pem.EncodeToMemory(block)
 }
 
-func TestProtectionOf(t *testing.T) {
+// p224 is an EC key on a curve SSH does not use, which the agent cannot lend.
+func p224(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
+}
+
+func unlendable(ref string) string {
+	return "mk: error[invalid]: " + ref + ": the SSH agent cannot lend this private key\nmk: hint: store the whole key, of type Ed25519, RSA, or ECDSA P-256, P-384, or P-521; for a program that reads the key itself, choose another kind in Maskey\n"
+}
+
+// securityKey is an OpenSSH container protected by a passphrase whose
+// public key is a security key's, as ssh-keygen writes one that only its
+// authenticator can use.
+func securityKey() []byte {
+	public := ssh.Marshal(struct {
+		Type        string
+		Key         []byte
+		Application string
+	}{ssh.KeyAlgoSKED25519, make([]byte, ed25519.PublicKeySize), "ssh:"})
+	container := ssh.Marshal(struct {
+		CipherName, KdfName, KdfOpts string
+		NumKeys                      uint32
+		PubKey, PrivKeyBlock         []byte
+	}{"aes256-ctr", "bcrypt", "", 1, public, []byte("synthetic")})
+	return pem.EncodeToMemory(&pem.Block{Type: "OPENSSH PRIVATE KEY", Bytes: append([]byte("openssh-key-v1\x00"), container...)})
+}
+
+func TestProtected(t *testing.T) {
 	for _, f := range keyFixtures(t) {
-		if got := protectionOf(f.protected); got != removable {
-			t.Errorf("%s protected: %d", f.name, got)
-		}
-		if got := protectionOf(f.plain); got != unprotected {
-			t.Errorf("%s plain: %d", f.name, got)
+		if !protected(f.protected) || protected(f.plain) {
+			t.Errorf("%s: protected %v, plain %v", f.name, protected(f.protected), protected(f.plain))
 		}
 	}
-	if got := protectionOf([]byte(certificate + string(pkcs8))); got != unremovable {
-		t.Errorf("pkcs8: %d", got)
+	if !protected([]byte(certificate + string(pkcs8))) {
+		t.Error("pkcs8 after a certificate is not protected")
 	}
 	for _, value := range []string{"synthetic-token", "line 1\nline 2\n", certificate} {
-		if got := protectionOf([]byte(value)); got != unprotected {
-			t.Errorf("%q: %d", value, got)
+		if protected([]byte(value)) {
+			t.Errorf("%q is protected", value)
 		}
 	}
 }
@@ -147,65 +179,38 @@ func publicKey(t *testing.T, key []byte) string {
 	return string(public.Marshal())
 }
 
-// set offers on the terminal to store a protected key without its
-// passphrase, keeps it on an empty answer, and, where it cannot ask or
-// cannot decrypt, keeps it and warns.
-func TestSetOffersToRemovePassphrase(t *testing.T) {
-	openssh := keyFixtures(t)[0]
-	h := newHarness(t)
-	master, tty := openTerminal(t, "wrong\n"+passphrase+"\n")
-	h.terminal = tty
-	outcome, stdout, stderr := h.run(t, string(openssh.protected), "set", "--stdin", "app/KEY")
-	if outcome.Code != 0 || stdout != "created app/KEY\n" || stderr != "" || publicKey(t, []byte(h.value("app/KEY"))) != publicKey(t, openssh.plain) {
-		t.Fatalf("removed: %+v %q %q", outcome, stdout, stderr)
+// An entry of another kind than ssh keeps a protected key as it is, for a
+// program that reads the passphrase from another entry, and set warns
+// without asking, whether or not it has a terminal.
+func TestSetKeepsProtectedKeyOfOtherKind(t *testing.T) {
+	const warning = "mk: warning: the private key is protected by a passphrase, which mk stores with it\nmk: hint: keep it when the program reads the passphrase from another entry"
+	// The hint offers an SSH Key entry only for a key that entry would take.
+	type warned struct {
+		value []byte
+		hint  string
 	}
-	shown := make([]byte, 4096)
-	n, err := master.Read(shown)
-	if err != nil {
-		t.Fatal(err)
+	cases := []warned{
+		{pkcs8, "; for ssh or git, openssl pkey -in <file> | mk set --stdin app/<NAME>_SSH_KEY stores the key without it"},
+		{securityKey(), ""},
 	}
-	shown = shown[:n]
-	for _, text := range []string{"app/KEY is protected by a passphrase. Enter the passphrase to store the key without it, or press Return to store the key as it is.", "Passphrase (input hidden): ", "Bad passphrase, try again (input hidden): "} {
-		if !strings.Contains(string(shown), text) {
-			t.Errorf("terminal %q lacks %q", shown, text)
+	for _, f := range keyFixtures(t) {
+		cases = append(cases, warned{f.protected, "; for ssh or git, mk set --stdin app/<NAME>_SSH_KEY < <file> stores the key without it"})
+	}
+	for _, c := range cases {
+		for _, withTerminal := range []bool{true, false} {
+			h := newHarness(t)
+			if withTerminal {
+				h.terminal = terminal(t, passphrase+"\n")
+			}
+			if outcome, _, stderr := h.run(t, string(c.value), "set", "--stdin", "app/KEY"); outcome.Code != 0 || stderr != warning+c.hint+"\n" || h.terminalOpens != 0 || !bytes.Equal([]byte(h.value("app/KEY")), c.value) {
+				t.Fatalf("%s, terminal %v: %+v %d %q", blockType(c.value), withTerminal, outcome, h.terminalOpens, stderr)
+			}
 		}
 	}
-
-	h = newHarness(t)
-	h.terminal = terminal(t, "\n")
-	if outcome, _, stderr := h.run(t, string(openssh.protected), "set", "--stdin", "app/KEY"); outcome.Code != 0 || stderr != "" || h.value("app/KEY") != string(openssh.protected) {
-		t.Fatalf("kept: %+v %q", outcome, stderr)
-	}
-
-	h = newHarness(t)
-	warning := "mk: warning: the private key is protected by a passphrase\nmk: hint: mk set --stdin app/KEY < <file> in a terminal offers to store the key without it; keep it when the program reads the passphrase from another entry\n"
-	if outcome, _, stderr := h.run(t, string(openssh.protected), "set", "--stdin", "app/KEY"); outcome.Code != 0 || stderr != warning || h.value("app/KEY") != string(openssh.protected) {
-		t.Fatalf("no terminal: %+v %q", outcome, stderr)
-	}
-
-	h = newHarness(t)
-	h.terminal = terminal(t, passphrase+"\n")
-	outcome, _, stderr = h.run(t, string(pkcs8), "set", "--stdin", "app/KEY")
-	if outcome.Code != 0 || h.terminalOpens != 0 || h.value("app/KEY") != string(pkcs8) || !strings.HasPrefix(stderr, "mk: warning: the private key is protected by a passphrase that mk cannot remove\nmk: hint: openssl pkey -in <file> | mk set --stdin app/KEY stores the key without it, with OpenSSL asking for the passphrase on the terminal; keep it when the program reads the passphrase from another entry\n") {
-		t.Fatalf("pkcs8: %+v %d %q", outcome, h.terminalOpens, stderr)
-	}
-
-	// x/crypto decrypts OpenSSH keys with no other cipher.
-	block, _ := pem.Decode(openssh.protected)
-	block.Bytes = bytes.Replace(block.Bytes, []byte("aes256-ctr"), []byte("aes128-ctr"), 1)
-	unsupported := pem.EncodeToMemory(block)
-	h = newHarness(t)
-	h.terminal = terminal(t, passphrase+"\n")
-	warning = "mk: warning: mk cannot remove the passphrase from this key\nmk: hint: ssh-keygen -p -f <file> rewrites the key in OpenSSH format with a cipher mk reads; enter the same passphrase at its new-passphrase prompts to keep it, then retry; mk cannot remove the passphrase of a security key (sk-)\n"
-	if outcome, _, stderr := h.run(t, string(unsupported), "set", "--stdin", "app/KEY"); outcome.Code != 0 || stderr != warning || h.value("app/KEY") != string(unsupported) {
-		t.Fatalf("cannot remove: %+v %q", outcome, stderr)
-	}
-
-	for _, value := range [][]byte{openssh.plain, []byte("line 1\nline 2\n")} {
-		h = newHarness(t)
-		h.terminal = terminal(t, passphrase+"\n")
-		if outcome, _, stderr := h.run(t, string(value), "set", "--stdin", "app/KEY"); outcome.Code != 0 || stderr != "" || h.terminalOpens != 0 || !bytes.Equal([]byte(h.value("app/KEY")), value) {
-			t.Fatalf("unprotected %q: %+v %d %q", value, outcome, h.terminalOpens, stderr)
+	for _, value := range [][]byte{keyFixtures(t)[0].plain, []byte("line 1\nline 2\n")} {
+		h := newHarness(t)
+		if outcome, _, stderr := h.run(t, string(value), "set", "--stdin", "app/KEY"); outcome.Code != 0 || stderr != "" || !bytes.Equal([]byte(h.value("app/KEY")), value) {
+			t.Fatalf("unprotected %q: %+v %q", value, outcome, stderr)
 		}
 	}
 }
@@ -229,7 +234,7 @@ func TestSetCancelledAtPassphrase(t *testing.T) {
 	var stderr bytes.Buffer
 	done := make(chan Outcome, 1)
 	go func() {
-		done <- Run(ctx, []string{"set", "--stdin", "app/KEY"}, h.env(stdin, io.Discard, &stderr))
+		done <- Run(ctx, []string{"set", "--stdin", "app/DEPLOY_SSH_KEY"}, h.env(stdin, io.Discard, &stderr))
 	}()
 	// The prompt is waiting once it has turned echo off.
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
@@ -247,7 +252,7 @@ func TestSetCancelledAtPassphrase(t *testing.T) {
 	cancel()
 	select {
 	case outcome := <-done:
-		if outcome.Code != 130 || stderr.String() != "mk: error[cancelled]: cancelled before any entry was written\n" || h.value("app/KEY") != "" {
+		if outcome.Code != 130 || stderr.String() != "mk: error[cancelled]: cancelled before any entry was written\n" || h.value("app/DEPLOY_SSH_KEY") != "" {
 			t.Fatalf("%+v %q", outcome, stderr.String())
 		}
 		if after, err := term.GetState(fd); err != nil || *after != *before {
@@ -259,20 +264,12 @@ func TestSetCancelledAtPassphrase(t *testing.T) {
 }
 
 // set stores an SSH key, which mk run lends without asking for its
-// passphrase, only without it: an empty answer asks again, and where set
-// cannot ask or cannot decrypt, it writes nothing.
+// passphrase, only without it: an empty answer or a wrong passphrase asks
+// again, and where set cannot ask or cannot decrypt, it writes nothing.
 func TestSetRemovesSSHKeyPassphrase(t *testing.T) {
 	openssh := keyFixtures(t)[0]
-	p224, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p224DER, err := x509.MarshalECPrivateKey(p224)
-	if err != nil {
-		t.Fatal(err)
-	}
 	h := newHarness(t)
-	master, tty := openTerminal(t, "\n"+passphrase+"\n")
+	master, tty := openTerminal(t, "\nwrong\n"+passphrase+"\n")
 	h.terminal = tty
 	outcome, stdout, stderr := h.run(t, string(openssh.protected), "set", "--stdin", "app/DEPLOY_SSH_KEY")
 	if outcome.Code != 0 || stdout != "created app/DEPLOY_SSH_KEY\n" || stderr != "" || publicKey(t, []byte(h.value("app/DEPLOY_SSH_KEY"))) != publicKey(t, openssh.plain) {
@@ -280,11 +277,16 @@ func TestSetRemovesSSHKeyPassphrase(t *testing.T) {
 	}
 	shown := make([]byte, 4096)
 	n, _ := master.Read(shown)
-	for _, want := range []string{"app/DEPLOY_SSH_KEY is protected by a passphrase, which mk run does not ask for. Enter the passphrase to store the key without it, or press Ctrl-C to stop.", "Enter the passphrase or press Ctrl-C (input hidden): "} {
+	for _, want := range []string{"app/DEPLOY_SSH_KEY is protected by a passphrase, which mk run does not ask for. Enter the passphrase to store the key without it, or press Ctrl-C to stop.", "Enter the passphrase or press Ctrl-C (input hidden): ", "Bad passphrase, try again (input hidden): "} {
 		if !strings.Contains(string(shown[:n]), want) {
 			t.Errorf("terminal %q lacks %q", shown[:n], want)
 		}
 	}
+
+	// x/crypto decrypts OpenSSH keys with no other cipher.
+	block, _ := pem.Decode(openssh.protected)
+	block.Bytes = bytes.Replace(block.Bytes, []byte("aes256-ctr"), []byte("aes128-ctr"), 1)
+	unsupportedCipher := pem.EncodeToMemory(block)
 
 	// An existing entry's kind decides, whatever its name suggests.
 	h = newHarness(t)
@@ -304,7 +306,9 @@ func TestSetRemovesSSHKeyPassphrase(t *testing.T) {
 		// decrypts only in a private key.
 		{"encrypted other block", pem.EncodeToMemory(&pem.Block{Type: "SYNTHETIC", Headers: map[string]string{"Proc-Type": "4,ENCRYPTED"}, Bytes: []byte("synthetic")}), 0, "mk: error[invalid]: app/KEY: the value of an entry of kind ssh is not an SSH private key\nmk: hint: store the private key itself, not its .pub file or a certificate before the key\n"},
 		// The agent lends no P-224 key, which decrypts all the same.
-		{"unlendable once decrypted", legacyEncrypted(t, "EC PRIVATE KEY", p224DER), 1, "mk: error[invalid]: app/KEY: the value of an entry of kind ssh is not an SSH private key\nmk: hint: store the private key itself, not its .pub file or a certificate before the key\n"},
+		{"unlendable once decrypted", legacyEncrypted(t, "EC PRIVATE KEY", p224(t)), 1, unlendable("app/KEY")},
+		{"security key", securityKey(), 0, unlendable("app/KEY")},
+		{"unsupported cipher", unsupportedCipher, 1, "mk: error[invalid]: app/KEY: mk cannot remove the passphrase from this key\nmk: hint: ssh-keygen -p -f <file> rewrites the key in OpenSSH format with a cipher mk reads; enter the same passphrase at its new-passphrase prompts to keep it, then retry\n"},
 	} {
 		h.terminal = terminal(t, passphrase+"\n")
 		if test.name == "no terminal" {

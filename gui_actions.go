@@ -133,6 +133,7 @@ func (g *gui) edit(ref store.Ref) {
 				g.form.err = formError{message: sentence(err)}
 			case strings.ContainsRune(string(value), '\r'):
 				g.form.keepValue = true
+				_, _, g.form.keptKey = sshagent.Key(value)
 			default:
 				g.form.value, g.form.original = string(value), string(value)
 			}
@@ -332,19 +333,30 @@ func (g *gui) submit(then func()) {
 	details := store.Details{Kind: kindOf(f.kind), Notes: f.notes}
 	// A write that gives an SSH Key entry its value or its kind stores only
 	// a key mk run can lend, as mk set does; the window cannot remove a
-	// passphrase. A value kept for its carriage returns is not here to check.
-	if details.Kind == store.ValueSSH && (value != nil || f.kind != f.kindFrom && !f.keepValue) {
-		key := value
-		if key == nil {
-			key = []byte(f.original)
+	// passphrase.
+	if details.Kind == store.ValueSSH && (value != nil || f.kind != f.kindFrom) {
+		err := f.keptKey
+		if !f.keepValue {
+			key := value
+			if key == nil {
+				key = []byte(f.original)
+			}
+			_, _, err = sshagent.Key(key)
 		}
-		if _, _, err := sshagent.Key(key); err != nil {
-			f.err = formError{"value", "This is not an SSH private key. Paste the private key itself, not its public key, or choose another kind."}
+		if err != nil {
+			// A kept value has no field to paste into.
+			replace := "Paste"
+			if f.keepValue {
+				replace = "In Terminal, use mk set --stdin to store"
+			}
+			f.err = formError{"value", "This is not an SSH private key. " + replace + " the private key itself, not its public key, or choose another kind."}
 			switch {
 			case errors.Is(err, sshagent.ErrPassphrase):
-				f.err.message = "This SSH key is protected by a passphrase, which mk run does not ask for. Store it with mk set --stdin in Terminal, which removes the passphrase."
+				f.err.message = "This SSH key is protected by a passphrase, which mk run does not ask for. In Terminal, mk set --stdin removes it from a key it stores in an SSH Key entry, such as a new one whose name ends in SSH_KEY."
 			case errors.Is(err, sshagent.ErrPKCS8):
 				f.err.message = "This SSH key is protected by a passphrase that Maskey cannot remove. In Terminal, pipe openssl pkey -in <file> to mk set --stdin, which stores it without the passphrase."
+			case errors.Is(err, sshagent.ErrUnsupported):
+				f.err.message = "Maskey cannot lend this SSH key. " + replace + " the whole key, of type Ed25519, RSA, or ECDSA P-256, P-384, or P-521, or choose another kind."
 			}
 			g.valueField.Focus()
 			return

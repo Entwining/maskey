@@ -26,29 +26,42 @@ var (
 	// ErrPKCS8 is Key's error for an encrypted PKCS#8 key, which x/crypto
 	// cannot decrypt and reports as an unsupported type.
 	ErrPKCS8 = errors.New("the SSH key is an encrypted PKCS#8 key")
+	// ErrUnsupported is Key's error for a private key the agent cannot
+	// lend, such as an EC key on a curve SSH does not use, or cannot read,
+	// such as a truncated one: x/crypto's errors do not tell them apart.
+	ErrUnsupported = errors.New("the SSH agent cannot lend this private key")
 )
 
 // Key reads the private key in value's first PEM block, as the agent can
 // lend it, and its public key. Writers check an SSH key with it too, so
 // that the window and mk set refuse what mk run would.
 func Key(value []byte) (key any, public ssh.PublicKey, err error) {
+	// x/crypto reads only blocks whose type ends in PRIVATE KEY, yet asks
+	// for a passphrase for any block with an encrypted Proc-Type.
 	block, _ := pem.Decode(value)
-	if block != nil && block.Type == "ENCRYPTED PRIVATE KEY" {
+	switch {
+	case block == nil || !strings.HasSuffix(block.Type, "PRIVATE KEY"):
+		return nil, nil, errors.New("the value is not an SSH private key")
+	case block.Type == "ENCRYPTED PRIVATE KEY":
 		return nil, nil, ErrPKCS8
 	}
 	key, err = ssh.ParseRawPrivateKey(value)
 	var missing *ssh.PassphraseMissingError
-	// x/crypto asks for a passphrase for any block with an encrypted
-	// Proc-Type, though only a private key is what mk set decrypts.
-	if errors.As(err, &missing) && strings.HasSuffix(block.Type, "PRIVATE KEY") {
+	if errors.As(err, &missing) {
+		// A security key's private half stays in its authenticator, so its
+		// passphrase is not worth asking for. Only the OpenSSH format gives
+		// the public key without the passphrase.
+		if missing.PublicKey != nil && (missing.PublicKey.Type() == ssh.KeyAlgoSKED25519 || missing.PublicKey.Type() == ssh.KeyAlgoSKECDSA256) {
+			return nil, nil, ErrUnsupported
+		}
 		return nil, nil, ErrPassphrase
 	}
-	if err != nil {
-		return nil, nil, err
+	var signer ssh.Signer
+	if err == nil {
+		signer, err = ssh.NewSignerFromKey(key)
 	}
-	signer, err := ssh.NewSignerFromKey(key)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, ErrUnsupported
 	}
 	return key, signer.PublicKey(), nil
 }

@@ -207,7 +207,7 @@ Questions and hidden value prompts appear on the controlling terminal, not
 on stdout or stderr, so with --json stderr holds only JSON lines; mk falls
 back to stdin and stderr only when it cannot open that terminal. Without a
 terminal on stdin, set needs --stdin, and delete and uninstall need --yes;
-set --stdin asks on the terminal only for a private key's passphrase.
+set --stdin asks on the terminal only for an SSH key's passphrase.
 
 set, delete, grant, and revoke validate all references and collect
 required input before writing. set without --stdin or --yes asks once

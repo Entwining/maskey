@@ -268,7 +268,10 @@ type form struct {
 	// it is LF, so an edit would mix line endings. The entry can move, but
 	// its value stays.
 	keepValue bool
-	err       formError
+	// keptKey is sshagent.Key's verdict on the value kept, which the form
+	// does not hold, for when SSH Key is chosen for it.
+	keptKey error
+	err     formError
 }
 
 // ready reports whether submitting the form would write anything.

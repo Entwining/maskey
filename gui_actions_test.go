@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/pem"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -345,8 +349,17 @@ func TestSSHKeyNeedsUsableKey(t *testing.T) {
 	}
 	protected := string(pem.EncodeToMemory(encrypted))
 	const notKey = "This is not an SSH private key. Paste the private key itself, not its public key, or choose another kind."
-	const passphrase = "This SSH key is protected by a passphrase, which mk run does not ask for. Store it with mk set --stdin in Terminal, which removes the passphrase."
+	const passphrase = "This SSH key is protected by a passphrase, which mk run does not ask for. In Terminal, mk set --stdin removes it from a key it stores in an SSH Key entry, such as a new one whose name ends in SSH_KEY."
 	const pkcs8 = "This SSH key is protected by a passphrase that Maskey cannot remove. In Terminal, pipe openssl pkey -in <file> to mk set --stdin, which stores it without the passphrase."
+	const unlendable = "Maskey cannot lend this SSH key. Paste the whole key, of type Ed25519, RSA, or ECDSA P-256, P-384, or P-521, or choose another kind."
+	p224, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p224DER, err := x509.MarshalECPrivateKey(p224)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	h := newHarness(t)
 	h.newInApp("DEPLOY_SSH_KEY")
@@ -354,6 +367,7 @@ func TestSSHKeyNeedsUsableKey(t *testing.T) {
 		{"ssh-ed25519 AAAA synthetic", notKey},
 		{protected, passphrase},
 		{string(pem.EncodeToMemory(&pem.Block{Type: "ENCRYPTED PRIVATE KEY", Bytes: []byte("synthetic")})), pkcs8},
+		{string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: p224DER})), unlendable},
 	} {
 		h.typeValue(tc.value)
 		h.click("Add")
@@ -384,6 +398,36 @@ func TestSSHKeyNeedsUsableKey(t *testing.T) {
 	}
 	if got := h.attributes("app/SIGNING_KEY").Kind; got != store.ValuePEM {
 		t.Fatalf("stored kind %q", got)
+	}
+
+	// A value kept for its carriage returns is checked as loaded, and the
+	// form, which shows no field for it, points to the terminal.
+	crlf := strings.ReplaceAll(string(pem.EncodeToMemory(plain)), "\n", "\r\n")
+	for _, tc := range []struct{ name, value, message string }{
+		{"CRLF_PUBLIC", "ssh-ed25519 AAAA synthetic\r\n", "This is not an SSH private key. In Terminal, use mk set --stdin to store the private key itself, not its public key, or choose another kind."},
+		{"CRLF_P224", strings.ReplaceAll(string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: p224DER})), "\n", "\r\n"), "Maskey cannot lend this SSH key. In Terminal, use mk set --stdin to store the whole key, of type Ed25519, RSA, or ECDSA P-256, P-384, or P-521, or choose another kind."},
+		{"CRLF_KEY", crlf, ""},
+	} {
+		h := newHarness(t)
+		if err := h.backend.Add(context.Background(), "app/"+tc.name, []byte(tc.value), store.Details{Kind: store.ValuePEM}); err != nil {
+			t.Fatal(err)
+		}
+		h.g.refresh()
+		h.settle()
+		h.choose(tc.name, "Edit")
+		h.click("Private Key")
+		h.click("SSH Key")
+		h.click("Save")
+		want := store.ValueSSH
+		if tc.message != "" {
+			want = store.ValuePEM
+		}
+		if got := h.attributes("app/" + tc.name).Kind; got != want || h.g.form.err.message != tc.message {
+			t.Fatalf("%s: stored kind %q, error %+v", tc.name, got, h.g.form.err)
+		}
+		if v, _ := h.value("app/" + tc.name); v != tc.value {
+			t.Fatalf("%s: stored %q", tc.name, v)
+		}
 	}
 }
 

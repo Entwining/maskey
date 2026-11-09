@@ -172,7 +172,11 @@ func sshKeyError(ref store.Ref, err error, hint string) error {
 	case errors.Is(err, sshagent.ErrPassphrase):
 		return sshPassphraseError(ref)
 	case errors.Is(err, sshagent.ErrPKCS8):
-		return withHint(&store.Error{Kind: store.KindInvalid, Ref: &ref, Message: unremovableMessage}, unremovableHint(ref))
+		return withHint(&store.Error{Kind: store.KindInvalid, Ref: &ref, Message: "the private key is protected by a passphrase that mk cannot remove"},
+			fmt.Sprintf("openssl pkey -in <file> | mk set --stdin %s stores the key without it, with OpenSSL asking for the passphrase on the terminal", ref))
+	case errors.Is(err, sshagent.ErrUnsupported):
+		return withHint(&store.Error{Kind: store.KindInvalid, Ref: &ref, Message: "the SSH agent cannot lend this private key"},
+			"store the whole key, of type Ed25519, RSA, or ECDSA P-256, P-384, or P-521; for a program that reads the key itself, choose another kind in Maskey")
 	}
 	return withHint(&store.Error{Kind: store.KindInvalid, Ref: &ref, Message: "the value of an entry of kind ssh is not an SSH private key"}, hint)
 }

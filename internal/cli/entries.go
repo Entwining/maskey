@@ -105,15 +105,14 @@ github/GITHUB_TOKEN stores the token alone. A value of several lines,
 such as a PEM key, is stored byte for byte, unless mk removes a private
 key's passphrase as below. Empty values and NUL bytes are rejected.
 
-For a private key protected by a passphrase, mk asks on the terminal for
-the passphrase and stores the key without it, in its format but without
-its comment. An entry of kind ssh, such as a new one named DEPLOY_SSH_KEY,
-is stored only that way, since mk run does not ask for the passphrase,
-and holds only a private key mk run can lend. For another entry, press
-Return to keep the key as it is for a program that reads the passphrase
-from another entry. Without a terminal, or for a PKCS#8 key (ENCRYPTED
-PRIVATE KEY), which mk cannot decrypt, mk writes no entry of kind ssh and
-stores any other key as it is, warning how to proceed.
+An entry of kind ssh, such as a new one named DEPLOY_SSH_KEY, holds only
+a private key mk run can lend, without a passphrase, which mk run does not
+ask for. For a key protected by one, mk asks on the terminal for the
+passphrase and stores the key without it, in its format but without its
+comment. Without a terminal, or for a PKCS#8 key (ENCRYPTED PRIVATE KEY),
+which mk cannot decrypt, it writes no entry. An entry of another kind
+keeps a protected key as it is, for a program that reads the passphrase
+from another entry, and mk warns.
 
 When stdin is a terminal, mk lists the entries that already exist and
 asks once before replacing their values, which the Keychain does not
@@ -213,7 +212,7 @@ access. New entries start without program access.`,
 					// is refused before its passphrase is asked for.
 					_, _, err := sshagent.Key(value)
 					if errors.Is(err, sshagent.ErrPassphrase) {
-						if value, err = removePassphrase(cmd, env, ref, value, true); err != nil {
+						if value, err = removePassphrase(cmd, env, ref, value); err != nil {
 							return err
 						}
 						// A key that decrypts can still be one the agent
@@ -226,15 +225,16 @@ access. New entries start without program access.`,
 					case err != nil:
 						return sshKeyError(ref, err, fmt.Sprintf("an SSH key has several lines, which the hidden prompt does not read; pipe it with mk set --stdin %s < <file>", ref))
 					}
-				} else {
-					switch protectionOf(value) {
-					case removable:
-						if value, err = removePassphrase(cmd, env, ref, value, false); err != nil {
-							return err
-						}
-					case unremovable:
-						warn(cmd, env, unremovableMessage, unremovableHint(ref)+"; keep it when the program reads the passphrase from another entry")
+				} else if protected(value) {
+					// Offer an SSH Key entry only for a key it would take.
+					hint := "keep it when the program reads the passphrase from another entry"
+					switch _, _, err := sshagent.Key(value); {
+					case errors.Is(err, sshagent.ErrPassphrase):
+						hint += fmt.Sprintf("; for ssh or git, mk set --stdin %s/<NAME>_SSH_KEY < <file> stores the key without it", ref.Namespace)
+					case errors.Is(err, sshagent.ErrPKCS8):
+						hint += fmt.Sprintf("; for ssh or git, openssl pkey -in <file> | mk set --stdin %s/<NAME>_SSH_KEY stores the key without it", ref.Namespace)
 					}
+					warn(cmd, env, "the private key is protected by a passphrase, which mk stores with it", hint)
 				}
 				values[i] = value
 			}
