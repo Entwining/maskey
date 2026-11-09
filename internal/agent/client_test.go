@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -234,7 +235,8 @@ func TestClientRemembersUnavailableSides(t *testing.T) {
 }
 
 // Where neither side can be reached, the error is the service's, which
-// names what to fix.
+// names what to fix. A missing socket means that no service is installed, so
+// the client does not wait for one.
 func TestClientWithoutEitherSide(t *testing.T) {
 	direct := storetest.New()
 	direct.Before = func(string, string) error {
@@ -242,8 +244,9 @@ func TestClientWithoutEitherSide(t *testing.T) {
 	}
 	client := New(direct, nil, false)
 	client.path = filepath.Join(t.TempDir(), "missing.sock")
-	if _, err := client.Get(context.Background(), "test/NAME"); err == nil || err.Error() != unavailable().Error() {
-		t.Fatalf("got %v, want the service's error", err)
+	started := time.Now()
+	if _, err := client.Get(context.Background(), "test/NAME"); err == nil || err.Error() != unavailable().Error() || time.Since(started) >= restartWait {
+		t.Fatalf("got %v after %v, want the service's error at once", err, time.Since(started))
 	}
 }
 

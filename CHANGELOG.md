@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.9
+
+- After an update, `mk` waits up to 15 seconds instead of 5 for the Keychain service to restart on the new version, so the first command no longer fails while macOS holds the restart back for about 10 seconds. From the update after this one, commands that start during that time wait too, instead of failing at once; a Keychain service from 0.0.8 or earlier removes its socket when it stops, which tells them that no service is installed. macOS still writes one crash report for Maskey per update, which names a Launch Constraint Violation.
+
 ## 0.0.8
 
 - `mk set` at its hidden prompt lists the entries that already exist and asks once before replacing their values, which the Keychain does not keep; `--yes` skips the question. `mk set --stdin` still replaces without asking, so scripts that rotate a value keep working.

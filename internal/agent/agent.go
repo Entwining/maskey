@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/Entwining/maskey/internal/activity"
@@ -30,9 +31,16 @@ var (
 	errPeerMismatch    = errors.New("agent peer is not the same Maskey executable")
 )
 
+// launchdThrottle is launchd's default ThrottleInterval, the least time
+// between two starts of a job; the service's job keeps the default.
+const launchdThrottle = 10 * time.Second
+
 // restartWait bounds how long a client waits for a service that is
-// restarting on a newer build; see serve.
-const restartWait = 5 * time.Second
+// restarting on a newer build; see serve. The restart can take one throttle:
+// macOS 27 pins a job it loads at login to its executable's cdhash, which
+// every ad hoc signed build changes, so launchd refuses the new build's
+// first start and starts it again launchdThrottle later.
+const restartWait = launchdThrottle + 5*time.Second
 
 type request struct {
 	Op       string         `json:"op"`
@@ -247,6 +255,7 @@ func (c *Client) remote(ctx context.Context, req request) (response, error) {
 	// authentication, so waiting for that restart cannot repeat a request.
 	giveUp := time.Now().Add(restartWait)
 	var rejected error
+	refused := false
 	for {
 		conn, err := (&net.Dialer{Timeout: requestTimeout}).DialContext(ctx, "unix", c.path)
 		if err == nil {
@@ -265,10 +274,21 @@ func (c *Client) remote(ctx context.Context, req request) (response, error) {
 				}
 				return r, err
 			}
-		} else if rejected == nil {
+		} else if errors.Is(err, syscall.ECONNREFUSED) {
+			// A socket that refuses connections belongs to a service that
+			// ended without removing it, as one that retires or crashes
+			// does, and that launchd starts again.
+			refused = true
+		} else if rejected == nil && !refused {
+			// Only a socket missing from the start says that no service is
+			// installed: the new build replaces a stale socket, which
+			// leaves none for a moment.
 			return response{}, connectionError(ctx, req, false)
 		}
 		if time.Now().After(giveUp) {
+			if rejected == nil {
+				return response{}, connectionError(ctx, req, false)
+			}
 			return response{}, rejected
 		}
 		select {

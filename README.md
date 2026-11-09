@@ -67,7 +67,7 @@ For coding agents, `mk skill install` links Maskey's skill into `~/.claude/skill
 
 ### Upgrade
 
-Maskey checks for a new version shortly after it opens and then once a day, and Maskey > Check for Updates checks at once. It installs a version only after checking its signature, and the new version runs once you restart Maskey. Nothing needs reinstalling: entries stay in the Keychain, `mk` and the skill links point into the app, and the Keychain service restarts from the new version the first time the new `mk` reaches it.
+Maskey checks for a new version shortly after it opens and then once a day, and Maskey > Check for Updates checks at once. It installs a version only after checking its signature, and the new version runs once you restart Maskey. Nothing needs reinstalling: entries stay in the Keychain, `mk` and the skill links point into the app, and the Keychain service restarts from the new version the first time the new `mk` reaches it. Because each version's ad hoc signature differs, macOS can refuse that restart once, write a crash report for Maskey that names a Launch Constraint Violation, and start the new version about 10 seconds later; `mk` waits for it.
 
 ### Uninstall
 

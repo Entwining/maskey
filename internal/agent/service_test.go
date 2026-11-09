@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -421,7 +422,8 @@ func connectAsOtherExecutable(t *testing.T, path string) {
 }
 
 // A rejected client ends the service only once its executable has been
-// replaced, so the client cannot force a restart.
+// replaced, so the client cannot force a restart. The retired service leaves
+// its socket for clients to wait on.
 func TestServeRetiresOnlyWhenReplaced(t *testing.T) {
 	for _, replaced := range []bool{false, true} {
 		t.Run(fmt.Sprintf("replaced=%v", replaced), func(t *testing.T) {
@@ -435,6 +437,9 @@ func TestServeRetiresOnlyWhenReplaced(t *testing.T) {
 			case err := <-finished:
 				if !replaced || err != nil {
 					t.Fatalf("service stopped: %v", err)
+				}
+				if _, err := net.Dial("unix", path); !errors.Is(err, syscall.ECONNREFUSED) {
+					t.Fatalf("retired service's socket: %v", err)
 				}
 			case <-time.After(time.Second):
 				if replaced {
@@ -454,18 +459,18 @@ func TestServeRetiresOnlyWhenReplaced(t *testing.T) {
 }
 
 // A client that reaches a service of another build waits for its restart
-// instead of failing at once, and gives up if no matching service appears.
+// instead of failing at once, and so does a client that arrives while launchd
+// holds the restart back for its throttle, also while the new build replaces
+// the socket; both give up if no matching service appears.
 func TestClientWaitsForRestartedService(t *testing.T) {
-	for _, restarts := range []bool{true, false} {
-		t.Run(fmt.Sprintf("restarts=%v", restarts), func(t *testing.T) {
+	// The stand-in for the old build rejects one connection and exits, leaving
+	// its socket as a retiring service does, keeps rejecting, or exits at once
+	// and no service follows it.
+	for _, mode := range []string{"once", "always", "never"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			path := filepath.Join(serviceTempDir(t), "keychain.sock")
-			// The stand-in for the old build rejects one connection and exits,
-			// as a retiring service does, or keeps rejecting.
-			script := "import os,socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])\ns.listen(4)\nprint(flush=True)\nwhile True:\n c,_=s.accept()\n c.close()\n if sys.argv[2]=='once':\n  break\nos.unlink(sys.argv[1])\n"
-			mode := "always"
-			if restarts {
-				mode = "once"
-			}
+			script := "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])\ns.listen(4)\nprint(flush=True)\nwhile sys.argv[2]!='never':\n c,_=s.accept()\n c.close()\n if sys.argv[2]=='once':\n  break\n"
 			old := exec.Command("/usr/bin/python3", "-I", "-S", "-c", script, path, mode)
 			old.Env = []string{"PATH=" + servicePATH}
 			ready, err := old.StdoutPipe()
@@ -482,24 +487,40 @@ func TestClientWaitsForRestartedService(t *testing.T) {
 			if _, err := ready.Read(make([]byte, 1)); err != nil {
 				t.Fatal(err)
 			}
-			result := make(chan error, 1)
-			started := time.Now()
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*restartWait)
-				defer cancel()
-				_, err := (&Client{path: path}).remote(ctx, request{Op: "check"})
-				result <- err
-			}()
-			if !restarts {
-				err := <-result
-				if !store.IsKind(err, store.KindUnavailable) || time.Since(started) < restartWait {
-					t.Fatalf("persistent mismatch after %v: %v", time.Since(started), err)
+			check := func() <-chan error {
+				result := make(chan error, 1)
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 2*restartWait)
+					defer cancel()
+					_, err := (&Client{path: path}).remote(ctx, request{Op: "check"})
+					result <- err
+				}()
+				return result
+			}
+			switch mode {
+			case "never":
+				if err := old.Wait(); err != nil {
+					t.Fatal(err)
+				}
+				fallthrough
+			case "always":
+				started := time.Now()
+				if err := <-check(); !store.IsKind(err, store.KindUnavailable) || time.Since(started) < restartWait {
+					t.Fatalf("no matching service after %v: %v", time.Since(started), err)
 				}
 				return
 			}
+			rejected := check()
 			if err := old.Wait(); err != nil {
 				t.Fatal(err)
 			}
+			refused := check()
+			// The new build removes the stale socket before it listens.
+			time.Sleep(launchdThrottle)
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(300 * time.Millisecond)
 			ctx, cancel := context.WithCancel(context.Background())
 			finished := make(chan error, 1)
 			go func() {
@@ -509,8 +530,11 @@ func TestClientWaitsForRestartedService(t *testing.T) {
 				cancel()
 				<-finished
 			}()
-			if err := <-result; err != nil {
-				t.Fatalf("after the restart: %v", err)
+			if err := <-rejected; err != nil {
+				t.Fatalf("rejected client after the restart: %v", err)
+			}
+			if err := <-refused; err != nil {
+				t.Fatalf("client refused during the restart: %v", err)
 			}
 		})
 	}

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -76,7 +77,9 @@ func Serve(ctx context.Context, backend store.Backend, recorder activity.Recorde
 // connection fails authentication and replaced reports that this process's
 // executable is now a different valid build: an upgrade replaced the app, and
 // returning lets launchd's KeepAlive start the new build. Only a change to that
-// file, not a client, can end the service this way.
+// file, not a client, can end the service this way. A retiring service leaves
+// its socket so that clients wait for the new build instead of concluding that
+// no service is installed.
 func serve(ctx context.Context, path string, backend store.Backend, recorder activity.Recorder, check func(context.Context) error, approve store.Approve, replaced func() bool) error {
 	dir := filepath.Dir(path)
 	if err := privateDir(dir); err != nil {
@@ -99,9 +102,10 @@ func serve(ctx context.Context, path string, backend store.Backend, recorder act
 	}
 	listener.SetUnlinkOnClose(false)
 	info, err := os.Lstat(path)
+	var retiring atomic.Bool
 	defer func() {
 		listener.Close()
-		if current, err := os.Lstat(path); err == nil && info != nil && os.SameFile(info, current) {
+		if current, err := os.Lstat(path); !retiring.Load() && err == nil && info != nil && os.SameFile(info, current) {
 			os.Remove(path)
 		}
 	}()
@@ -153,6 +157,7 @@ accept:
 				// the program that started it still run.
 				serveRequest(activity.WithCaller(workers, activity.Invoker(pid)), conn, backend, recorder, check, approve)
 			} else if replaced() {
+				retiring.Store(true)
 				retire()
 			}
 		})
