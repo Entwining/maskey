@@ -3,26 +3,28 @@
 </p>
 <h1 align="center">Maskey</h1>
 
-Maskey keeps API keys, tokens, and other credentials in iCloud Keychain and gives them to commands as environment variables. You manage entries in a macOS window; coding agents and scripts use them through the `mk` command, without putting the values in prompts or project files.
+Maskey keeps API keys, tokens, passwords, and SSH keys in iCloud Keychain. Manage them in a macOS window, and let scripts and coding agents use them through `mk`: ordinary entries become environment variables with their values masked in output; SSH Key entries provide an SSH agent that ends with the command.
+
+Entries sync between Macs through iCloud Keychain on your Apple Account. Maskey needs no additional account or hosted service, and `mk` has no bootstrap token of its own to store. A local activity record shows which programs used or changed entries through Maskey.
 
 ```sh
 mk set github/GITHUB_TOKEN          # prompts for the value without echoing it
 mk run github -- gh auth status     # gh gets GITHUB_TOKEN; its output shows *** in place of the value
 ```
 
-An entry is `<namespace>/<NAME>`. The name becomes the environment variable, and the namespace groups entries that a command can receive together; it is not a separate vault.
+An entry is `<namespace>/<NAME>`. The name becomes the environment variable, and the namespace groups entries that a command can receive together; it is not a separate vault. For an SSH Key entry, the variable holds the public key, not the private key.
 
 ## What Maskey protects, and what it does not
 
-`mk run` replaces each exact value in the command's stdout and stderr with a marker before passing the output on. The window shows a value when you reveal or edit it. Copy Value keeps the value on this Mac, marks it as confidential for clipboard managers, and clears it after 90 seconds; text you select in a revealed value and copy is ordinary text. `mk get` prints a value only for an entry you granted program access, for a program that runs a command to obtain its key; once granted, any program that can run `mk` can obtain that value. Changes to program access require your login password, Touch ID, or Apple Watch; one approval covers further changes from the same place for 5 minutes.
+With `mk run`, you can give a tool credentials without putting them in prompts or project files. It replaces their exact values in the command's stdout and stderr with a marker. The command still receives ordinary credentials and can do anything with them. Masking does not catch a value the command encodes or transforms, writes to a file, or sends over the network. A terminal program that inserts line breaks or styling within a value can also show it unmasked. Use commands you trust, and wrap the tool that needs the credential rather than a whole coding agent, whose own logs `mk` cannot mask.
 
-The command you run still receives the credentials and can do anything with them. Masking does not catch a value the command encodes or transforms, writes to a file, or sends over the network. A terminal program that inserts line breaks or styling within a value can also show it unmasked. Use Maskey with commands you trust, and wrap the tool that needs the credential rather than a whole agent, whose own logs `mk` cannot mask.
+For an SSH Key entry, `mk run` reads the private key into its own process and gives the command access to signatures instead of the key. During the run, the command can ask for any signature with that key; Maskey does not approve each signature or restrict it to a host or purpose. The private key is still stored and synchronized in iCloud Keychain, not bound to one device or held in hardware. The window can reveal, copy, or edit it, and granting it Program access lets `mk get` return it like any other value.
 
 Maskey reaches the Keychain through Apple's `/usr/bin/python3`, so any program hosted by that interpreter can reach the same items, without asking you and without a record. The activity record and the 5-minute approval for program access are Maskey's own policy, not protections macOS enforces, and a program running as you can also edit the record unless a sandbox keeps it from writing the record's directory. Entries stay readable after the Mac's first unlock since startup, so unattended jobs keep working while the screen is locked.
 
 ## Install
 
-You need an Apple silicon Mac and Apple's Command Line Tools (`xcode-select --install`) or Xcode, which provide `/usr/bin/python3`. To have entries on several Macs, turn on iCloud Keychain on each with the same Apple Account and install Maskey on each; iCloud Keychain does the syncing, and Maskey has no sync settings of its own.
+You need an Apple silicon Mac and Apple's Command Line Tools (`xcode-select --install`) or Xcode, which provide `/usr/bin/python3`. To use entries on several Macs, turn on iCloud Keychain on each with the same Apple Account and install Maskey on each. Maskey has no sync settings of its own and cannot tell when a change reaches another Mac.
 
 ### Homebrew
 
@@ -61,61 +63,107 @@ Like an installed copy, a source build offers to replace itself with each publis
 
 ### Set up the command line
 
-Open Maskey and choose Maskey > Install Command Line Tool. This links `~/.local/bin/mk` to the app and installs a per-user Keychain service that starts at login without opening a window. Add `~/.local/bin` to your `PATH` if your shell cannot find `mk`. `mk setup` in a terminal installs or reinstalls only the service, which is all a Homebrew install still needs.
+Open Maskey and choose Maskey > Install Command Line Tool. This links `~/.local/bin/mk` to the app and installs a per-user Keychain service that starts at login without opening a window. Add `~/.local/bin` to your `PATH` if your shell cannot find `mk`. For a Homebrew install, run `mk setup` in a normal terminal to install the service; Homebrew already supplies the `mk` link.
 
-For coding agents, `mk skill install` links Maskey's skill into `~/.claude/skills` and `~/.agents/skills`. The links point into the app, so the skill always matches the installed `mk`; `mk skill show` prints it for an agent that reads skills from elsewhere.
-
-### Upgrade
-
-Maskey checks for a new version shortly after it opens and then once a day, and Maskey > Check for Updates checks at once. It installs a version only after checking its signature, and the new version runs once you restart Maskey. Nothing needs reinstalling: entries stay in the Keychain, `mk` and the skill links point into the app, and the Keychain service restarts from the new version the first time the new `mk` reaches it. Because each version's ad hoc signature differs, macOS can refuse that restart once, write a crash report for Maskey that names a Launch Constraint Violation, and start the new version about 10 seconds later; `mk` waits for it.
-
-### Uninstall
-
-Entries stay in iCloud Keychain, on every Mac, when Maskey is gone; delete them in the window or with `mk delete` first if you no longer want them. Quit Maskey, then run `mk uninstall`: it lists what Maskey installed on this Mac, asks once, stops the Keychain service, and removes its configuration, the activity record, the window's saved state, and the `mk` and skill links. Then move Maskey.app to the Trash, or run `brew uninstall --cask maskey` if Homebrew installed it.
+For coding agents, `mk skill install` links the [shipped skill](resources/skills/maskey/SKILL.md), which teaches agents to use credentials without putting their values in the conversation, into `~/.claude/skills` and `~/.agents/skills`. The links point into the app, so the skill matches the installed `mk`; `mk skill show` prints it for an agent that reads skills from elsewhere. Agents whose sandbox blocks Keychain access also need the socket permission described under [Sandboxed agents](#sandboxed-agents).
 
 ## Use
 
-### In the window
+### Manage entries
 
-Click + or choose File > New Entry, and enter a namespace, a name such as `GITHUB_TOKEN`, and the value; the namespace chosen in the sidebar is filled in. Kind describes the value and sets the entry's icon; Maskey suggests one from the name until you choose one. Notes are plain text shown with the entry, so keep secrets in the value. The toolbar's search field (⌘F) matches entry and namespace names across every namespace and stays usable while you edit.
+In the window, click + or choose File > New Entry and enter a namespace, a name such as `GITHUB_TOKEN`, and the value. The namespace chosen in the sidebar is filled in. Kind is suggested from the name until you choose one; SSH Key changes how `mk run` supplies the key, while the other kinds describe the value and set its icon. Notes are plain text shown with the entry, so keep secrets in the value. Search (⌘F) matches entry and namespace names across every namespace, including while you edit; Escape in the search field clears the query.
 
-Before you switch entries or namespaces, close the window, or quit, Maskey asks whether to save, discard, or continue editing any unsaved changes. Saving is offered only when the form can be saved. Cancel and Escape in the editor ask before discarding unsaved changes, without offering Save; an unchanged form closes at once. Escape in the search field clears the query.
+The window asks what to do with unsaved changes before switching entries or namespaces, closing, or quitting. You can save when the form is valid, discard, or continue editing. Cancel and Escape in the editor ask before discarding changes without offering Save; an unchanged form closes at once.
 
-The value editor accepts multiple lines but refuses to paste CRLF line endings, which it would change to LF. An entry whose value contains carriage returns keeps that value when you edit it; replace it with `mk set --stdin`, which stores a value of several lines byte for byte. A private key protected by a passphrase is stored as pasted; `mk set --stdin` in Terminal offers to store it without the passphrase.
+The value editor accepts multiple lines but refuses to paste CRLF line endings, which it would change to LF. An existing value containing carriage returns stays unchanged when you edit the entry; replace it with `mk set --stdin` to preserve its line endings. Private keys pasted into the window keep their passphrase, which an SSH Key entry cannot use with `mk run`.
 
-### From a terminal
+You can reveal or edit a value in the window without granting program access. Copy Value keeps it on this Mac, marks it as confidential for clipboard managers, and clears it after 90 seconds or when Maskey quits, unless something else was copied since. Text selected in a revealed value and copied is ordinary text.
 
-`mk run <namespace> -- <command>` sets every entry of the namespace as a variable of the same name in the command's environment, replacing an inherited one, and `mk run <namespace>/<NAME> -- <command>` sets one entry. Put `mk` flags before the first selector and list selectors before the required `--`; everything after it belongs to the command. An entry you name replaces a namespace's entry of that name. `mk run` starts the command without a shell, so use `sh -c '…'` for pipes or variable expansion.
+From a terminal, `mk set` prompts without echoing the value and asks before replacing an existing one. `mk set --stdin` reads from a pipe or file and replaces without asking; a terminal echoes what you type to it. A one-line value loses its final line ending, while a value of several lines is stored byte for byte unless `mk` removes a private key's passphrase. For a protected private key in an entry of another kind than SSH Key, `mk set` offers on the terminal to remove the passphrase; press Return to keep it for a program that reads it separately.
+
+`mk list` shows entry references, and `mk list --json` adds kind, modification time, and program access, without values or notes. Names are case-sensitive; `mk` warns before creating a name that differs from an existing one only in case. `mk rename` moves an entry with its value and details. Deleting an entry in the window or with `mk delete` removes it from every Mac syncing this Keychain and cannot be undone.
+
+### Run a command
+
+Give a command one entry or a whole namespace:
+
+```sh
+mk run github/GITHUB_TOKEN -- gh pr list
+mk run github -- gh auth status
+```
+
+Each selected entry sets a variable of the same name, replacing an inherited one. You can combine namespaces and individual entries; an entry you name overrides a namespace's entry of that name. `mk run` starts the command without a shell, so use `sh -c '…'` for pipes or variable expansion in the child. Keep secret values out of command arguments.
 
 Interactive and full-screen programs work when `mk run` runs in the foreground of the terminal that is its input and output; Ctrl-Z suspends the command and `fg` resumes it. Captured output or selected values containing control characters use pipes instead.
 
-`mk list` prints entry references, and `mk list --json` adds each entry's kind, modification time, and whether it has program access; neither shows values or notes. `mk set`, `mk rename`, and `mk delete` manage entries. `mk set` prompts for each value without echoing it and asks before replacing an existing value; `mk set --stdin` reads one value from a pipe or file and replaces without asking, and a terminal echoes what you type to it. Names are case-sensitive; `mk` warns when a new name differs from an existing one only in case. For a private key protected by a passphrase, `mk set --stdin` asks on the terminal whether to store the key without it; press Return to keep it. Deleting an entry removes it from every Mac on your Apple Account and cannot be undone.
+`mk --help` and `mk <command> --help` describe command syntax, flags, and examples. For scripts, `mk help exit-codes` describes error kinds, exit statuses, JSON output, and how to handle partial or uncertain writes.
 
-`mk --help` and `mk <command> --help` describe the commands, and `mk help exit-codes` the error kinds and exit statuses that scripts can rely on. Commands that support `--json` list it in their help. With that flag, errors go to stderr as JSON and results to stdout. Prompts go to the terminal, not to either stream. `mk activity --json` emits one JSON record per line, and `mk doctor --json` keeps failed checks in its stdout report. `mk get` still writes the raw value, and `mk run` passes the command's masked output through.
+### SSH keys
 
-### Program access and activity
+Choose SSH Key (`ssh`) in the window for a key used by OpenSSH. A new entry whose name ends in `SSH_KEY` gets this kind automatically; choose it yourself for other names or an existing Private Key entry. Private Key (`pem`) still supplies the private key as a variable for programs that read a key themselves.
 
-An entry's Program access switch allows `mk get` to give its value to programs; new entries start without it. `mk grant` and `mk revoke` change the same setting through the Keychain service that `mk setup` installs, with the same authentication as the window; interrupting them while the dialog is open withdraws the change. The service and the window each keep their own 5-minute approval. Replacing, editing, or renaming an entry preserves its program access.
+Import a key from your terminal, then run the command that needs it:
 
-`mk activity` shows which programs got, read, wrote, or changed the program access of which entries on this Mac, grouped over the last week unless you ask for more. Each record names the program that ran `mk` and the programs that started it, or Maskey for the window, and grants and revokes you refused are recorded too. Maskey keeps the current month's file and the 12 before it in `~/Library/Logs/io.github.entwining.maskey`, removing older ones when it writes a new month's first record, and never records values, notes, arguments, or environment variables.
+```sh
+mk set --stdin deploy/DEPLOY_SSH_KEY < /path/to/private-key
+mk run deploy/DEPLOY_SSH_KEY -- ssh user@host
+```
+
+`mk set` stores an SSH Key entry only without its passphrase. When importing a protected key, it asks for the passphrase on the terminal and removes it before storing the key. If it cannot ask or cannot decrypt the key, it writes no entry and explains how to proceed. Removing the passphrase keeps the key's format but drops its comment; the source file is unchanged.
+
+`mk run` sets `DEPLOY_SSH_KEY` to the public key in `authorized_keys` form and `SSH_AUTH_SOCK` to its own SSH agent. The private key does not enter the command's environment or a temporary file. The agent works with `ssh`, Git over SSH, and `ssh-keygen -Y sign`; it ends with the command, closing open agent connections too.
+
+For [SSH commit signing](https://git-scm.com/docs/git-config#Documentation/git-config.txt-usersigningKey) with a key stored as `signing/SIGNING_SSH_KEY`, give Git the public key from the variable:
+
+```sh
+mk run signing/SIGNING_SSH_KEY -- sh -c 'git -c gpg.format=ssh -c user.signingKey="key::$SIGNING_SSH_KEY" commit -S -m "<message>"'
+```
+
+Select only the keys the command needs, since a server counts each offered key as an authentication attempt. An [`IdentityAgent` setting](https://man.openbsd.org/ssh_config#IdentityAgent) in `ssh_config` takes precedence over `SSH_AUTH_SOCK`; pass `ssh -o IdentityAgent=SSH_AUTH_SOCK`, or `git -c core.sshCommand='ssh -o IdentityAgent=SSH_AUTH_SOCK'`, to use Maskey's agent. Agent forwarding with `ssh -A` lends the agent to the remote host for the run, allowing it to request signatures too.
+
+### Program access
+
+`mk run` needs no Program access grant. Turn on an entry's Program access switch only for a program that must obtain its raw value from a helper command, such as `mk get <namespace>/<NAME>`. Configure that program to capture the output itself; `mk get` refuses terminal stdout. New entries start without program access, and a grant applies to any program that can run `mk` with access to the Keychain, not just the intended consumer.
+
+The switch and `mk grant` or `mk revoke` require your login password, Touch ID, or Apple Watch. The commands use the Keychain service installed by `mk setup`; interrupting them while the approval dialog is open withdraws the change. One approval covers further changes for 5 minutes, with the service and the window each keeping their own approval. Replacing, editing, or renaming an entry preserves its program access.
+
+### Activity
+
+`mk activity` shows which programs got, read, wrote, deleted, or changed program access to which entries on this Mac, grouped over the last week unless you ask for more. Each record names the program that ran `mk` and the programs that started it, or Maskey for the window; refused grants and revokes are recorded too. For an SSH key, the read at the start of `mk run` is recorded, but individual signatures are not.
+
+The record never contains values, notes, command arguments, or environment variables. Maskey keeps the current month's file and the 12 before it in `~/Library/Logs/io.github.entwining.maskey`, removing older ones when it writes a new month's first record.
 
 ## Sandboxed agents
 
-An agent sandbox needs only Maskey's Keychain service to run `mk`. Allow this Unix socket in the sandbox's network permissions:
+A sandbox that blocks direct Keychain access can use Maskey's per-user Keychain service. Allow this Unix socket in the sandbox's network permissions:
 
 ```text
 ~/Library/Application Support/io.github.entwining.maskey/keychain.sock
 ```
 
-`mk` uses the Keychain directly where the sandbox allows it, except for the operations `mk activity` shows when the sandbox cannot write the activity record: those go to the service, which performs and records them outside the sandbox. Do not let a sandbox write `~/Library/Logs/io.github.entwining.maskey`, since a process that can write there can rewrite or delete the record. If the service cannot be reached, `mk` still uses the Keychain directly where it can, and warns that the operation was not recorded. Both ends check that they are the same signed executable before a request or value is sent. Only Keychain operations go through the service; the command and the masking of its output stay in the sandbox.
+`mk` uses the Keychain directly where allowed, except for recorded operations when the sandbox cannot write the activity record: those go to the service, which performs and records them outside the sandbox. Do not let a sandbox write `~/Library/Logs/io.github.entwining.maskey`, since a process that can write there can rewrite or delete the record. If the service cannot be reached, `mk` still uses the Keychain directly where it can, and warns when an operation was not recorded.
+
+Both ends check that they are the same signed executable before a request or value is sent. Only Keychain operations and program access approval go through the service; the command and the masking of its output stay in the sandbox. `mk` authenticates with its executable identity, not a stored token.
+
+For SSH Key entries, `mk run` also creates an agent socket in a private directory under `TMPDIR`. The sandbox must allow `mk` to create Unix sockets there and the command to connect to them. This socket lasts only for the run and is separate from the Keychain service's socket above.
 
 ## Troubleshooting
 
-`mk doctor` checks Apple's interpreter, Keychain access, the service, and the skill links. It cannot check iCloud Keychain sync: Maskey sees only this Mac's Keychain, and iCloud does not report when a change reaches another Mac.
+`mk doctor` checks Apple's interpreter, Keychain access, the service, and the skill links. It reads entry attributes, not values. It cannot check iCloud Keychain sync: Maskey sees only this Mac's Keychain, and iCloud does not report when a change reaches another Mac.
 
-- `unavailable`: neither the Keychain nor the service is reachable. Allow the socket above, or run `mk setup` in a normal terminal if `mk doctor` shows the service is not running.
+- `unavailable`: neither the Keychain nor the service is reachable. Allow the socket under [Sandboxed agents](#sandboxed-agents), or run `mk setup` in a normal terminal if `mk doctor` shows the service is not running.
 - `uncertain`: a write may have happened. Check the entry in Maskey before repeating it; a list of names cannot show whether a new value was saved.
 - `locked`: unlock the Mac.
+
+## Upgrade
+
+Maskey checks for a new version shortly after it opens and then once a day, and Maskey > Check for Updates checks at once. It installs a version only after checking its signature, and the new version runs once you restart Maskey. Entries stay in the Keychain, `mk` and the skill links point into the app, and the Keychain service restarts from the new version the first time the new `mk` reaches it.
+
+Because each version's ad hoc signature differs, macOS can refuse that restart once, write a crash report for Maskey that names a Launch Constraint Violation, and start the new version about 10 seconds later; `mk` waits for it.
+
+## Uninstall
+
+Entries stay in iCloud Keychain, on every Mac, when Maskey is gone; delete them in the window or with `mk delete` first if you no longer want them. Quit Maskey, then run `mk uninstall`: it lists what Maskey installed on this Mac, asks once, stops the Keychain service, and removes its configuration, the activity record, the window's saved state, and the `mk` and skill links. Then move Maskey.app to the Trash, or run `brew uninstall --cask maskey` if Homebrew installed it.
 
 ## Development
 
