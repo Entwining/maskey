@@ -43,11 +43,14 @@ func (g *gui) updateButton(c *ui.Context) {
 	label := "Update to " + g.update
 	b := ui.ButtonBase(c.Key("update")).Margin(t.Space(2)).Padding(t.Space(1.5), t.Space(2.5)).Gap(t.Space(2)).Radius(6).Label(label)
 	// A tint of the accent, since the accent itself fills the selected row.
+	// Hover and press tint their own shades: a stronger tint of the accent
+	// alone barely lightens it over a dark sidebar, while AccentHover is
+	// lighter there.
 	switch {
 	case b.Pressed():
-		b.Background(t.Accent.Alpha(0.44))
+		b.Background(t.AccentPressed.Alpha(0.44))
 	case b.Hovered():
-		b.Background(t.Accent.Alpha(0.32))
+		b.Background(t.AccentHover.Alpha(0.32))
 	default:
 		b.Background(t.Accent.Alpha(0.2))
 	}

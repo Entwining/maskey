@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.11
+
+- In dark mode, the update button under the sidebar lightens while the pointer is over it, instead of looking the same as at rest.
+
 ## 0.0.10
 
 - When Maskey finds a newer version, Check for Updates… in the Maskey menu becomes Update to Maskey <version>…, and a button under the sidebar names the version; both open the update window, which offers to relaunch into an update already installed in the background. An update installed without asking still waits for Maskey to quit, and if Maskey stays open a week after finding it, the update window shows once, the next time you switch to Maskey.
