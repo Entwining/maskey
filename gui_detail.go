@@ -103,7 +103,7 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 		func() { cardField(c, "Kind", func() { line(kindLabel(kind), "") }) },
 		func() {
 			cardField(c, "Value", func() {
-				ui.Row(c).Gap(4).AlignItems(ui.Start).Padding(v+1, h+1).Children(func() {
+				ui.Row(c).Gap(4).AlignItems(ui.Start).PaddingY(v + 1).PaddingStart(h + 1).Children(func() {
 					if g.showing(ref) {
 						// The value's own lines stay whole, and scroll where they
 						// are wider than the card.
@@ -113,7 +113,7 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 					} else {
 						ui.Text(c, hiddenValue).TextColor(t.Text).Grow(1).MinWidth(0).SingleLine()
 					}
-					lineRow(c).Gap(4).Children(func() {
+					lineRow(c).Gap(4).MarginEnd(-iconInset(22)).Children(func() {
 						show, showIcon := "Show Value", eyeIcon
 						if g.showing(ref) {
 							show, showIcon = "Hide Value", eyeOffIcon
@@ -156,12 +156,12 @@ func (g *gui) accessSwitch(c *ui.Context, ref store.Ref, granted bool) {
 	if changing {
 		on = g.write.accessTo
 	}
-	ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(v+1, h+1).Children(func() {
+	ui.Row(c).Gap(8).AlignItems(ui.Center).PaddingY(v + 1).PaddingStart(h + 1).Children(func() {
 		// The icon sits close by the state, as a note on it rather than a
 		// control of its own.
 		ui.Row(c).Gap(5).AlignItems(ui.Center).Grow(1).Children(func() {
 			ui.Text(c, accessState(on)).TextColor(t.Text)
-			ui.Icon(c, infoIcon).Size(22*0.6, 22*0.6).Tooltip(accessCaption)
+			ui.Icon(c, infoIcon).Size(22*iconScale, 22*iconScale).Tooltip(accessCaption)
 		})
 		if changing {
 			ui.Spinner(c).Size(14, 14).Label("Changing program access")

@@ -112,6 +112,15 @@ func theme(base *ui.Theme) *ui.Theme {
 // content do.
 var neutral = ui.RGBA(127, 127, 127, 1)
 
+// iconScale is the share of an icon button's size its glyph takes.
+const iconScale = 0.6
+
+// iconInset is the room between an icon button's edge and its glyph, which
+// only the hover and press backgrounds fill. A button lines up with the
+// controls beside it by its glyph, as AppKit's borderless buttons do, so a
+// row ending in icon buttons reaches this far into the padding after it.
+func iconInset(size float32) float32 { return size * (1 - iconScale) / 2 }
+
 // iconButton is a borderless button showing an icon, or a spinner while its
 // action runs; both fit the same bounds.
 func iconButton(c *ui.Context, svg *ui.SVG, label string, size float32, busy, disabled bool) ui.Element {
@@ -125,7 +134,7 @@ func iconButton(c *ui.Context, svg *ui.SVG, label string, size float32, busy, di
 		if busy {
 			ui.Spinner(c).Size(size-10, size-10).Label(label + " in progress")
 		} else {
-			ui.Icon(c, svg).Size(size*0.6, size*0.6)
+			ui.Icon(c, svg).Size(size*iconScale, size*iconScale)
 		}
 	})
 }
@@ -186,6 +195,8 @@ func cardField(c *ui.Context, label string, control func()) ui.Element {
 // inputPadding is the room the form's controls leave around their text
 // inside their 1-point border. The detail shows each value with that room
 // and the border's, so that Edit frames the values without moving them.
+// Controls after a value end at the field's edge, where an input's border
+// does, as the labels start at the other.
 func inputPadding(t *ui.Theme) (vertical, horizontal float32) {
 	return t.Space(1.5), t.Space(2.5)
 }

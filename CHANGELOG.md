@@ -3,6 +3,7 @@
 ## 0.0.11
 
 - In dark mode, the update button under the sidebar lightens while the pointer is over it, instead of looking the same as at rest.
+- In an entry's details, the Show Value and Copy Value icons and the Program access switch end at the card's inner edge, where the edit form's fields end, instead of short of it and out of line with each other.
 
 ## 0.0.10
 

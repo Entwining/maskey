@@ -155,7 +155,7 @@ func TestAccessInfo(t *testing.T) {
 	before := shown()
 	state, _ := h.tt.Find("Not allowed")
 	// The icon's center, 5 points after the state.
-	h.tt.Move(state.X+state.W+5+22*0.6/2, state.Y+state.H/2)
+	h.tt.Move(state.X+state.W+5+22*iconScale/2, state.Y+state.H/2)
 	h.tt.Frame()
 	h.tt.Advance(time.Second)
 	h.tt.Frame()
@@ -195,6 +195,31 @@ func TestValueButtonsCenterOnFirstLine(t *testing.T) {
 	shown := find(value)
 	line := shown.H / float32(strings.Count(value, "\n")+1)
 	check("shown", shown.Y+line/2, "Hide Value", "Copy Value")
+}
+
+// The fields' trailing controls end at the field's edge, where Edit's
+// inputs end, and line up by what they show, not by the room an icon button
+// keeps for its hover background.
+func TestTrailingControlsAlign(t *testing.T) {
+	h := newHarness(t)
+	h.click("URL")
+	sw, ok := h.tt.AccessByRole(ui.RoleSwitch, "Program access")
+	if !ok {
+		t.Fatal("Program access has no switch")
+	}
+	end := sw.Bounds.X + sw.Bounds.W
+	copyButton := h.find("Copy Value")
+	if glyph := copyButton.X + copyButton.W - iconInset(22); !near(glyph, end) {
+		t.Fatalf("the copy icon ends at %v, the switch at %v", glyph, end)
+	}
+	h.click("Edit")
+	input, ok := h.tt.AccessByRole(ui.RoleTextField, "Value")
+	if !ok {
+		t.Fatal("the form has no Value input")
+	}
+	if inputEnd := input.Bounds.X + input.Bounds.W; !near(end, inputEnd) {
+		t.Fatalf("the switch ends at %v, the Value input at %v", end, inputEnd)
+	}
 }
 
 // Modified is written in local time as YYYY-MM-DD HH:mm:ss, whatever the
