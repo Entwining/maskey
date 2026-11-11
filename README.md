@@ -18,7 +18,7 @@ mk run github -- gh auth status
 
 ### Lend an SSH key
 
-For an [SSH Key entry](docs/usage.md#ssh-keys), the command gets a public key and an SSH agent. The private key stays in `mk`'s process. The agent ends with the command.
+For an [SSH Key entry](docs/usage.md#ssh-keys), the command gets a public key and an SSH agent. The private key stays in `mk`'s process. During the run, the command can request any signature with that key. The agent ends with the command.
 
 ### Manage entries in a window
 
@@ -44,7 +44,7 @@ For coding agents, run `mk skill install` to install the [shipped skill](resourc
 
 ## Know the limits
 
-Use commands you trust. Masking cannot protect credentials a command transforms, saves, or sends elsewhere. Other programs hosted by [Apple's Python can access the same Keychain items](docs/security.md). The activity record can also be altered by programs running as you.
+Use commands you trust. Wrap the tool that needs the credential, not a whole coding agent, whose own logs `mk` cannot mask. Masking cannot protect credentials a command transforms, saves, or sends elsewhere. Other programs hosted by [Apple's Python can access the same Keychain items](docs/security.md). The activity record can also be altered by programs running as you.
 
 ## Development
 
