@@ -50,7 +50,7 @@ jobs:
           command -v shellcheck
           "$RUNNER_TEMP/actionlint"
       # Findings fail the job instead of going to the Security tab.
-      - uses: zizmorcore/zizmor-action@v0.8.0
+      - uses: zizmorcore/zizmor-action@v0.8.1
         with:
           advanced-security: false
       - uses: actions/setup-go@v7.0.0
