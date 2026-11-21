@@ -43,6 +43,11 @@ func Monitor(args []string) error {
 	send := func(kind, value uint32) error {
 		return binary.Write(reports, binary.NativeEndian, report{kind, value})
 	}
+	// The command gets the monitor's own environment, from which MyGo, linked
+	// into this executable, takes out at init the MYGO_DEV variables that
+	// `mygo dev` hands the app it launches. An entry with such a name thus
+	// reaches the command only in pipe mode, and one inherited from the shell
+	// in neither, since the runner is this executable too.
 	pid, err := syscall.ForkExec(args[0], args[1:], &syscall.ProcAttr{
 		Env:   os.Environ(),
 		Files: []uintptr{0, 1, 2},
