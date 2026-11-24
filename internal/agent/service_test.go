@@ -102,7 +102,7 @@ func TestRemoveStaleSocket(t *testing.T) {
 
 func TestServeLimitsAndDrainsWrites(t *testing.T) {
 	backend := storetest.New()
-	entered := make(chan struct{}, 5)
+	entered := make(chan struct{}, connectionLimit+1)
 	release := make(chan struct{})
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
@@ -122,33 +122,33 @@ func TestServeLimitsAndDrainsWrites(t *testing.T) {
 	if err := serve(context.Background(), path, only{backend}, nil, func(context.Context) error { return nil }, nil, notReplaced); !errors.Is(err, errServiceRunning) {
 		t.Fatalf("second service instance: %v", err)
 	}
-	results := make(chan error, 4)
+	results := make(chan error, connectionLimit)
 	ctx, done := context.WithTimeout(context.Background(), 5*time.Second)
 	defer done()
-	for _, name := range []string{"ONE", "TWO", "THREE", "FOUR"} {
+	for i := range connectionLimit {
 		go func() {
-			_, err := (&Client{path: path}).remote(ctx, request{Op: "add", Account: "fixture/" + name, Value: []byte("synthetic")})
+			_, err := (&Client{path: path}).remote(ctx, request{Op: "add", Account: fmt.Sprintf("fixture/NAME_%d", i), Value: []byte("synthetic")})
 			results <- err
 		}()
 	}
-	for range 4 {
+	for range connectionLimit {
 		select {
 		case <-entered:
 		case <-ctx.Done():
-			t.Fatal("four requests did not enter the backend")
+			t.Fatal("the requests did not all enter the backend")
 		}
 	}
-	fifth, err := net.Dial("unix", path)
+	beyond, err := net.Dial("unix", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fifth.Close()
-	fifth.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	defer beyond.Close()
+	beyond.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	var greeting [1]byte
-	if _, err := fifth.Read(greeting[:]); err == nil {
-		t.Fatal("fifth connection was served while four requests were in progress")
+	if _, err := beyond.Read(greeting[:]); err == nil {
+		t.Fatal("a connection beyond the limit was served")
 	} else if timeout, ok := err.(net.Error); !ok || !timeout.Timeout() {
-		t.Fatalf("fifth connection failed instead of waiting: %v", err)
+		t.Fatalf("a connection beyond the limit failed instead of waiting: %v", err)
 	}
 	cancel()
 	select {
@@ -157,7 +157,7 @@ func TestServeLimitsAndDrainsWrites(t *testing.T) {
 	case <-time.After(25 * time.Millisecond):
 	}
 	unblock()
-	for range 4 {
+	for range connectionLimit {
 		select {
 		case err := <-results:
 			if err != nil {
@@ -179,14 +179,14 @@ func TestServeLimitsAndDrainsWrites(t *testing.T) {
 		t.Fatalf("service socket remains after shutdown: %v", err)
 	}
 	items, err := backend.Items(context.Background())
-	if err != nil || len(items) != 4 {
+	if err != nil || len(items) != connectionLimit {
 		t.Fatalf("accepted write results: %v %v", items, err)
 	}
 }
 
-// Grants waiting for the owner share one dialog and hold no worker slot, so
-// that reads go on while the dialog is up.
-func TestServeWaitsForOwnerWithoutSlots(t *testing.T) {
+// Grants waiting for the owner share one dialog, and reads go on while the
+// dialog is up.
+func TestServeReadsWhileTheOwnerIsAsked(t *testing.T) {
 	backend := storetest.New()
 	names := []string{"ONE", "TWO", "THREE", "FOUR"}
 	for _, name := range names {

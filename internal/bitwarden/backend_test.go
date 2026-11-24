@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +40,8 @@ type stack struct {
 	grants  *memoryGrants
 	path    string
 	now     time.Time
+	// running are the goroutines a test started, which its end waits for.
+	running sync.WaitGroup
 }
 
 func newStack(t *testing.T) *stack {
@@ -56,7 +59,7 @@ func newStack(t *testing.T) *stack {
 // open returns a backend as another process would start it: with a client
 // that has not signed in, over the same snapshot file and grants.
 func (s *stack) open(token *Token) *Backend {
-	backend := NewBackend(clientOf(s.fake, token), project, s.path, s.grants)
+	backend := NewBackend(clientOf(s.fake, token), project, s.path, s.grants, NewTurn())
 	backend.now = func() time.Time { return s.now }
 	return backend
 }

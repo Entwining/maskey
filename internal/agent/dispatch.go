@@ -24,13 +24,12 @@ func dispatch(ctx context.Context, registry Stores, recorder activity.Recorder, 
 	var err error
 	if req.remote() {
 		ctx = activity.WithStore(ctx, req.Store)
-		// The owner's approval of a grant or revoke takes as long as the
-		// owner does; each exchange with the remote has its own limit.
-		if !req.changesAccess() {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, remoteTimeout)
-			defer cancel()
-		}
+		// The owner's approval of a grant or revoke, and the changes the
+		// owner approved, are not bound by it: see serveRequest and
+		// store.ChangeAccess.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, remoteTimeout)
+		defer cancel()
 	}
 	switch req.Op {
 	case "check":
@@ -196,9 +195,15 @@ func FromWindow(ctx context.Context) bool {
 }
 
 // serveRequest answers one client. ctx describes the program that started
-// the client, which a request from mk acts for; window describes the client
-// itself, which a request from Maskey's window acts as.
+// the client, which a request from mk acts for, and ends when the service
+// stops; window describes the client itself, which a request from Maskey's
+// window acts as.
 func serveRequest(ctx context.Context, conn net.Conn, window func() activity.Caller, registry Stores, recorder activity.Recorder, check func(context.Context) error, approve store.Approve) {
+	// A request the service accepted finishes after it stops: cancelling a
+	// write would leave its outcome uncertain. Only a change to program
+	// access the owner has not approved ends with the service, below.
+	stopping := ctx
+	ctx = context.WithoutCancel(ctx)
 	_ = conn.SetDeadline(time.Now().Add(requestTimeout))
 	if json.NewEncoder(conn).Encode(hello{}) != nil {
 		return
@@ -215,32 +220,33 @@ func serveRequest(ctx context.Context, conn net.Conn, window func() activity.Cal
 	}
 	if req.changesAccess() {
 		// The client sends more, a withdrawal, or hangs up only when it gives
-		// up on the change. That ends the owner's approval if it is not yet
-		// given, before any dialog or reuse of an earlier approval, but never
-		// a write the owner approved: a batch stopped halfway leaves entries
-		// to check.
-		withdrawn := make(chan struct{})
+		// up on the change. That, or the service's stop, ends the change
+		// until the owner approves it, which has written nothing by then:
+		// while the store is opened and listed, and before any dialog or
+		// reuse of an earlier approval. store.ChangeAccess makes the changes
+		// the owner approved with a context that nothing ends, since a batch
+		// stopped halfway leaves entries to check.
+		var withdraw context.CancelFunc
+		ctx, withdraw = context.WithCancel(ctx)
+		defer withdraw()
+		stop := context.AfterFunc(stopping, withdraw)
+		defer stop()
 		go func() {
 			var frame json.RawMessage
 			_ = decoder.Decode(&frame)
-			close(withdrawn)
+			withdraw()
 		}()
-		approveRequest := approve
+		pending, approveRequest := ctx, approve
 		approve = func(ctx context.Context, reason string) (string, error) {
-			select {
-			case <-withdrawn:
+			if pending.Err() != nil {
 				return "", &store.Error{Kind: store.KindCancelled, Message: "cancelled"}
-			default:
 			}
-			ctx, cancel := context.WithCancel(ctx)
+			// The owner takes as long as they take: the deadline of the
+			// request's work on the store does not end the approval.
+			ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 			defer cancel()
-			go func() {
-				select {
-				case <-withdrawn:
-					cancel()
-				case <-ctx.Done():
-				}
-			}()
+			stop := context.AfterFunc(pending, cancel)
+			defer stop()
 			return approveRequest(ctx, reason)
 		}
 	}

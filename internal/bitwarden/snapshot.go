@@ -1,7 +1,6 @@
 package bitwarden
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -28,12 +27,14 @@ type snapshotFile struct {
 const snapshotVersion = 2
 
 // writeSnapshot replaces the file at path with s in one rename, so a reader
-// never sees part of it.
-func (c *Client) writeSnapshot(ctx context.Context, path string, s *snapshot) error {
-	session, err := c.signedIn(ctx, nil)
-	if err != nil {
-		return err
-	}
+// never sees part of it. It seals s with the session of the exchange s comes
+// from, also once that session's bearer expired: signing in again would be a
+// request to Bitwarden, which the backend never makes while it holds its
+// state.
+func (c *Client) writeSnapshot(path string, s *snapshot) error {
+	c.mu.Lock()
+	session := c.session
+	c.mu.Unlock()
 	plaintext, err := json.Marshal(s)
 	if err != nil {
 		return err

@@ -273,3 +273,30 @@ func (s *Server) store(w http.ResponseWriter, r *http.Request, id string) {
 	s.writes[id]++
 	_ = json.NewEncoder(w).Encode(s.secret(id))
 }
+
+// Holding returns a client of the server that holds each request to a path
+// containing path until release is called, as when Bitwarden is slow, and
+// says on entered that it holds one. The test's end releases them.
+func (s *Server) Holding(t testing.TB, path string) (client *http.Client, entered <-chan struct{}, release func()) {
+	h := holding{s.Client().Transport, path, make(chan struct{}), make(chan struct{})}
+	release = sync.OnceFunc(func() { close(h.release) })
+	t.Cleanup(release)
+	return &http.Client{Transport: h}, h.entered, release
+}
+
+type holding struct {
+	http.RoundTripper
+	path             string
+	entered, release chan struct{}
+}
+
+func (h holding) RoundTrip(r *http.Request) (*http.Response, error) {
+	if strings.Contains(r.URL.Path, h.path) {
+		select {
+		case h.entered <- struct{}{}:
+			<-h.release
+		case <-h.release:
+		}
+	}
+	return h.RoundTripper.RoundTrip(r)
+}

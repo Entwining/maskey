@@ -3,7 +3,6 @@ package stores
 import (
 	"context"
 	"errors"
-	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,7 +13,31 @@ import (
 
 	"github.com/Entwining/maskey/internal/bitwarden/bitwardentest"
 	"github.com/Entwining/maskey/internal/store"
+	"github.com/Entwining/maskey/internal/store/storetest"
 )
+
+// hold makes r's requests to a path containing path wait until release is
+// called. The test's end releases them and waits for the goroutines it
+// started with running, so that none writes into its directory after it.
+func hold(t *testing.T, f *fixture, r *Registry, path string) (entered <-chan struct{}, release func(), running *sync.WaitGroup) {
+	r.http, entered, release = f.fake.Holding(t, path)
+	running = new(sync.WaitGroup)
+	t.Cleanup(func() {
+		release()
+		running.Wait()
+	})
+	return entered, release, running
+}
+
+// await waits until the remote holds the request that entered reports.
+func await(t *testing.T, entered <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request did not reach Bitwarden")
+	}
+}
 
 // A process that may not read the configuration is told so apart from one
 // that reads a broken file: only the first can have the service read it.
@@ -41,25 +64,6 @@ func TestLoadTellsADeniedReadFromABrokenFile(t *testing.T) {
 	if _, err := Load(dir); errors.Is(err, ErrDenied) || !store.IsKind(err, store.KindPrerequisite) {
 		t.Errorf("a broken file: %v", err)
 	}
-}
-
-// held is a transport that holds each request to a path containing hold
-// until release closes, and says on entered that it holds one.
-type held struct {
-	http.RoundTripper
-	hold             string
-	entered, release chan struct{}
-}
-
-func (h held) RoundTrip(r *http.Request) (*http.Response, error) {
-	if strings.Contains(r.URL.Path, h.hold) {
-		select {
-		case h.entered <- struct{}{}:
-			<-h.release
-		case <-h.release:
-		}
-	}
-	return h.RoundTripper.RoundTrip(r)
 }
 
 // While one store waits for Bitwarden, to sync or to be added, another
@@ -95,16 +99,13 @@ func TestASlowStoreHoldsBackNoOther(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := f.registry()
-			transport := held{f.fake.Client().Transport, "/projects", make(chan struct{}), make(chan struct{})}
-			r.http = &http.Client{Transport: transport}
-			release := sync.OnceFunc(func() { close(transport.release) })
-			t.Cleanup(release)
+			entered, release, running := hold(t, f, r, "/projects")
 			finished := make(chan error, 2)
-			go func() { finished <- slow(r) }()
-			<-transport.entered
+			running.Go(func() { finished <- slow(r) })
+			await(t, entered)
 
 			others := make(chan error, 1)
-			go func() {
+			running.Go(func() {
 				backend, err := r.Backend(ctx, "work", target)
 				if err == nil {
 					_, err = backend.Items(store.WithSaved(ctx))
@@ -116,7 +117,7 @@ func TestASlowStoreHoldsBackNoOther(t *testing.T) {
 					err = r.SetDefault(ctx, "work")
 				}
 				others <- err
-			}()
+			})
 			select {
 			case err := <-others:
 				if err != nil {
@@ -127,11 +128,11 @@ func TestASlowStoreHoldsBackNoOther(t *testing.T) {
 			}
 
 			// The same connection's next change waits for this one.
-			go func() { finished <- slow(r) }()
+			running.Go(func() { finished <- slow(r) })
 			select {
 			case err := <-finished:
 				t.Fatalf("a change ended while the connection's request was held: %v", err)
-			case <-transport.entered:
+			case <-entered:
 				if name == "an addition" {
 					t.Fatal("a second addition of the name reached Bitwarden beside the first")
 				}
@@ -286,5 +287,158 @@ func TestRemoveReportsAStepThatFailed(t *testing.T) {
 				t.Error("the saved copy stayed")
 			}
 		})
+	}
+}
+
+// Removing a store or replacing its token does not wait for an exchange the
+// store's backend is in, and that exchange, once it ends, leaves nothing of
+// the old connection on this Mac.
+func TestStoreChangesDoNotWaitForBitwarden(t *testing.T) {
+	ctx := context.Background()
+	for name, change := range map[string]func(r *Registry) error{
+		"a removal":           func(r *Registry) error { return r.Remove(ctx, "bitwarden", target) },
+		"a token replacement": func(r *Registry) error { return r.SetToken(ctx, "bitwarden", target, []byte(bitwardentest.Token)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			setup := f.registry()
+			if _, err := setup.Add(ctx, bitwardenToken()); err != nil {
+				t.Fatal(err)
+			}
+			backend, _ := setup.Backend(ctx, "bitwarden", target)
+			if err := backend.Add(ctx, "a/B", []byte("value"), store.Details{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := storetest.SetAccess(ctx, backend, "a/B", true); err != nil {
+				t.Fatal(err)
+			}
+			grants := slices.Clone(f.local["grants/bitwarden"])
+
+			r := f.registry()
+			entered, release, running := hold(t, f, r, "/secrets/delete")
+			backend, err := r.Backend(ctx, "bitwarden", target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			deleted := make(chan error, 1)
+			running.Go(func() { deleted <- backend.Delete(ctx, "a/B") })
+			await(t, entered)
+			changed := make(chan error, 1)
+			running.Go(func() { changed <- change(r) })
+			select {
+			case err := <-changed:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("%s waited for Bitwarden", name)
+			}
+			release()
+			if err := <-deleted; err != nil {
+				t.Errorf("the delete Bitwarden performed: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(f.dir, "stores", "bitwarden")); err == nil {
+				t.Error("the old connection's snapshot was written after the change")
+			}
+			kept, ok := f.local["grants/bitwarden"]
+			switch {
+			case name == "a removal" && ok:
+				t.Error("the removed store's grants were written again")
+			case name == "a token replacement" && !slices.Equal(kept, grants):
+				t.Errorf("the grants the store keeps changed to %s", kept)
+			}
+		})
+	}
+}
+
+// A request that waits for another to open or change the same store gives
+// up at its deadline or cancellation, having done nothing.
+func TestStoreChangeStopsWaitingAtItsDeadline(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, err := f.registry().Add(ctx, bitwardenToken()); err != nil {
+		t.Fatal(err)
+	}
+	r := f.registry()
+	entered, release, running := hold(t, f, r, "/projects")
+	replaced := make(chan error, 1)
+	running.Go(func() { replaced <- r.SetToken(ctx, "bitwarden", target, []byte(bitwardentest.Token)) })
+	await(t, entered)
+
+	deadline, cancelDeadline := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancelDeadline()
+	cancelled, cancel := context.WithCancel(ctx)
+	time.AfterFunc(50*time.Millisecond, cancel)
+	for waiting, want := range map[context.Context]store.Kind{deadline: store.KindNetwork, cancelled: store.KindCancelled} {
+		removed := make(chan error, 1)
+		running.Go(func() { removed <- r.Remove(waiting, "bitwarden", "") })
+		select {
+		case err := <-removed:
+			if !store.IsKind(err, want) || !strings.Contains(err.Error(), "nothing was done") {
+				t.Errorf("a removal that gave up: %v, want %s", err, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a removal waited past its deadline")
+		}
+	}
+	release()
+	if err := <-replaced; err != nil {
+		t.Fatal(err)
+	}
+	if config, err := Load(f.dir); err != nil || len(config.Stores) != 1 || len(f.local["token/bitwarden"]) == 0 {
+		t.Errorf("after removals that gave up: %+v, %v, token kept %v", config, err, len(f.local["token/bitwarden"]) != 0)
+	}
+}
+
+// A backend made for a store after a new token closed its earlier one waits
+// for the write that one is still in, so that it does not read the project
+// before that write lands and make the same entry beside it.
+func TestNewBackendWaitsForTheWriteOfTheOneItReplaced(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, err := f.registry().Add(ctx, bitwardenToken()); err != nil {
+		t.Fatal(err)
+	}
+	r := f.registry()
+	entered, release, running := hold(t, f, r, "/organizations/"+bitwardentest.Organization+"/secrets")
+	earlier, err := r.Backend(ctx, "bitwarden", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make(chan error, 1)
+	running.Go(func() { first <- earlier.Add(ctx, "a/B", []byte("value"), store.Details{}) })
+	await(t, entered)
+	replaced := make(chan error, 1)
+	running.Go(func() { replaced <- r.SetToken(ctx, "bitwarden", target, []byte(bitwardentest.Token)) })
+	select {
+	case err := <-replaced:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("replacing the token waited for the earlier backend's write")
+	}
+	backend, err := r.Backend(ctx, "bitwarden", target)
+	if err != nil || backend == earlier {
+		t.Fatalf("the backend after the new token: %v, the earlier one %v", err, backend == earlier)
+	}
+	second := make(chan error, 1)
+	running.Go(func() { second <- backend.Add(ctx, "a/B", []byte("other"), store.Details{}) })
+	select {
+	case <-entered:
+		t.Fatal("the new backend made the entry beside the earlier one's write")
+	case err := <-second:
+		t.Fatalf("the new backend's add ended while the earlier one's was in flight: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	if err := <-first; err != nil {
+		t.Errorf("the earlier backend's add: %v", err)
+	}
+	if err := <-second; !store.IsKind(err, store.KindExists) {
+		t.Errorf("the new backend's add: %v, want exists", err)
+	}
+	if n := len(f.fake.Order); n != 1 {
+		t.Errorf("the project holds %d secrets, want 1", n)
 	}
 }

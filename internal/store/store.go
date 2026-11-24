@@ -378,7 +378,9 @@ func (s *Store) ChangeAccess(ctx context.Context, refs []Ref, granted bool, appr
 			s.recordUnchanged(ctx, pending, granted, err)
 			return nil, "", err
 		}
-		ctx = activity.WithAuth(ctx, auth)
+		// Nothing ends the changes the owner approved, since a batch stopped
+		// halfway leaves entries to check.
+		ctx = context.WithoutCancel(activity.WithAuth(ctx, auth))
 	}
 	changes := make([]AccessChange, 0, len(refs))
 	for _, ref := range refs {

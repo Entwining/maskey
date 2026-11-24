@@ -28,6 +28,13 @@ import (
 const serviceLabel = store.Service + ".service"
 const servicePATH = "/usr/bin:/bin"
 
+// connectionLimit bounds the connections the service serves at once, and so
+// the file descriptors and Keychain helper processes they hold at once;
+// larger = more of both. A connection beyond it waits in the listen backlog.
+// Requests are not otherwise limited, so that a slow store holds back only
+// requests to that store.
+const connectionLimit = 64
+
 // backupPattern names the configurations an install keeps beside the new
 // one.
 const backupPattern = "." + serviceLabel + ".backup-*"
@@ -116,9 +123,8 @@ func serve(ctx context.Context, path string, registry Stores, recorder activity.
 	defer retire()
 	stop := context.AfterFunc(ctx, func() { listener.Close() })
 	defer stop()
-	workers := context.WithoutCancel(ctx)
 	var pending sync.WaitGroup
-	slots := make(chan struct{}, 4)
+	slots := make(chan struct{}, connectionLimit)
 	var acceptErr error
 accept:
 	for {
@@ -138,24 +144,10 @@ accept:
 		pending.Go(func() {
 			defer func() { <-slots }()
 			defer conn.Close()
-			// The owner can take minutes to answer, so a change to program
-			// access gives up its slot while it waits, and the slots stay
-			// free for mk run and mk get. Shutdown withdraws a change not
-			// yet approved, which has written nothing, so that it does not
-			// outlast the job's ExitTimeOut.
-			approve := func(request context.Context, reason string) (string, error) {
-				request, cancel := context.WithCancel(request)
-				defer cancel()
-				stop := context.AfterFunc(ctx, cancel)
-				defer stop()
-				<-slots
-				defer func() { slots <- struct{}{} }()
-				return approve(request, reason)
-			}
 			if pid, err := authenticate(conn); err == nil {
 				// The client waits for the hello, so it and almost always
 				// the program that started it still run.
-				serveRequest(activity.WithCaller(workers, activity.Invoker(pid)), conn, func() activity.Caller { return activity.Process(pid) }, registry, recorder, check, approve)
+				serveRequest(activity.WithCaller(ctx, activity.Invoker(pid)), conn, func() activity.Caller { return activity.Process(pid) }, registry, recorder, check, approve)
 			} else if replaced() {
 				retiring.Store(true)
 				retire()

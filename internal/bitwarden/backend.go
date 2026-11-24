@@ -3,7 +3,6 @@ package bitwarden
 import (
 	"bytes"
 	"context"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -38,12 +37,24 @@ type Grants interface {
 // that the backend refreshes when it is older than snapshotFresh, and that
 // stays in use while Bitwarden cannot be reached. Writes go to Bitwarden
 // first and fail without it.
+//
+// Two locks keep a slow exchange with Bitwarden from holding back what needs
+// none. The turn lets one request at a time refresh or write, so that each
+// starts from the outcome of the one before. mu guards the state below and
+// the grants, and is never held across a request to Bitwarden or while
+// waiting for the turn: a read the snapshot answers, and Close, need only mu,
+// so neither waits for Bitwarden. A request that needs Bitwarden takes the
+// turn, then mu to read the state, which the request before it may have
+// changed; it exchanges without mu and takes mu again to install the result.
+// A read waiting for the turn also ends its wait when a refresh installs its
+// outcome, which may answer it while the turn's holder goes on to write.
 type Backend struct {
 	client  *Client
 	project string
 	path    string
 	grants  Grants
 	now     func() time.Time
+	turn    *Turn
 
 	mu       sync.Mutex
 	loaded   bool
@@ -52,12 +63,17 @@ type Backend struct {
 	failed time.Time
 	// closed holds once this Mac removed the store or replaced its token.
 	closed bool
+	// refreshedSignal is closed, and replaced, when a refresh installs its
+	// outcome.
+	refreshedSignal chan struct{}
 }
 
 // NewBackend returns the backend of project, whose snapshot is the file at
-// path.
-func NewBackend(client *Client, project, path string, grants Grants) *Backend {
-	return &Backend{client: client, project: project, path: path, grants: grants, now: time.Now}
+// path. turn is the connection's: every backend made for it shares the turn,
+// so that one made after another closed waits for the exchange that one is
+// still in, instead of reading the project before that write lands.
+func NewBackend(client *Client, project, path string, grants Grants, turn *Turn) *Backend {
+	return &Backend{client: client, project: project, path: path, grants: grants, now: time.Now, turn: turn, refreshedSignal: make(chan struct{})}
 }
 
 type entry struct {
@@ -83,128 +99,24 @@ func decodeKey(key string) (account string, kind store.ValueKind, ok bool) {
 
 func encodeKey(account string, kind store.ValueKind) string { return account + "#" + string(kind) }
 
-// view returns the snapshot to answer from. With current set it is one just
-// read from Bitwarden, as a write needs to see what exists.
-func (b *Backend) view(ctx context.Context, current bool) (*snapshot, error) {
-	if b.closed {
-		return nil, &store.Error{Kind: store.KindConflict, Message: "the store's connection changed while the command ran; run the command again"}
-	}
-	if !b.loaded {
-		b.snapshot, b.loaded = b.client.readSnapshot(b.path, b.project), true
-	}
-	have, now := b.snapshot, b.now()
-	if store.Saved(ctx) && !current {
-		if have == nil {
-			return nil, &store.Error{Kind: store.KindNotFound, Message: "the store has no saved copy on this Mac"}
-		}
-		return have, nil
-	}
-	within := func(since time.Time, limit time.Duration) bool {
-		age := now.Sub(since)
-		return age >= 0 && age < limit
-	}
-	if have != nil && !current && (within(have.Refreshed, snapshotFresh) || within(b.failed, refreshPause)) {
-		return have, nil
-	}
-	fresh, err := b.refresh(ctx, have)
-	switch {
-	case err == nil:
-		b.snapshot, b.failed = fresh, time.Time{}
-		b.persist(ctx)
-		return fresh, nil
-	case store.IsKind(err, store.KindUnauthenticated), store.IsKind(err, store.KindPermissionDenied), store.IsKind(err, store.KindNotFound):
-		b.discard()
-		return nil, err
-	case have == nil || current:
-		return nil, err
-	case store.IsKind(err, store.KindNetwork), store.IsKind(err, store.KindRateLimited), store.IsKind(err, store.KindRemote):
-		b.failed = now
-		return have, nil
-	}
-	return nil, err
+// unlocked runs exchange without mu, which its caller holds.
+func (b *Backend) unlocked(exchange func()) {
+	b.mu.Unlock()
+	defer b.mu.Lock()
+	exchange()
 }
 
 // Close ends the backend's use: an operation that took it before, as one
 // that waited for the owner's approval, fails instead of reading the
 // project or changing its grants, which may be another connection's by then.
+// Close does not wait for an exchange with Bitwarden, since the owner removes
+// a store or replaces its token when Bitwarden is slow or refuses it; an
+// exchange that ends later installs nothing, and a write still reports its
+// outcome.
 func (b *Backend) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.closed = true
-}
-
-// Refresh reads the project from Bitwarden now.
-func (b *Backend) Refresh(ctx context.Context) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	_, err := b.view(ctx, true)
-	return err
-}
-
-// refresh reads the project from Bitwarden, fetching only the secrets that
-// changed since have, so that an unchanged secret is not retrieved again.
-func (b *Backend) refresh(ctx context.Context, have *snapshot) (*snapshot, error) {
-	headers, err := b.client.Index(ctx, b.project)
-	if err != nil {
-		return nil, err
-	}
-	if len(headers) == 0 {
-		// Bitwarden lists no secrets for a project the account cannot
-		// read, as for an empty one.
-		if _, err := b.client.Project(ctx, b.project); err != nil {
-			return nil, err
-		}
-	}
-	headers = slices.DeleteFunc(headers, func(h Header) bool {
-		_, _, ok := decodeKey(h.Key)
-		return !ok
-	})
-	known := map[string]Secret{}
-	if have != nil {
-		for _, secret := range have.Secrets {
-			known[secret.ID] = secret
-		}
-	}
-	var changed []string
-	for _, header := range headers {
-		if secret, ok := known[header.ID]; !ok || secret.Header != header {
-			changed = append(changed, header.ID)
-		}
-	}
-	if len(changed) > 0 {
-		read, err := b.client.Read(ctx, changed)
-		if store.IsKind(err, store.KindNotFound) {
-			return nil, remoteError("the Bitwarden project changed while it was read")
-		}
-		if err != nil {
-			return nil, err
-		}
-		for _, secret := range read {
-			// A secret moved to another project since the list is not
-			// this store's, though the token can read it.
-			if secret.Project != "" && secret.Project != b.project {
-				return nil, remoteError("the Bitwarden project changed while it was read")
-			}
-			known[secret.ID] = secret
-		}
-	}
-	fresh := &snapshot{Project: b.project, Refreshed: b.now(), Secrets: make([]Secret, 0, len(headers))}
-	for _, header := range headers {
-		secret := known[header.ID]
-		// The secret may have been renamed between the index and get-by-ids.
-		if _, _, ok := decodeKey(secret.Key); ok {
-			fresh.Secrets = append(fresh.Secrets, secret)
-		}
-	}
-	return fresh, nil
-}
-
-// persist writes the snapshot. One that cannot be written leaves no file,
-// rather than an older one that another process would take for current.
-func (b *Backend) persist(ctx context.Context) {
-	if b.client.writeSnapshot(ctx, b.path, b.snapshot) != nil {
-		os.Remove(b.path)
-	}
 }
 
 // entries returns the project's entries by account. Bitwarden does not keep
@@ -254,6 +166,13 @@ func (b *Backend) entry(ctx context.Context, account string, current bool) (entr
 func (b *Backend) Items(ctx context.Context) ([]store.Item, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// The grants are loaded while the request has time, since a read that
+	// waited for the turn until its deadline still answers, and read again
+	// once the entries are in hand: a change of program access may have
+	// completed while this read waited.
+	if _, err := b.grants.Granted(ctx); err != nil {
+		return nil, err
+	}
 	entries, err := b.entries(ctx, false)
 	if err != nil {
 		return nil, err
@@ -301,6 +220,10 @@ func (b *Backend) Read(ctx context.Context, accounts []string) (values map[strin
 func (b *Backend) Get(ctx context.Context, account string) (value []byte, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// As in Items.
+	if _, err := b.grants.Granted(ctx); err != nil {
+		return nil, err
+	}
 	e, err := b.entry(ctx, account, false)
 	if err != nil {
 		return nil, err
@@ -316,12 +239,16 @@ func (b *Backend) Get(ctx context.Context, account string) (value []byte, err er
 }
 
 func (b *Backend) Add(ctx context.Context, account string, value []byte, details store.Details) (err error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	ref, err := store.ParseAccount(account)
 	if err != nil {
 		return err
 	}
+	if err := b.turn.Take(ctx); err != nil {
+		return err
+	}
+	defer b.turn.Release()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	entries, err := b.entries(ctx, true)
 	if err != nil {
 		return err
@@ -329,28 +256,42 @@ func (b *Backend) Add(ctx context.Context, account string, value []byte, details
 	if _, exists := entries[account]; exists {
 		return &store.Error{Kind: store.KindExists, Message: "the entry already exists"}
 	}
-	header, err := b.client.Create(ctx, b.project, encodeKey(account, store.ValueKindOf(ref.Name, details.Kind)), value, details.Notes)
-	return b.written(ctx, header, value, details.Notes, err)
+	var header Header
+	b.unlocked(func() {
+		header, err = b.client.Create(ctx, b.project, encodeKey(account, store.ValueKindOf(ref.Name, details.Kind)), value, details.Notes)
+	})
+	return b.written(header, value, details.Notes, err)
 }
 
 func (b *Backend) Update(ctx context.Context, account string, value []byte) (err error) {
+	if err := b.turn.Take(ctx); err != nil {
+		return err
+	}
+	defer b.turn.Release()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	e, err := b.entry(ctx, account, true)
 	if err != nil {
 		return err
 	}
-	header, err := b.client.Update(ctx, e.ID, b.project, e.Key, value, e.Note, !bytes.Equal(value, e.Value))
-	return b.written(ctx, header, value, e.Note, err)
+	var header Header
+	b.unlocked(func() {
+		header, err = b.client.Update(ctx, e.ID, b.project, e.Key, value, e.Note, !bytes.Equal(value, e.Value))
+	})
+	return b.written(header, value, e.Note, err)
 }
 
 func (b *Backend) Edit(ctx context.Context, account, to string, value []byte, details *store.Details) (err error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	ref, err := store.ParseAccount(to)
 	if err != nil {
 		return err
 	}
+	if err := b.turn.Take(ctx); err != nil {
+		return err
+	}
+	defer b.turn.Release()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	entries, err := b.entries(ctx, true)
 	if err != nil {
 		return err
@@ -373,8 +314,11 @@ func (b *Backend) Edit(ctx context.Context, account, to string, value []byte, de
 	if value == nil {
 		value = e.Value
 	}
-	header, err := b.client.Update(ctx, e.ID, b.project, encodeKey(to, kind), value, note, changed)
-	return b.written(ctx, header, value, note, err)
+	var header Header
+	b.unlocked(func() {
+		header, err = b.client.Update(ctx, e.ID, b.project, encodeKey(to, kind), value, note, changed)
+	})
+	return b.written(header, value, note, err)
 }
 
 // SetProgramAccess binds this Mac's grant to the listed UUID so a replacement cannot inherit it.
@@ -392,17 +336,25 @@ func (b *Backend) SetProgramAccess(ctx context.Context, account, id string, gran
 }
 
 func (b *Backend) Delete(ctx context.Context, account string) (err error) {
+	if err := b.turn.Take(ctx); err != nil {
+		return err
+	}
+	defer b.turn.Release()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	e, err := b.entry(ctx, account, true)
 	if err != nil {
 		return err
 	}
-	if err := b.client.Delete(ctx, e.ID); err != nil {
-		return b.unsettled(ctx, err)
+	b.unlocked(func() { err = b.client.Delete(ctx, e.ID) })
+	switch {
+	case b.closed:
+		return err
+	case err != nil:
+		return b.unsettled(err)
 	}
 	b.snapshot.Secrets = slices.DeleteFunc(b.snapshot.Secrets, func(secret Secret) bool { return secret.ID == e.ID })
-	b.persist(ctx)
+	b.persist()
 	// The ID never names another secret, so a grant left behind permits
 	// nothing; removing it only keeps the list from growing.
 	_ = b.grants.Set(ctx, e.ID, false)
@@ -410,10 +362,14 @@ func (b *Backend) Delete(ctx context.Context, account string) (err error) {
 }
 
 // written puts a secret Bitwarden stored into the snapshot, so that the
-// next read sees the write without asking Bitwarden again.
-func (b *Backend) written(ctx context.Context, header Header, value []byte, note string, err error) error {
-	if err != nil {
-		return b.unsettled(ctx, err)
+// next read sees the write without asking Bitwarden again. A backend closed
+// during the write keeps nothing of it.
+func (b *Backend) written(header Header, value []byte, note string, err error) error {
+	switch {
+	case b.closed:
+		return err
+	case err != nil:
+		return b.unsettled(err)
 	}
 	secret := Secret{Header: header, Value: slices.Clone(value), Note: note}
 	if i := slices.IndexFunc(b.snapshot.Secrets, func(other Secret) bool { return other.ID == header.ID }); i >= 0 {
@@ -421,7 +377,7 @@ func (b *Backend) written(ctx context.Context, header Header, value []byte, note
 	} else {
 		b.snapshot.Secrets = append(b.snapshot.Secrets, secret)
 	}
-	b.persist(ctx)
+	b.persist()
 	return nil
 }
 
@@ -429,23 +385,15 @@ func (b *Backend) written(ctx context.Context, header Header, value []byte, note
 // is unknown, since the snapshot may no longer match what is stored, and
 // discards the snapshot when the write found the token refused. A write
 // that is merely not permitted leaves the token's reads as they were.
-func (b *Backend) unsettled(ctx context.Context, err error) error {
+func (b *Backend) unsettled(err error) error {
 	switch {
 	case store.IsKind(err, store.KindUncertain):
 		b.snapshot.Refreshed = time.Time{}
-		b.persist(ctx)
+		b.persist()
 	case store.IsKind(err, store.KindUnauthenticated):
 		b.discard()
 	}
 	return err
-}
-
-// discard forgets the snapshot once Bitwarden answers that this Mac may no
-// longer read the project: what it read before is no longer its to hand
-// out, offline too.
-func (b *Backend) discard() {
-	b.snapshot = nil
-	os.Remove(b.path)
 }
 
 var _ store.Backend = (*Backend)(nil)
