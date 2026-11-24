@@ -43,6 +43,17 @@ func (r Ref) account() string { return r.Namespace + "/" + r.Name }
 
 func (r Ref) String() string { return r.account() }
 
+// CaseTwins returns references that differ from ref only in case.
+func CaseTwins(ref Ref, others []Ref) []Ref {
+	var twins []Ref
+	for _, other := range others {
+		if other != ref && strings.EqualFold(ref.Namespace, other.Namespace) && strings.EqualFold(ref.Name, other.Name) {
+			twins = append(twins, other)
+		}
+	}
+	return twins
+}
+
 // ParseAccount is the reference an item's account names.
 func ParseAccount(account string) (Ref, error) {
 	namespace, name, ok := strings.Cut(account, "/")
@@ -426,15 +437,16 @@ func accessReason(refs []Ref, granted bool) string {
 // namespaces or two entries supply are errors: none may silently change what
 // a command receives. A missing selection is reported by its position.
 func (s *Store) Values(ctx context.Context, selections []Ref) ([]Entry, error) {
-	all, _, err := s.list(ctx)
+	all, attributes, err := s.list(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for i, selection := range selections {
+		_, exists := attributes[selection]
 		switch {
 		case selection.Name == "" && !slices.ContainsFunc(all, func(ref Ref) bool { return ref.Namespace == selection.Namespace }):
 			return nil, &Error{Kind: KindNotFound, Argument: i + 1, Message: "the namespace has no entries"}
-		case selection.Name != "" && !slices.Contains(all, selection):
+		case selection.Name != "" && !exists:
 			return nil, &Error{Kind: KindNotFound, Argument: i + 1, Message: "the entry does not exist"}
 		}
 	}
@@ -481,7 +493,7 @@ func (s *Store) read(ctx context.Context, refs []Ref) ([]Entry, error) {
 	}
 	entries := make([]Entry, len(refs))
 	for i, ref := range refs {
-		stored, ok := values[ref.account()]
+		stored, ok := values[accounts[i]]
 		if !ok {
 			return nil, &Error{Kind: KindNotFound, Ref: &ref, Message: "the entry does not exist"}
 		}

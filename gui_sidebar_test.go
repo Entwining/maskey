@@ -216,7 +216,7 @@ func TestSidebarAnimationSettles(t *testing.T) {
 					if s, ok := h.tt.Find("Namespaces"); ok && s.W > 0 && !near(s.X+s.W, l.X-1) {
 						t.Fatalf("after %s, the sidebar at %v does not end at the list at %v", step.label, s, l)
 					}
-					if max(l.X-list.X, list.X-l.X) > 40 || max(b.X-button.X, button.X-b.X) > 40 || !near(l.W, listDefaultWidth) {
+					if most := float32(sidebarDefaultWidth / 5); max(l.X-list.X, list.X-l.X) > most || max(b.X-button.X, button.X-b.X) > most || !near(l.W, listDefaultWidth) {
 						t.Fatalf("after %s, the list went from %v to %v and the button from %v to %v in a frame", step.label, list, l, button, b)
 					}
 					list, button = l, b

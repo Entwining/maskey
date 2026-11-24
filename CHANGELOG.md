@@ -2,14 +2,25 @@
 
 ## 0.0.12
 
-- In a sandbox that keeps `mk` from reading `stores.json`, `mk` gets this Mac's stores from the Maskey service, so commands use the default store and `--store <name>` there without a read permission for that file. Such commands failed with `prerequisite` unless they passed `--store icloud`.
-- A Bitwarden store that is slow to answer no longer holds back the other stores: commands and the window keep working on them, and on Settings, while it syncs, signs in, or is added.
-- A command or a window that began before a store's name was removed and connected to another project fails with `conflict` instead of reading, writing, or deleting in that project. The window drops what it showed of the earlier project, and an answer to its Delete or Remove… question applies only to the connection it asked about.
-- Granting or revoking program access to a Bitwarden entry fails with `conflict` when the secret was deleted and created again under the same name while the owner was asked, instead of applying to the new secret.
-- `mk activity` records a command cancelled before its request reached the Maskey service, which no record showed.
-- Quitting or updating Maskey while Settings adds, removes, or changes a store waits for the change to end, and stays open to show the error when it fails.
-- `mk store remove` and the window's Remove… report a removal that stopped after the access token was gone, and keep the store listed so that removing it again finishes. `mk uninstall` says which store may be partly removed instead of "nothing was removed".
-- `mk uninstall` keeps the configuration directory and the activity record while the Keychain service of a Maskey before 0.0.11 could not be stopped, instead of removing files that service still writes.
+- After upgrading, each Mac needs one successful refresh of each Bitwarden store, such as `mk store sync <name>`, before it can read that store offline. Maskey now selects its entries from the project's key index before fetching values and notes, saves only those entries, and does not read the copy an earlier version saved.
+- If a store name is reconnected to another project, entry operations bound to the original connection fail with `conflict`. The window clears entries from the previous project. Its Delete and Remove… confirmations apply only to the connection they showed.
+- A grant or revoke the owner approves for a Bitwarden entry no longer reaches a secret created under the same reference while they were asked. Once this Mac has seen the replacement, the command reports `conflict`.
+- `mk store remove` asks before disconnecting a project. Without terminal stdin it fails with `usage` (exit status 2) unless you pass `--yes` or `-y`, which removes by name. The interactive confirmation and the `mk store token` prompt report `conflict` if the name has since been connected to another project. `mk store token --stdin` replaces the token by name.
+- With `--json`, a successful `mk store add`, `remove`, `token`, `default`, or `sync` returns the store's name in `store` and `added`, `removed`, `token_replaced`, `default_changed`, or `synced` in `action`. Scripts written for 0.0.11 need three changes: `mk store add` returned the connection object in `store` and now returns it in `connection`, `mk store token` returned `token replaced`, and `mk store default` returned `now the default`. `mk store list --json` is unchanged.
+- `mk store add` and `mk store token` check the name and local settings before reading the token. Without terminal stdin they fail with `usage` unless you pass `--stdin`. If Bitwarden refuses a token during setup, the hint identifies the region and token to check. `mk doctor` identifies missing project access.
+- Sandboxed commands can ask the Maskey service to read `stores.json`, so they can use the default or a named store without read permission for the file.
+- A slow Bitwarden connection no longer blocks commands, the window, or Settings from working with other stores.
+- `mk store remove` and Remove… in Settings identify the failed step if removal stops after deleting the token. The store stays listed for another removal attempt. `mk uninstall` identifies a partly removed store and keeps the configuration directory and activity record if the legacy Keychain service may still be running.
+- Entry commands and `mk activity` reject an empty `--store` with `usage`. Usage hints include the selected store once.
+- `mk activity --store <name>` filters history by the recorded store name. Tab completion includes distinct names from that history, even after removal. When `mk` can write the record, it also records a read or change cancelled before the service received it.
+- Choose Replace Access Token… in Settings to rotate a store's token while keeping its name and program access. The dialog closes if the name comes to mean another connection. After a failed Add or Replace, Undo cannot restore the cleared token.
+- Quitting Maskey, also to relaunch after an update, waits for a store change in Settings to finish. If it fails, Maskey stays open to show the error.
+- Settings shows progress while reading this Mac's stores and offers Try Again if reading fails. New Entry stays disabled until the stores are known.
+- The Delete confirmation names the entry and store. It explains that an iCloud deletion reaches every Mac syncing that Keychain, and that a Bitwarden deletion moves the entry to trash for everyone using the project.
+- The form's Terminal commands for CRLF input, existing carriage returns, and protected SSH keys select the entry's store and take input from a file. New Entry names the typed reference only when it is valid and the store's entries have been read and show none of that name, and leaves a placeholder otherwise, so the command does not replace an existing entry. When `mk set` would store another kind than the form shows, the command names a `<NAME>_SSH_KEY` entry for an SSH Key, and for another kind says to set Kind in the window afterwards. Changing stores clears the suggestion.
+- New Entry shows a note under Name when the reference differs only in case from another in the same store.
+- Switching between one store and All Stores keeps the selected namespace and entry while their store is visible. The Stores Shown button has a larger target, responds to hover, and is reachable separately with Tab or VoiceOver.
+- The sidebar's default width is now 220 points. Double-click its divider to restore that width.
 
 ## 0.0.11
 

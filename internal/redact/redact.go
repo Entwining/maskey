@@ -68,6 +68,11 @@ func NewWriter(w io.Writer, values [][]byte) (*Writer, error) {
 	return r, nil
 }
 
+// ForOutput starts an independent stream with the same masking rules.
+func (w *Writer) ForOutput(out io.Writer) *Writer {
+	return &Writer{w: out, values: w.values, marker: w.marker}
+}
+
 // Marker returns the replacement for masked runs. It repeats a byte that
 // occurs in none of the values: the masked output then cannot contain a
 // value, because an occurrence would either include a marker byte or lie

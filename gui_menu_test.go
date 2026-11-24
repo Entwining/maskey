@@ -59,7 +59,7 @@ func TestEntryItems(t *testing.T) {
 		t.Fatalf("Edit ▸ Copy copied %q", got)
 	}
 	click(m.delete)
-	if a := h.alert(); a.message != "Delete this entry?" {
+	if a := h.alert(); a.message != "Delete “app/URL” from “icloud”?" {
 		t.Fatalf("Delete… asks %q", a.message)
 	}
 	h.escape()

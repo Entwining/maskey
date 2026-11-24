@@ -77,7 +77,7 @@ type request struct {
 }
 
 // writes reports whether a lost answer to r leaves something to check.
-func (r request) writes() bool { return keychain.Writes(r.Op) }
+func (r request) writes() bool { return r.Op != "stores" && keychain.Writes(r.Op) }
 
 // remote reports whether r is for a store other than iCloud Keychain.
 func (r request) remote() bool { return r.Store != "" && r.Store != stores.ICloud }
@@ -126,6 +126,9 @@ type response struct {
 	Connection *stores.Connection `json:"connection,omitempty"`
 	Config     *stores.Config     `json:"config,omitempty"`
 	Error      *store.Error       `json:"error,omitempty"`
+	// MissingStore distinguishes sync of a missing local store from sync
+	// of a Bitwarden project the machine account cannot see.
+	MissingStore bool `json:"missing_store,omitempty"`
 	// Warning is the service's failure to record the request, which names
 	// files, never a value.
 	Warning string `json:"warning,omitempty"`
@@ -180,8 +183,8 @@ type Stores interface {
 	Backend(ctx context.Context, id, target string) (store.Backend, error)
 	Config(ctx context.Context) (stores.Config, error)
 	Add(ctx context.Context, addition stores.Addition) (stores.Connection, error)
-	SetToken(ctx context.Context, id string, token []byte) error
-	Remove(ctx context.Context, id string) error
+	SetToken(ctx context.Context, id, target string, token []byte) error
+	Remove(ctx context.Context, id, target string) error
 	SetDefault(ctx context.Context, id string) error
 	Sync(ctx context.Context, id string) error
 }
@@ -399,17 +402,26 @@ func (c *Client) AddStore(ctx context.Context, addition stores.Addition) (stores
 	return *r.Connection, nil
 }
 
-// SetStoreToken replaces the access token of the store named id, which the
-// service signs in with before it keeps it.
-func (c *Client) SetStoreToken(ctx context.Context, id string, token []byte) error {
-	_, err := c.remote(ctx, request{Op: "store_token", Store: id, Value: token})
+// SetStoreToken replaces the access token of the store named id. A
+// nonempty target binds the replacement to that connection.
+func (c *Client) SetStoreToken(ctx context.Context, id, target string, token []byte) error {
+	_, err := c.remote(ctx, request{Op: "store_token", Store: id, Target: target, Value: token})
 	return err
 }
 
 // ChangeStore removes the store named id, makes it the default, or reads it
 // from its remote now, as op says.
 func (c *Client) ChangeStore(ctx context.Context, op, id string) error {
-	_, err := c.remote(ctx, request{Op: op, Store: id})
+	r, err := c.remote(ctx, request{Op: op, Store: id})
+	if r.MissingStore {
+		return stores.ErrNoStore
+	}
+	return err
+}
+
+// RemoveStore forgets the connection mk asked the owner to remove.
+func (c *Client) RemoveStore(ctx context.Context, connection stores.Connection) error {
+	_, err := c.remote(ctx, request{Op: OpRemoveStore, Store: connection.ID, Target: connection.Target()})
 	return err
 }
 

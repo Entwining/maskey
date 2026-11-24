@@ -122,7 +122,7 @@ func (r *Registry) Backend(ctx context.Context, id, target string) (store.Backen
 		return nil, err
 	}
 	if found.target != target {
-		return nil, &store.Error{Kind: store.KindConflict, Message: "the store was connected to another project since this began; nothing was done"}
+		return nil, connectionChanged()
 	}
 	return found.backend, nil
 }
@@ -147,7 +147,7 @@ func (r *Registry) remote(ctx context.Context, id string) (opened, error) {
 	if err != nil {
 		return opened{}, err
 	}
-	connection, err := config.named(id)
+	connection, err := config.Named(id)
 	if err != nil {
 		return opened{}, err
 	}
@@ -186,25 +186,9 @@ func (r *Registry) Sync(ctx context.Context, id string) error {
 // Add connects a Bitwarden project. It signs in with the token before it
 // keeps anything, so a connection that exists has worked once.
 func (r *Registry) Add(ctx context.Context, addition Addition) (Connection, error) {
-	invalid := func(message string) (Connection, error) {
-		return Connection{}, &store.Error{Kind: store.KindInvalid, Message: message}
-	}
-	if addition.Type != Bitwarden {
-		return invalid("the only store type to add is bitwarden")
-	}
-	connection := Connection{ID: addition.ID, Type: Bitwarden, Region: addition.Region}
-	if connection.ID == "" {
-		connection.ID = Bitwarden
-	}
-	if connection.Region == "" {
-		connection.Region = "us"
-	}
-	region, ok := r.regions[connection.Region]
-	switch {
-	case !idPattern.MatchString(connection.ID):
-		return invalid("a store name starts with a lowercase ASCII letter or digit, followed by up to 31 lowercase letters, digits or '-'")
-	case !ok:
-		return invalid("the region is us or eu")
+	connection, err := addition.Connection()
+	if err != nil {
+		return Connection{}, err
 	}
 	// The name stays free through the turn, which no other addition of it
 	// shares.
@@ -213,14 +197,14 @@ func (r *Registry) Add(ctx context.Context, addition Addition) (Connection, erro
 	if err != nil {
 		return Connection{}, err
 	}
-	if _, taken := config.Find(connection.ID); taken {
-		return Connection{}, &store.Error{Kind: store.KindExists, Message: "a store with that name exists; choose another name"}
+	if err := config.CheckNewName(connection.ID); err != nil {
+		return Connection{}, err
 	}
 	token, err := bitwarden.ParseToken(string(addition.Token))
 	if err != nil {
 		return Connection{}, err
 	}
-	client := bitwarden.New(region, token, r.http)
+	client := bitwarden.New(r.regions[connection.Region], token, r.http)
 	if connection.Organization, err = client.Organization(ctx); err != nil {
 		return Connection{}, err
 	}
@@ -256,18 +240,22 @@ func (r *Registry) Add(ctx context.Context, addition Addition) (Connection, erro
 // SetToken replaces the access token of the store named id, as when the
 // old one expired, once the new one signs in and reaches the same project.
 // The store keeps its name, the default, and its entries' program access.
-func (r *Registry) SetToken(ctx context.Context, id string, text []byte) error {
-	if id == ICloud {
-		return &store.Error{Kind: store.KindInvalid, Message: "iCloud Keychain has no access token"}
+// A nonempty target binds the replacement to the connection shown to the owner.
+func (r *Registry) SetToken(ctx context.Context, id, target string, text []byte) error {
+	if err := CheckTokenStore(id); err != nil {
+		return err
 	}
 	defer r.turn(id)()
 	config, err := Load(r.dir)
 	if err != nil {
 		return err
 	}
-	connection, err := config.named(id)
+	connection, err := config.Named(id)
 	if err != nil {
 		return err
+	}
+	if target != "" && target != connection.Target() {
+		return connectionChanged()
 	}
 	token, err := bitwarden.ParseToken(string(text))
 	if err != nil {
@@ -316,18 +304,19 @@ func chooseProject(projects []bitwarden.Project, wanted string) (bitwarden.Proje
 }
 
 // Remove forgets the store named id on this Mac: its token, program access,
-// and snapshot. What Bitwarden holds stays.
-func (r *Registry) Remove(ctx context.Context, id string) error {
+// and snapshot. A nonempty target binds a confirmation to its connection.
+func (r *Registry) Remove(ctx context.Context, id, target string) error {
 	defer r.turn(id)()
 	config, err := Load(r.dir)
 	if err != nil {
 		return err
 	}
-	if id == ICloud {
-		return &store.Error{Kind: store.KindInvalid, Message: "iCloud Keychain is built in"}
-	}
-	if _, err := config.named(id); err != nil {
+	connection, err := config.Removable(id)
+	if err != nil {
 		return err
+	}
+	if target != "" && target != connection.Target() {
+		return connectionChanged()
 	}
 	r.close(id)
 	// The token goes first and the store's name last: a removal that stops
@@ -355,6 +344,10 @@ func (r *Registry) Remove(ctx context.Context, id string) error {
 	return nil
 }
 
+func connectionChanged() error {
+	return &store.Error{Kind: store.KindConflict, Message: "the store was connected to another project since this began; nothing was done"}
+}
+
 // unfinished is the failure of a removal after the store's token went.
 func unfinished(kind store.Kind, step string) error {
 	return &store.Error{Kind: kind, Message: "the store's access token was removed, but " + step + "; remove the store again"}
@@ -378,7 +371,7 @@ func (r *Registry) close(id string) {
 // none.
 func (r *Registry) SetDefault(_ context.Context, id string) error {
 	return r.update(func(config *Config) error {
-		if _, err := config.named(id); err != nil {
+		if _, err := config.Named(id); err != nil {
 			return err
 		}
 		config.Default = id
@@ -392,7 +385,6 @@ type grants struct {
 	local   Local
 	account string
 
-	mu     sync.Mutex
 	loaded bool
 	ids    []string
 }
@@ -415,8 +407,6 @@ func (g *grants) load(ctx context.Context) error {
 }
 
 func (g *grants) Granted(ctx context.Context) ([]string, error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
 	if err := g.load(ctx); err != nil {
 		return nil, err
 	}
@@ -424,8 +414,6 @@ func (g *grants) Granted(ctx context.Context) ([]string, error) {
 }
 
 func (g *grants) Set(ctx context.Context, id string, granted bool) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
 	if err := g.load(ctx); err != nil {
 		return err
 	}

@@ -21,7 +21,9 @@ type storeAccess struct {
 // does: it keeps their access tokens.
 type storeService interface {
 	AddStore(ctx context.Context, addition stores.Addition) (stores.Connection, error)
+	SetStoreToken(ctx context.Context, id, target string, token []byte) error
 	ChangeStore(ctx context.Context, op, id string) error
+	RemoveStore(ctx context.Context, connection stores.Connection) error
 }
 
 // open returns the store named id, as the connection the window last read
@@ -111,10 +113,23 @@ func (g *gui) severalStores() bool { return len(g.stores.Stores) > 0 }
 func (g *gui) shown(id string) bool { return g.filter == "" || g.filter == id }
 
 // showStore narrows the window to the store named id, or with "" shows
-// every store, and shows all of its entries.
+// every store, ending a search. The namespace and the entry chosen stay
+// while their store is shown; a namespace of a store now hidden gives way
+// to all of the entries shown, never to a namespace of the same name in
+// another store.
 func (g *gui) showStore(id string) {
-	g.filter = id
-	g.showScope(scope{})
+	g.moves++
+	g.filter, g.query = id, ""
+	if !g.shown(g.scope.store) {
+		g.scope = scope{}
+	}
+	if !g.shown(g.pick.store) {
+		g.pick = entryID{}
+	}
+	if g.entry != (entryID{}) && !g.shown(g.entry.store) {
+		g.entry = entryID{}
+		g.selectionChanged()
+	}
 }
 
 // refresh reads this Mac's stores, then lists each one's namespaces and
@@ -128,6 +143,10 @@ func (g *gui) refresh() {
 		return func() {
 			if token != g.listToken {
 				return
+			}
+			// Settings draws this Mac's stores, or why they cannot be read.
+			if g.settings.redraw != nil {
+				defer g.settings.redraw()
 			}
 			if err != nil {
 				// Stores that cannot be read say nothing of those shown,
@@ -172,20 +191,22 @@ func (g *gui) refresh() {
 // setStores takes this Mac's stores as just read. A store no longer among
 // them goes with everything the window held of it, and so does one whose
 // name now means another connection: what the window held was not that
-// connection's.
+// connection's. The dialog that replaces a connection's access token closes
+// for the same reason.
 func (g *gui) setStores(config stores.Config) {
 	held := make(map[string]string, len(g.listed))
 	for id := range g.listed {
 		held[id] = g.target(id)
 	}
 	g.stores, g.storesRead, g.storesErr = config, true, ""
-	if g.settings.redraw != nil {
-		g.settings.redraw()
-	}
 	for id, target := range held {
 		if g.target(id) != target {
 			g.forget(id)
 		}
+	}
+	if s := &g.settings; s.replacing.ID != "" && g.target(s.replacing.ID) != s.replacing.Target() {
+		s.replacing, s.err = stores.Connection{}, ""
+		s.clearToken()
 	}
 	for _, connection := range config.All() {
 		if g.listed[connection.ID] == nil {

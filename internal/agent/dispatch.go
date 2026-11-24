@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net"
 	"time"
 
@@ -53,13 +52,16 @@ func dispatch(ctx context.Context, registry Stores, recorder activity.Recorder, 
 			result.Connection = &connection
 		}
 	case "store_token":
-		err = registry.SetToken(ctx, req.Store, req.Value)
+		err = registry.SetToken(ctx, req.Store, req.Target, req.Value)
 	case OpRemoveStore:
-		err = registry.Remove(ctx, req.Store)
+		err = registry.Remove(ctx, req.Store, req.Target)
 	case OpDefaultStore:
 		err = registry.SetDefault(ctx, req.Store)
 	case OpSyncStore:
 		err = registry.Sync(ctx, req.Store)
+		result = settle(result, err)
+		result.MissingStore = errors.Is(err, stores.ErrNoStore)
+		return result
 	default:
 		var backend store.Backend
 		if backend, err = registry.Backend(ctx, req.Store, req.Target); err == nil {
@@ -218,10 +220,9 @@ func serveRequest(ctx context.Context, conn net.Conn, window func() activity.Cal
 		// a write the owner approved: a batch stopped halfway leaves entries
 		// to check.
 		withdrawn := make(chan struct{})
-		rest := io.MultiReader(decoder.Buffered(), conn)
 		go func() {
 			var frame json.RawMessage
-			_ = json.NewDecoder(rest).Decode(&frame)
+			_ = decoder.Decode(&frame)
 			close(withdrawn)
 		}()
 		approveRequest := approve

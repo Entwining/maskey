@@ -32,9 +32,9 @@ Core commands:
   activity    Show which programs used entries on this Mac
 
 Setup commands:
-  store       List, add, and remove this Mac's stores
+  store       Manage this Mac's stores
   doctor      Check Keychain access, interpreter, service, stores, and agent skill
-  setup       Install the Maskey service for sandboxes and program access
+  setup       Install the Maskey service
   skill       Show or install the agent skill
   uninstall   Remove what Maskey installed on this Mac outside its app
 
@@ -96,6 +96,9 @@ func TestHelp(t *testing.T) {
 	if outcome, viaHelp, _ := h.run(t, "", "help", "exit-codes"); outcome.Code != 0 || viaHelp != topic ||
 		!strings.HasPrefix(topic, "Usage:\n  mk help exit-codes\n\n") || strings.Contains(topic, "Flags:") {
 		t.Errorf("exit-codes: %+v %q", outcome, topic)
+	}
+	if !strings.Contains(topic, "one row per item in text, or one JSON document\nwith items (the per-item results) and bundle (the path to Maskey.app)") {
+		t.Error("exit-codes omits the uninstall report formats")
 	}
 	if _, version, _ := h.run(t, "", "--version"); version != "mk version 1.2.3\n" {
 		t.Errorf("version %q", version)

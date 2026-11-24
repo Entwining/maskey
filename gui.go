@@ -25,7 +25,7 @@ import (
 
 const (
 	titleBarHeight      = 52
-	sidebarDefaultWidth = 200
+	sidebarDefaultWidth = 220
 	sidebarMinWidth     = 160
 	sidebarMaxWidth     = 320
 	listDefaultWidth    = 280
@@ -70,6 +70,7 @@ func runGUI() {
 	service := agent.NewRemote(stores.Connection{ID: stores.ICloud}, record, warn, true)
 	g.service = service
 	g.loadStores = func() (stores.Config, error) { return storesConfig(ctx, service) }
+	g.showSettings = func() { showSettingsWindow(g) }
 	// The service holds a remote store's access token and the owner's
 	// approval of its program access, so the window reaches one through it.
 	g.remoteStore = func(connection stores.Connection) storeAccess {
@@ -109,7 +110,7 @@ func runGUI() {
 				{Role: mygo.RoleAbout},
 				g.updateItem,
 				mygo.Separator(),
-				{Label: "Settings…", Accelerator: "CmdOrCtrl+,", Click: g.onMenu(func() { showSettingsWindow(g) })},
+				{Label: "Settings…", Accelerator: "CmdOrCtrl+,", Click: g.onMenu(g.showSettings)},
 				{Label: "Install Command Line Tool…", Click: g.onMenu(g.installCLI)},
 				mygo.Separator(),
 				{Role: mygo.RoleServices},
@@ -121,7 +122,7 @@ func runGUI() {
 				{Role: mygo.RoleQuit},
 			}},
 			{Role: mygo.RoleFileMenu, Submenu: []*mygo.MenuItem{
-				{Label: "New Entry", Accelerator: "CmdOrCtrl+N", Click: g.onMenu(g.openNew)},
+				g.newItem,
 				mygo.Separator(),
 				{Role: mygo.RoleClose},
 			}},
@@ -201,7 +202,10 @@ type gui struct {
 	// service changes this Mac's stores for the Settings window.
 	service  storeService
 	settings settings
-	post     func(func())
+	// showSettings opens the Settings window, or brings the open one
+	// forward.
+	showSettings func()
+	post         func(func())
 	// clipboard takes the values the window copies; clearLater runs a
 	// function after a delay, on a goroutine of its own.
 	clipboard  valueClipboard
@@ -213,8 +217,11 @@ type gui struct {
 	closeWindow, quitApp func()
 	// showMessage shows an alert and waits for the index of the button
 	// chosen.
-	showMessage   func(alert) (int, error)
-	entryItems    entryItems
+	showMessage func(alert) (int, error)
+	entryItems  entryItems
+	// newItem is File ▸ New Entry, enabled once a new entry has a store to
+	// go to.
+	newItem       *mygo.MenuItem
 	sidebarItem   *mygo.MenuItem
 	sidebarHidden bool
 	// updateItem is the updater's menu item, whose label is checkLabel until
@@ -243,6 +250,8 @@ type gui struct {
 	// chosen.
 	query  string
 	search ui.Handle
+	// sidebarList is the sidebar's list of namespaces.
+	sidebarList ui.Handle
 	// The form fields an error can send the focus back to.
 	namespaceField ui.Handle
 	nameField      ui.Handle
@@ -298,6 +307,7 @@ func newGUI(ctx context.Context, s *store.Store, approve store.Approve, layoutPa
 		clearLater: func(delay time.Duration, fn func()) { time.AfterFunc(delay, fn) }, clearCopy: func() {},
 		sidebarHidden: l.SidebarHidden, sidebarWidth: l.SidebarWidth, listWidth: l.ListWidth}
 	g.entryItems = newEntryItems(g)
+	g.newItem = &mygo.MenuItem{Label: "New Entry", Accelerator: "CmdOrCtrl+N", Disabled: true, Click: g.onMenu(g.openNew)}
 	g.sidebarItem = &mygo.MenuItem{Label: g.sidebarLabel(), Accelerator: "Ctrl+Cmd+S", Click: g.onMenu(g.toggleSidebar)}
 	return g
 }
@@ -466,6 +476,7 @@ func (g *gui) view(c *ui.Context) {
 	}
 	g.panes(c, vibrant)
 	g.updateEntryItems(g.list.Focused(c))
+	enableItem(g.newItem, g.storesRead, "")
 }
 
 // kind is the kind of value the entry holds.

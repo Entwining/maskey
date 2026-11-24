@@ -104,12 +104,11 @@ func main() {
 	backend := agent.New(k, record, record.ReportFailure, recordable)
 	home, _ := os.UserHomeDir()
 	app := manifest()
-	// The program that started mk is described before any operation, while
-	// it surely runs.
+	// Capture the caller's process chain while it is still available.
 	ctx = activity.WithCaller(ctx, activity.Invoker(os.Getpid()))
 	outcome := cli.Run(ctx, args, cli.Env{
 		OpenStore: func(ctx context.Context, id string) (cli.StoreAccess, error) {
-			// iCloud Keychain, named, needs no configuration to be found.
+			// Explicit --store icloud can work without the configuration.
 			config, err := storesConfig(ctx, backend)
 			if err != nil && id != stores.ICloud {
 				return cli.StoreAccess{}, err
@@ -128,6 +127,7 @@ func main() {
 		AddStore:     backend.AddStore,
 		SetToken:     backend.SetStoreToken,
 		ChangeStore:  backend.ChangeStore,
+		RemoveStore:  backend.RemoveStore,
 		Activity:     record,
 		Check:        k.Check,
 		CheckService: backend.CheckService,

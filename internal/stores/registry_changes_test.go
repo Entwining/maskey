@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -154,7 +155,7 @@ func TestASlowStoreHoldsBackNoOther(t *testing.T) {
 				t.Errorf("the configuration after %s: %+v", name, config)
 			}
 			if name == "an addition" {
-				if err := r.Remove(ctx, "third"); err != nil {
+				if err := r.Remove(ctx, "third", ""); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -179,7 +180,7 @@ func TestBackendRefusesAStoreConnectedAgain(t *testing.T) {
 	if _, err := r.Backend(ctx, "bitwarden", was.Target()); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Remove(ctx, "bitwarden"); err != nil {
+	if err := r.Remove(ctx, "bitwarden", ""); err != nil {
 		t.Fatal(err)
 	}
 	again := bitwardenToken()
@@ -201,6 +202,25 @@ func TestBackendRefusesAStoreConnectedAgain(t *testing.T) {
 	}
 }
 
+func TestRemoveRejectsReboundConnection(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	r := f.registry()
+	connection, err := r.Add(ctx, bitwardenToken())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := connection
+	old.Project = "old-project"
+	if err := r.Remove(ctx, old.ID, old.Target()); !store.IsKind(err, store.KindConflict) {
+		t.Fatalf("remove with a stale target: %v, want conflict", err)
+	}
+	config, err := Load(f.dir)
+	if err != nil || !slices.Equal(config.Stores, []Connection{connection}) || len(f.local[tokenAccount(connection.ID)]) == 0 {
+		t.Fatalf("the connection or its token disappeared: %+v, %v", config, err)
+	}
+}
+
 // failingDelete fails the removal of one Keychain item.
 type failingDelete struct {
 	memoryLocal
@@ -217,12 +237,12 @@ func (l failingDelete) LocalDelete(ctx context.Context, account string) error {
 // A removal that stops after the token went says so, and leaves the store
 // named, so that removing it again finishes.
 func TestRemoveReportsAStepThatFailed(t *testing.T) {
-	for name, obstruct := range map[string]func(t *testing.T, f *fixture, r *Registry) (clear func()){
-		"program access": func(_ *testing.T, f *fixture, r *Registry) func() {
+	for step, obstruct := range map[string]func(t *testing.T, f *fixture, r *Registry) (clear func()){
+		"its entries' program access could not be removed": func(_ *testing.T, f *fixture, r *Registry) func() {
 			r.local = failingDelete{f.local, "grants/bitwarden"}
 			return func() { r.local = f.local }
 		},
-		"the saved copy": func(t *testing.T, f *fixture, _ *Registry) func() {
+		"the copy of its entries kept on this Mac could not be deleted": func(t *testing.T, f *fixture, _ *Registry) func() {
 			parent := filepath.Join(f.dir, "stores")
 			if err := os.Chmod(parent, 0o500); err != nil {
 				t.Fatal(err)
@@ -232,7 +252,7 @@ func TestRemoveReportsAStepThatFailed(t *testing.T) {
 			return restore
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(step, func(t *testing.T) {
 			f := newFixture(t)
 			ctx := context.Background()
 			r := f.registry()
@@ -244,9 +264,10 @@ func TestRemoveReportsAStepThatFailed(t *testing.T) {
 				t.Fatal(err)
 			}
 			clear := obstruct(t, f, r)
-			err := r.Remove(ctx, "bitwarden")
-			if err == nil || !strings.Contains(err.Error(), "access token was removed") {
-				t.Fatalf("a removal that did not finish: %v", err)
+			err := r.Remove(ctx, "bitwarden", "")
+			want := "the store's access token was removed, but " + step + "; remove the store again"
+			if err == nil || err.Error() != want {
+				t.Fatalf("a removal that did not finish: %v, want %q", err, want)
 			}
 			if _, kept := f.local["token/bitwarden"]; kept {
 				t.Error("the token stayed")
@@ -255,7 +276,7 @@ func TestRemoveReportsAStepThatFailed(t *testing.T) {
 				t.Error("the store whose removal did not finish is no longer named")
 			}
 			clear()
-			if err := r.Remove(ctx, "bitwarden"); err != nil {
+			if err := r.Remove(ctx, "bitwarden", ""); err != nil {
 				t.Fatalf("removing it again: %v", err)
 			}
 			if config, _ := Load(f.dir); len(config.Stores) != 0 {

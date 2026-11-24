@@ -64,6 +64,8 @@ type Server struct {
 	Expired int
 	// Fetched lists the IDs whose values were asked for.
 	Fetched []string
+	// ReadIDs can change which secrets a get-by-ids request finds.
+	ReadIDs func([]string) []string
 	// Lost makes Project one the account cannot read.
 	Lost bool
 }
@@ -198,6 +200,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var request struct{ IDs []string }
 		_ = json.NewDecoder(r.Body).Decode(&request)
 		s.Fetched = append(s.Fetched, request.IDs...)
+		if s.ReadIDs != nil {
+			request.IDs = s.ReadIDs(request.IDs)
+		}
 		var data []any
 		for _, id := range request.IDs {
 			if _, ok := s.Secrets[id]; !ok {

@@ -193,14 +193,19 @@ func TestServeWaitsForOwnerWithoutSlots(t *testing.T) {
 		backend.Put("fixture/"+name, []byte("synthetic"))
 	}
 	var listings atomic.Int32
+	listed := make(chan struct{})
 	backend.Before = func(op, _ string) error {
-		if op == "items" {
-			listings.Add(1)
+		if op == "items" && listings.Add(1) == int32(len(names)) {
+			close(listed)
 		}
 		return nil
 	}
 	var dialogs atomic.Int32
+	var grants sync.WaitGroup
+	defer grants.Wait()
 	answer := make(chan struct{})
+	release := sync.OnceFunc(func() { close(answer) })
+	defer release()
 	approval := owner.NewApproval(func(ctx context.Context, _ string) error {
 		dialogs.Add(1)
 		<-answer
@@ -211,23 +216,25 @@ func TestServeWaitsForOwnerWithoutSlots(t *testing.T) {
 	defer cancel()
 	auths := make(chan string, len(names))
 	for _, name := range names {
-		go func() {
+		grants.Go(func() {
 			r, err := (&Client{path: path}).remote(ctx, request{Op: "grant", Accounts: []string{"fixture/" + name}})
 			if err != nil {
 				t.Error(err)
 			}
 			auths <- r.Auth
-		}()
+		})
 	}
-	for listings.Load() < int32(len(names)) {
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-listed:
+	case <-ctx.Done():
+		t.Fatalf("only %d of %d grants reached the listing", listings.Load(), len(names))
 	}
 	for range names {
 		if _, err := (&Client{path: path}).remote(ctx, request{Op: "read", Accounts: []string{"fixture/ONE"}}); err != nil {
 			t.Fatalf("read while the owner is asked: %v", err)
 		}
 	}
-	close(answer)
+	release()
 	var got []string
 	for range names {
 		got = append(got, <-auths)

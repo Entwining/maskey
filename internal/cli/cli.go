@@ -42,8 +42,9 @@ type Env struct {
 	// operations on a store.
 	Stores      func(ctx context.Context) (stores.Config, error)
 	AddStore    func(ctx context.Context, addition stores.Addition) (stores.Connection, error)
-	SetToken    func(ctx context.Context, id string, token []byte) error
+	SetToken    func(ctx context.Context, id, target string, token []byte) error
 	ChangeStore func(ctx context.Context, op, id string) error
+	RemoveStore func(ctx context.Context, connection stores.Connection) error
 	// Activity is this Mac's record of operations on entries, which reports a
 	// failure to record through the command.
 	Activity *activity.Log
@@ -148,7 +149,7 @@ See mk skill show for the agent workflow.`},
 			}
 			warn(cmd, env, err.Error(), recovery)
 		})
-		return useStore(cmd, env)
+		return nil
 	}
 	root.Flags().Bool("version", false, "Show the installed version")
 	root.SetFlagErrorFunc(flagError)
@@ -159,6 +160,7 @@ See mk skill show for the agent workflow.`},
 	)
 	for _, cmd := range []*cobra.Command{runCommand(env), listCommand(env), setCommand(env), getCommand(env), renameCommand(env), deleteCommand(env), grantCommand(env), revokeCommand(env)} {
 		addStoreFlag(cmd, env)
+		cmd.PreRunE = func(cmd *cobra.Command, _ []string) error { return useStore(cmd, env) }
 		cmd.GroupID = "core"
 		root.AddCommand(cmd)
 	}
@@ -245,7 +247,11 @@ func writeResult(cmd *cobra.Command, env *Env, document any, text string) error 
 	if jsonOutput(cmd) {
 		return writeJSON(env.Stdout, document)
 	}
-	if _, err := io.WriteString(env.Stdout, text); err != nil {
+	return writeText(env, text)
+}
+
+func writeText(env *Env, output string) error {
+	if _, err := io.WriteString(env.Stdout, output); err != nil {
 		return outputError()
 	}
 	return nil
@@ -307,10 +313,12 @@ func parseSelectors(args []string) ([]store.Ref, error) {
 // distinct rejects a batch that names one entry twice, whose second write
 // would act on the result of the first.
 func distinct(refs []store.Ref) error {
+	firstPosition := make(map[store.Ref]int, len(refs))
 	for i, ref := range refs {
-		if first := slices.Index(refs, ref); first < i {
-			return withHint(atArgument(usageError(fmt.Sprintf("repeats argument %d", first+1)), i+1), "pass each entry once")
+		if first, ok := firstPosition[ref]; ok {
+			return withHint(atArgument(usageError(fmt.Sprintf("repeats argument %d", first)), i+1), "pass each entry once")
 		}
+		firstPosition[ref] = i + 1
 	}
 	return nil
 }

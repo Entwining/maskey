@@ -32,13 +32,14 @@ func (g *gui) sidebar(c *ui.Context, vibrant bool) {
 		return func() { ui.Text(c, strconv.Itoa(n)).FontSize(t.FontSize - 2).Opacity(0.55) }
 	}
 	list := ui.Sidebar(c.Key("namespaces"), &chosen, func() {
-		total := count(g.count())
-		ui.SidebarItem(c.Key(allNamespaces), allNamespaces, layersIcon, cmp.Or(g.filter, "All Entries")).Children(func() {
-			total()
-			if g.severalStores() {
-				g.storeChoice(c)
-			}
-		})
+		first := func() ui.Element {
+			return ui.SidebarItem(c.Key(allNamespaces), allNamespaces, layersIcon, cmp.Or(g.filter, "All Entries")).Children(count(g.count()))
+		}
+		if g.severalStores() {
+			g.storeChoice(c, first, chosen == allNamespaces)
+		} else {
+			first()
+		}
 		several := g.severalStores() && g.filter == ""
 		for _, connection := range g.stores.All() {
 			id, title := connection.ID, connection.ID
@@ -63,7 +64,7 @@ func (g *gui) sidebar(c *ui.Context, vibrant bool) {
 				}
 			})
 		}
-	}).Grow(1).Label("Namespaces")
+	}).Bind(&g.sidebarList).Grow(1).Label("Namespaces")
 	if vibrant {
 		list.Background(ui.Transparent)
 	}
@@ -77,26 +78,46 @@ func (g *gui) sidebar(c *ui.Context, vibrant bool) {
 	}
 }
 
-// storeChoice is the menu at the end of the sidebar's first item, which
-// chooses what the window shows: every store, or one alone. The item names
-// the choice and shows all of its entries, as All Entries does on a Mac with
-// one store.
-func (g *gui) storeChoice(c *ui.Context) {
-	b := ui.ButtonBase(c.Key("stores")).Size(16, 16).Shrink(0).Radius(4).Center().Label("Stores Shown").Tooltip("Stores Shown")
-	if b.Hovered() {
-		b.Background(neutral.Alpha(0.22))
-	}
-	b.Children(func() { ui.Icon(c, chevronsIcon).Size(12, 12).Opacity(0.55) })
-	b.Menu(func(m *ui.Menu) {
-		if m.Item("All Stores").Radio(g.filter == "").Chosen() {
-			g.leave(func() { g.showStore("") })
+// storeChoice is the sidebar's first item, which first builds and chosen
+// says is chosen, with the menu at its end that chooses what the window
+// shows: every store, or one alone. The item names the choice and shows all
+// of its entries, as All Entries does on a Mac with one store. The menu's
+// button lies over the item's end rather than inside the item, whose
+// content assistive technology reads only as the item's name, so that the
+// button is an element of its own there. It is as high as the item and as
+// wide, so that it is easy to hit.
+func (g *gui) storeChoice(c *ui.Context, first func() ui.Element, chosen bool) {
+	t := c.Theme()
+	size := 16 + 2*t.Space(1.5) // a sidebar item's height, as in entryRow
+	ui.Box(c).Shrink(0).Children(func() {
+		// The item's count ends before the button.
+		first().PaddingEnd(size + t.Space(1))
+		b := ui.ButtonBase(c.Key("stores")).Absolute().Top(0).End(0).Size(size, size).Radius(t.Radius).Label("Stores Shown").Tooltip("Stores Shown")
+		// The glyph takes the item's color, which the item does not pass
+		// on to an element outside it, and on the accent, the hover and
+		// press backgrounds lighten as a gray would not.
+		tint := neutral
+		if chosen && g.sidebarList.Focused(c) {
+			b.TextColor(t.AccentText)
+			tint = t.AccentText
 		}
-		m.Separator()
-		for _, connection := range g.stores.All() {
-			if id := connection.ID; m.Item(id).Radio(g.filter == id).Chosen() {
-				g.leave(func() { g.showStore(id) })
+		if b.Pressed() {
+			b.Background(tint.Alpha(0.22))
+		} else if b.Hovered() {
+			b.Background(tint.Alpha(0.13))
+		}
+		b.Children(func() { ui.Icon(c, chevronsIcon).Size(12, 12).Opacity(0.55) })
+		b.Menu(func(m *ui.Menu) {
+			if m.Item("All Stores").Radio(g.filter == "").Chosen() {
+				g.leave(func() { g.showStore("") })
 			}
-		}
+			m.Separator()
+			for _, connection := range g.stores.All() {
+				if id := connection.ID; m.Item(id).Radio(g.filter == id).Chosen() {
+					g.leave(func() { g.showStore(id) })
+				}
+			}
+		})
 	})
 }
 
@@ -149,7 +170,7 @@ func (g *gui) listPane(c *ui.Context, inset float32) {
 				ui.Text(c, subtitle).FontSize(t.FontSize - 2).TextColor(t.TextMuted).SingleLine()
 			}
 		})
-		if iconButton(c.Key("add"), plusIcon, "New Entry", 28, false, false).TextColor(t.TextMuted).Clicked() {
+		if iconButton(c.Key("add"), plusIcon, "New Entry", 28, false, !g.storesRead).TextColor(t.TextMuted).Clicked() {
 			g.openNew()
 		}
 	})
@@ -176,10 +197,8 @@ func (g *gui) listPane(c *ui.Context, inset float32) {
 	switch {
 	case total > 0:
 		g.entries(c, rows)
-	case !loaded:
-		ui.Column(c).Grow(1).Center().Children(func() { ui.Spinner(c).Size(16, 16).Label("Loading") })
-	case g.storesErr != "":
-		emptyState(c, keyIcon, "Can’t Read This Mac’s Stores", g.storesErr, "Try Again", g.refresh)
+	case !loaded || g.storesErr != "":
+		g.storesUnread(c)
 	case len(failed) > 1:
 		details := make([]string, len(failed))
 		for i, id := range failed {
@@ -195,6 +214,16 @@ func (g *gui) listPane(c *ui.Context, inset float32) {
 	default:
 		emptyState(c, keyIcon, "No Entries", "Add an API key or token here, then hand it to a command with mk run.", "New Entry", g.openNew)
 	}
+}
+
+// storesUnread stands in for what needs this Mac's stores: it waits while
+// they load, and says why reading them failed.
+func (g *gui) storesUnread(c *ui.Context) {
+	if g.storesErr != "" {
+		emptyState(c, keyIcon, "Can’t Read This Mac’s Stores", g.storesErr, "Try Again", g.refresh)
+		return
+	}
+	ui.Column(c).Grow(1).Center().Children(func() { ui.Spinner(c).Size(16, 16).Label("Loading") })
 }
 
 // sidebarButton floats over the toolbars at x, level with the window

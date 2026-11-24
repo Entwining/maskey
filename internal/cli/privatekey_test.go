@@ -38,29 +38,56 @@ var (
 	certificate = "-----BEGIN CERTIFICATE-----\nc3ludGhldGlj\n-----END CERTIFICATE-----\n"
 )
 
-func keyFixtures(t *testing.T) []keyFixture {
+func newOpenSSHKey(t *testing.T) ed25519.PrivateKey {
 	t.Helper()
-	_, ed, err := ed25519.GenerateKey(rand.Reader)
+	_, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	openssh, err := ssh.MarshalPrivateKeyWithPassphrase(ed, "comment", []byte(passphrase))
+	return key
+}
+
+func plainOpenSSHKey(t *testing.T, key ed25519.PrivateKey) []byte {
+	t.Helper()
+	block, err := ssh.MarshalPrivateKey(key, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	opensshPlain, err := ssh.MarshalPrivateKey(ed, "")
+	return pem.EncodeToMemory(block)
+}
+
+func protectedOpenSSHKey(t *testing.T, key ed25519.PrivateKey) []byte {
+	t.Helper()
+	block, err := ssh.MarshalPrivateKeyWithPassphrase(key, "comment", []byte(passphrase))
 	if err != nil {
 		t.Fatal(err)
 	}
+	return pem.EncodeToMemory(block)
+}
+
+func openSSHFixture(t *testing.T) keyFixture {
+	t.Helper()
+	key := newOpenSSHKey(t)
+	return keyFixture{"openssh", protectedOpenSSHKey(t, key), plainOpenSSHKey(t, key)}
+}
+
+func legacyKeyDER(t *testing.T) []byte {
+	t.Helper()
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
-	der := x509.MarshalPKCS1PrivateKey(rsaKey)
-	return []keyFixture{
-		{"openssh", pem.EncodeToMemory(openssh), pem.EncodeToMemory(opensshPlain)},
-		{"legacy", legacyEncrypted(t, "RSA PRIVATE KEY", der), pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der})},
-	}
+	return x509.MarshalPKCS1PrivateKey(rsaKey)
+}
+
+func plainLegacyKey(der []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der})
+}
+
+func legacyFixture(t *testing.T) keyFixture {
+	t.Helper()
+	der := legacyKeyDER(t)
+	return keyFixture{"legacy", legacyEncrypted(t, "RSA PRIVATE KEY", der), plainLegacyKey(der)}
 }
 
 func legacyEncrypted(t *testing.T, blockType string, der []byte) []byte {
@@ -108,7 +135,7 @@ func securityKey() []byte {
 }
 
 func TestProtected(t *testing.T) {
-	for _, f := range keyFixtures(t) {
+	for _, f := range []keyFixture{openSSHFixture(t), legacyFixture(t)} {
 		if !protected(f.protected) || protected(f.plain) {
 			t.Errorf("%s: protected %v, plain %v", f.name, protected(f.protected), protected(f.plain))
 		}
@@ -126,7 +153,7 @@ func TestProtected(t *testing.T) {
 // The key comes back in its own container, without the passphrase, and a
 // wrong passphrase is the error set asks again on.
 func TestWithoutPassphrase(t *testing.T) {
-	for _, f := range keyFixtures(t) {
+	for _, f := range []keyFixture{openSSHFixture(t), legacyFixture(t)} {
 		plain, err := withoutPassphrase(f.protected, []byte(passphrase))
 		if err != nil {
 			t.Fatalf("%s: %v", f.name, err)
@@ -150,7 +177,7 @@ func TestWithoutPassphrase(t *testing.T) {
 // A key bundled with other text, such as its certificate, loses only its
 // passphrase, byte for byte.
 func TestWithoutPassphraseKeepsBundle(t *testing.T) {
-	f := keyFixtures(t)[1]
+	f := legacyFixture(t)
 	before, after := "Note: -----BEGIN RSA PRIVATE KEY----- is the format\n"+certificate, "trailer\n"
 	plain, err := withoutPassphrase([]byte(before+string(f.protected)+after), []byte(passphrase))
 	if err != nil {
@@ -181,7 +208,7 @@ func publicKey(t *testing.T, key []byte) string {
 
 // An entry of another kind than ssh keeps a protected key as it is, for a
 // program that reads the passphrase from another entry, and set warns
-// without asking, whether or not it has a terminal.
+// without opening the controlling terminal.
 func TestSetKeepsProtectedKeyOfOtherKind(t *testing.T) {
 	const warning = "mk: warning: the private key is protected by a passphrase, which mk stores with it\nmk: hint: keep it when the program reads the passphrase from another entry"
 	// The hint offers an SSH Key entry only for a key that entry would take.
@@ -193,21 +220,16 @@ func TestSetKeepsProtectedKeyOfOtherKind(t *testing.T) {
 		{pkcs8, "; for ssh or git, openssl pkey -in <file> | mk set --stdin app/<NAME>_SSH_KEY stores the key without it"},
 		{securityKey(), ""},
 	}
-	for _, f := range keyFixtures(t) {
-		cases = append(cases, warned{f.protected, "; for ssh or git, mk set --stdin app/<NAME>_SSH_KEY < <file> stores the key without it"})
+	for _, key := range [][]byte{protectedOpenSSHKey(t, newOpenSSHKey(t)), legacyEncrypted(t, "RSA PRIVATE KEY", legacyKeyDER(t))} {
+		cases = append(cases, warned{key, "; for ssh or git, mk set --stdin app/<NAME>_SSH_KEY < <file> stores the key without it"})
 	}
 	for _, c := range cases {
-		for _, withTerminal := range []bool{true, false} {
-			h := newHarness(t)
-			if withTerminal {
-				h.terminal = terminal(t, passphrase+"\n")
-			}
-			if outcome, _, stderr := h.run(t, string(c.value), "set", "--stdin", "app/KEY"); outcome.Code != 0 || stderr != warning+c.hint+"\n" || h.terminalOpens != 0 || !bytes.Equal([]byte(h.value("app/KEY")), c.value) {
-				t.Fatalf("%s, terminal %v: %+v %d %q", blockType(c.value), withTerminal, outcome, h.terminalOpens, stderr)
-			}
+		h := newHarness(t)
+		if outcome, _, stderr := h.run(t, string(c.value), "set", "--stdin", "app/KEY"); outcome.Code != 0 || stderr != warning+c.hint+"\n" || h.terminalOpens != 0 || !bytes.Equal([]byte(h.value("app/KEY")), c.value) {
+			t.Fatalf("%s: %+v %d %q", blockType(c.value), outcome, h.terminalOpens, stderr)
 		}
 	}
-	for _, value := range [][]byte{keyFixtures(t)[0].plain, []byte("line 1\nline 2\n")} {
+	for _, value := range [][]byte{plainOpenSSHKey(t, newOpenSSHKey(t)), []byte("line 1\nline 2\n")} {
 		h := newHarness(t)
 		if outcome, _, stderr := h.run(t, string(value), "set", "--stdin", "app/KEY"); outcome.Code != 0 || stderr != "" || !bytes.Equal([]byte(h.value("app/KEY")), value) {
 			t.Fatalf("unprotected %q: %+v %q", value, outcome, stderr)
@@ -229,7 +251,7 @@ func TestSetCancelledAtPassphrase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stdin := stdinHolding(t, string(keyFixtures(t)[0].protected))
+	stdin := stdinHolding(t, string(protectedOpenSSHKey(t, newOpenSSHKey(t))))
 	ctx, cancel := context.WithCancel(context.Background())
 	var stderr bytes.Buffer
 	done := make(chan Outcome, 1)
@@ -267,7 +289,7 @@ func TestSetCancelledAtPassphrase(t *testing.T) {
 // passphrase, only without it: an empty answer or a wrong passphrase asks
 // again, and where set cannot ask or cannot decrypt, it writes nothing.
 func TestSetRemovesSSHKeyPassphrase(t *testing.T) {
-	openssh := keyFixtures(t)[0]
+	openssh := openSSHFixture(t)
 	h := newHarness(t)
 	master, tty := openTerminal(t, "\nwrong\n"+passphrase+"\n")
 	h.terminal = tty

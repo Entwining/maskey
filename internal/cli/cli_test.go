@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -53,7 +54,7 @@ type harness struct {
 
 // connect adds the store named work to this Mac's stores.
 func (h *harness) connect() {
-	h.config.Stores = append(h.config.Stores, stores.Connection{ID: "work", Type: stores.Bitwarden, Region: "eu", Project: "p-1", ProjectName: "Deploy"})
+	h.config.Stores = append(h.config.Stores, stores.Connection{ID: "work", Type: stores.Bitwarden, Region: "eu", Organization: "org-1", Project: "p-1", ProjectName: "Deploy"})
 }
 
 // access is the store named id as main opens it.
@@ -104,20 +105,25 @@ func (h *harness) env(stdin *os.File, stdout, stderr io.Writer) Env {
 		Stores:    func(context.Context) (stores.Config, error) { return h.config, h.configErr },
 		AddStore: func(_ context.Context, addition stores.Addition) (stores.Connection, error) {
 			h.added = addition
-			return stores.Connection{ID: cmp.Or(addition.ID, stores.Bitwarden), Type: addition.Type, ProjectName: "Deploy"}, h.storeErr
+			return stores.Connection{ID: cmp.Or(addition.ID, stores.Bitwarden), Type: addition.Type, Region: addition.Region,
+				Organization: "org-1", Project: "p-1", ProjectName: "Deploy"}, h.storeErr
 		},
-		SetToken: func(_ context.Context, id string, token []byte) error {
-			h.storeChanges = append(h.storeChanges, "token "+id+" "+string(token))
+		SetToken: func(_ context.Context, id, target string, token []byte) error {
+			h.storeChanges = append(h.storeChanges, fmt.Sprintf("token %s target=%q %s", id, target, token))
 			return h.storeErr
 		},
 		ChangeStore: func(_ context.Context, op, id string) error {
 			h.storeChanges = append(h.storeChanges, op+" "+id)
 			if _, ok := h.config.Find(id); !ok {
-				return &store.Error{Kind: store.KindNotFound, Message: "this Mac has no store with that name"}
+				return stores.ErrNoStore
 			}
 			if h.failingStore != "" && h.failingStore != id {
 				return nil
 			}
+			return h.storeErr
+		},
+		RemoveStore: func(_ context.Context, connection stores.Connection) error {
+			h.storeChanges = append(h.storeChanges, fmt.Sprintf("store_remove %s target=%q", connection.ID, connection.Target()))
 			return h.storeErr
 		},
 		Activity:      h.activity,

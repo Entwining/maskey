@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// snapshot is a project's secrets as this Mac last read them from
+// snapshot is a project's Maskey entries as this Mac last read them from
 // Bitwarden, which lets it list and read them without the network.
 type snapshot struct {
 	Project   string    `json:"project"`
@@ -25,7 +25,7 @@ type snapshotFile struct {
 	Sealed  string `json:"sealed"`
 }
 
-const snapshotVersion = 1
+const snapshotVersion = 2
 
 // writeSnapshot replaces the file at path with s in one rename, so a reader
 // never sees part of it.

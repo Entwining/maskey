@@ -3,6 +3,8 @@ package main
 import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 // showSettingsWindow opens the Settings window, or brings the open one
@@ -27,6 +29,6 @@ func showSettingsWindow(g *gui) {
 	s.close, s.focus = win.Close, win.Focus
 	win.OnClosed(func() {
 		s.redraw, s.ask, s.close, s.focus = nil, nil, nil, nil
-		s.token, s.adding = "", false
+		s.token, s.adding, s.replacing = "", false, stores.Connection{}
 	})
 }

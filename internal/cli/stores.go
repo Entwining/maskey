@@ -2,14 +2,18 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"io"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/Entwining/maskey/internal/agent"
+	"github.com/Entwining/maskey/internal/bitwarden"
 	"github.com/Entwining/maskey/internal/store"
 	"github.com/Entwining/maskey/internal/stores"
 )
@@ -39,23 +43,30 @@ func addStoreFlag(cmd *cobra.Command, env *Env) {
 	})
 }
 
-// useStore makes the store cmd names with --store, or else this Mac's
-// default, the one cmd works on. A command without the flag works on no
-// store's entries.
-func useStore(cmd *cobra.Command, env *Env) error {
-	flag := cmd.Flags().Lookup(storeFlag)
-	if flag == nil {
-		return nil
+func storeName(cmd *cobra.Command, emptyNameHint string) (string, error) {
+	name, _ := cmd.Flags().GetString(storeFlag)
+	if name == "" && cmd.Flags().Changed(storeFlag) {
+		return "", withHint(usageError("--store needs a name"), emptyNameHint)
 	}
-	access, err := env.OpenStore(cmd.Context(), flag.Value.String())
+	return name, nil
+}
+
+// useStore makes the store cmd names with --store, or else this Mac's
+// default, the one entry commands work on.
+func useStore(cmd *cobra.Command, env *Env) error {
+	name, err := storeName(cmd, "give --store a name from mk store list")
+	if err != nil {
+		return err
+	}
+	access, err := env.OpenStore(cmd.Context(), name)
 	if store.IsKind(err, store.KindNotFound) {
-		return withHint(err, "run mk store list to see this Mac's stores")
+		return withHint(err, listStoresHint)
 	}
 	if err != nil {
 		return err
 	}
 	env.store, env.changeAccess, env.connection = access.Store, access.ChangeAccess, access.Connection
-	if flag.Changed {
+	if name != "" {
 		env.storeArg = " --" + storeFlag + " " + access.Connection.ID
 	}
 	return nil
@@ -72,8 +83,13 @@ var entryCommands = regexp.MustCompile(`\bmk (list|run|set|get|grant|revoke|dele
 // inStore gives the mk commands a hint names the --store the command was
 // given, without which they would work on the default store.
 func inStore(env *Env, hint string) string {
+	if env.storeArg != "" && strings.HasPrefix(hint, "usage: ") {
+		return strings.ReplaceAll(hint, "[--store <name>]", strings.TrimPrefix(env.storeArg, " "))
+	}
 	return entryCommands.ReplaceAllString(hint, "${0}"+env.storeArg)
 }
+
+const listStoresHint = "run mk store list to see this Mac's stores"
 
 // typeNames are the stores' types as people know them.
 var typeNames = map[string]string{
@@ -86,17 +102,23 @@ type storeRow struct {
 	Default bool `json:"default"`
 }
 
+type storeResult struct {
+	Store      string             `json:"store"`
+	Action     string             `json:"action"`
+	Connection *stores.Connection `json:"connection,omitempty"`
+}
+
 func storeCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "store <command> [flags]",
-		Short: "List, add, and remove this Mac's stores",
+		Short: "Manage this Mac's stores",
 		Long: `A store holds entries. iCloud Keychain is built in and is named icloud.
 A Bitwarden Secrets Manager project can be added as another store, which
 two Macs with different Apple Accounts can share.
 
 Each store has a name, which --store takes, and a type, which says what
-it connects to. Commands that name no store use this Mac's default. A
-command works on one store: nothing is looked up in a second one.
+it connects to. Entry commands that name no store use this Mac's default.
+An entry command works on one store: nothing is looked up in a second one.
 
 Stores, the default, and program access to a Bitwarden store's entries
 belong to this Mac and do not sync.`,
@@ -105,13 +127,11 @@ belong to this Mac and do not sync.`,
 	groupOfCommands(cmd)
 	cmd.AddCommand(storeListCommand(env), storeAddCommand(env), storeTokenCommand(env),
 		storeChangeCommand(env, "default", agent.OpDefaultStore, "Make a store the default", `Make the store the one that commands use when they name none with
---store. This changes only this Mac.`, "now the default"),
+--store. This changes only this Mac.`, "default_changed", "now the default"),
 		storeChangeCommand(env, "sync", agent.OpSyncStore, "Read a Bitwarden store from Bitwarden now", `Read the store's project from Bitwarden now. mk otherwise uses what it
 read within the last 5 minutes, and what it read last while Bitwarden
-cannot be reached.`, "synced"),
-		storeChangeCommand(env, "remove", agent.OpRemoveStore, "Forget a store on this Mac", `Remove the store from this Mac: its access token, the program access of
-its entries, and what mk kept to read it offline. The entries stay in
-Bitwarden. A removed default leaves icloud as the default.`, "removed"))
+cannot be reached.`, "synced", "synced"),
+		storeRemoveCommand(env))
 	return cmd
 }
 
@@ -129,22 +149,24 @@ Bitwarden store, region, organization, project, and project_name.`,
 			if err != nil {
 				return err
 			}
-			var rows []storeRow
-			var text []string
-			for _, connection := range config.All() {
-				row := storeRow{connection, connection.ID == config.Default}
-				rows = append(rows, row)
+			connections := config.All()
+			if jsonOutput(cmd) {
+				rows := make([]storeRow, len(connections))
+				for i, connection := range connections {
+					rows[i] = storeRow{connection, connection.ID == config.Default}
+				}
+				return writeJSON(env.Stdout, map[string]any{"stores": rows})
+			}
+			text := make([]string, len(connections))
+			for i, connection := range connections {
 				isDefault, target := "", "this Apple Account"
-				if row.Default {
+				if connection.ID == config.Default {
 					isDefault = "yes"
 				}
 				if connection.Type == stores.Bitwarden {
 					target = strings.ToUpper(connection.Region) + " / " + connection.ProjectName
 				}
-				text = append(text, strings.Join([]string{connection.ID, typeNames[connection.Type], isDefault, target}, "\t"))
-			}
-			if jsonOutput(cmd) {
-				return writeJSON(env.Stdout, map[string]any{"stores": rows})
+				text[i] = strings.Join([]string{connection.ID, typeNames[connection.Type], isDefault, target}, "\t")
 			}
 			return writeTable(env, "NAME\tTYPE\tDEFAULT\tTARGET", text)
 		},
@@ -155,12 +177,13 @@ Bitwarden store, region, organization, project, and project_name.`,
 
 func storeAddCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "add bitwarden [--name <name>] [--region us|eu] [--project <id|name>] [--stdin] [--json]",
+		Use:   "add <type> [--name <name>] [--region <us|eu>] [--project <id|name>] [--stdin] [--json]",
 		Short: "Connect a Bitwarden Secrets Manager project",
-		Long: `Connect one Bitwarden Secrets Manager project as a store. Create a machine
-account in Bitwarden, give it read and write access to the project, and
-create an access token for it. Type the token at mk's hidden prompt, or
-pipe it with --stdin. Give each Mac a machine account of its own, so that
+		Long: `Connect one Bitwarden Secrets Manager project as a store. The only
+supported store type is bitwarden. Create a machine account in Bitwarden,
+give it read and write access to the project, and create an access token
+for it. Type the token at mk's hidden prompt with terminal stdin, or pipe
+it with --stdin. Give each Mac a machine account of its own, so that
 removing one Mac's access leaves the other's.
 
 mk signs in with the token before it keeps anything. The token then
@@ -185,28 +208,56 @@ other names are not entries.`,
 			name, _ := cmd.Flags().GetString("name")
 			region, _ := cmd.Flags().GetString("region")
 			project, _ := cmd.Flags().GetString("project")
+			addition := stores.Addition{ID: name, Type: stores.Bitwarden, Region: region, Project: project}
+			connection, err := addition.Connection()
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			config, err := env.Stores(ctx)
+			if err != nil {
+				return err
+			}
+			if err := config.CheckNewName(connection.ID); err != nil {
+				return addStoreError(err)
+			}
 			fromStdin, _ := cmd.Flags().GetBool("stdin")
-			token, err := readSecret(cmd.Context(), env, "Access token (input hidden): ", fromStdin)
+			addition.Token, err = readStoreToken(cmd, env, fromStdin, "Access token (input hidden): ",
+				secretInput{"access token", "no store was added", "cancelled before the store was added"})
 			if err != nil {
 				return err
 			}
-			connection, err := env.AddStore(cmd.Context(), stores.Addition{ID: name, Type: stores.Bitwarden, Region: region, Project: project, Token: token})
-			if store.IsKind(err, store.KindExists) {
-				return withHint(err, "pass another name with --name, or remove the store first with mk store remove")
-			}
+			connection, err = env.AddStore(ctx, addition)
 			if err != nil {
-				return err
+				return addStoreError(err)
 			}
-			return writeResult(cmd, env, map[string]any{"store": connection},
+			return writeResult(cmd, env, storeResult{Store: connection.ID, Action: "added", Connection: &connection},
 				fmt.Sprintf("%s: added, connected to the project %s\n", connection.ID, connection.ProjectName))
 		},
 	}
 	cmd.Flags().String("name", "", "Name the store `<name>` instead of bitwarden")
 	cmd.Flags().String("region", "", "Use Bitwarden's `<region>` cloud, us or eu (default us)")
+	_ = cmd.RegisterFlagCompletionFunc("region", func(*cobra.Command, []string, string) ([]cobra.Completion, cobra.ShellCompDirective) {
+		return slices.Sorted(maps.Keys(bitwarden.Regions)), cobra.ShellCompDirectiveNoFileComp
+	})
 	cmd.Flags().String("project", "", "Connect the project with this `<id|name>`")
 	cmd.Flags().Bool("stdin", false, "Read the access token from standard input")
 	addJSONFlag(cmd, "Write the store or errors as JSON")
 	return cmd
+}
+
+func addStoreError(err error) error {
+	switch store.KindOf(err) {
+	case store.KindExists:
+		return withHint(err, "choose another store name with --name")
+	case store.KindNotFound:
+		return withHint(err, "pass a project this machine account can read with --project")
+	case store.KindConflict:
+		return withHint(err, "pass the project ID with --project")
+	case store.KindUnauthenticated:
+		return withHint(err, "check the region and access token, then run the same command again")
+	}
+	return err
 }
 
 func storeTokenCommand(env *Env) *cobra.Command {
@@ -214,27 +265,40 @@ func storeTokenCommand(env *Env) *cobra.Command {
 		Use:   "token [--stdin] [--json] <name>",
 		Short: "Replace a store's access token",
 		Long: `Replace the access token this Mac keeps for the store, as when the old
-one expired or was revoked. Type the new token at mk's hidden prompt, or
-pipe it with --stdin. mk signs in with it and checks that it reads the
-store's project before it replaces the old one. The store keeps its name
-and its entries' program access.`,
+one expired or was revoked. Type the new token at mk's hidden prompt with
+terminal stdin, or pipe it with --stdin. mk signs in with it and checks
+that it reads the store's project before it replaces the old one. The
+store keeps its name and its entries' program access.`,
 		DisableFlagsInUseLine: true,
 		Args:                  countArgs("store token takes one store name", 1, 1),
 		ValidArgsFunction:     completeStores(env, false),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := stores.CheckTokenStore(args[0]); err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			config, err := env.Stores(ctx)
+			if err != nil {
+				return err
+			}
+			connection, err := config.Named(args[0])
+			if err != nil {
+				return withHint(atArgument(err, 1), listStoresHint)
+			}
 			fromStdin, _ := cmd.Flags().GetBool("stdin")
-			token, err := readSecret(cmd.Context(), env, fmt.Sprintf("New access token for %s (input hidden): ", args[0]), fromStdin)
+			var target string
+			if !fromStdin {
+				target = connection.Target()
+			}
+			token, err := readStoreToken(cmd, env, fromStdin, fmt.Sprintf("New access token for %s (input hidden): ", connection.ID),
+				secretInput{"access token", "the access token was not replaced", "cancelled before the access token was replaced"})
 			if err != nil {
 				return err
 			}
-			err = env.SetToken(cmd.Context(), args[0], token)
-			if store.IsKind(err, store.KindNotFound) {
-				return withHint(atArgument(err, 1), "run mk store list to see this Mac's stores")
+			if err := env.SetToken(ctx, connection.ID, target, token); err != nil {
+				return storeConnectionError(err)
 			}
-			if err != nil {
-				return err
-			}
-			return writeResult(cmd, env, map[string]any{"store": args[0], "action": "token replaced"}, args[0]+": token replaced\n")
+			return writeResult(cmd, env, storeResult{Store: connection.ID, Action: "token_replaced"}, connection.ID+": token replaced\n")
 		},
 	}
 	cmd.Flags().Bool("stdin", false, "Read the access token from standard input")
@@ -262,7 +326,7 @@ func completeStores(env *Env, withICloud bool) cobra.CompletionFunc {
 
 // storeChangeCommand is a command that changes the store its one argument
 // names, through the Maskey service.
-func storeChangeCommand(env *Env, name, op, short, long, done string) *cobra.Command {
+func storeChangeCommand(env *Env, name, op, short, long, action, done string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:                   name + " [--json] <name>",
 		Short:                 short,
@@ -272,29 +336,100 @@ func storeChangeCommand(env *Env, name, op, short, long, done string) *cobra.Com
 		ValidArgsFunction:     completeStores(env, op == agent.OpDefaultStore),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			err := env.ChangeStore(cmd.Context(), op, args[0])
+			if op == agent.OpSyncStore {
+				if hint := syncStoreRecovery(err); hint != "" {
+					return withHint(err, hint)
+				}
+			}
 			if store.IsKind(err, store.KindNotFound) {
-				return withHint(atArgument(err, 1), "run mk store list to see this Mac's stores")
+				return withHint(atArgument(err, 1), listStoresHint)
 			}
 			if err != nil {
 				return err
 			}
-			return writeResult(cmd, env, map[string]any{"store": args[0], "action": done}, args[0]+": "+done+"\n")
+			return writeResult(cmd, env, storeResult{Store: args[0], Action: action}, args[0]+": "+done+"\n")
 		},
 	}
 	addJSONFlag(cmd, "Write the result or errors as JSON")
 	return cmd
 }
 
-// readSecret reads a credential that is no entry's value from stdin, or
-// from a hidden prompt on the terminal.
-func readSecret(ctx context.Context, env *Env, prompt string, fromStdin bool) ([]byte, error) {
-	if !fromStdin {
-		in, out := prompts(env)
-		return readHidden(ctx, in, out, prompt)
+// syncStoreRecovery distinguishes a remote project that is no longer
+// accessible from a store name this Mac does not know.
+func syncStoreRecovery(err error) string {
+	kind := store.KindOf(err)
+	if kind == store.KindNotFound && !errors.Is(err, stores.ErrNoStore) || kind == store.KindPermissionDenied {
+		return "check that the machine account can read the project in Bitwarden"
 	}
-	value, err := readUnlessCancelled(ctx, func() ([]byte, error) {
-		value, err := io.ReadAll(env.Stdin)
-		return withoutLineEnding(value), err
-	})
-	return value, readError(ctx, err)
+	return ""
+}
+
+func storeRemoveCommand(env *Env) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "remove [--yes] [--json] <name>",
+		Short: "Forget a store on this Mac",
+		Long: `Remove the store from this Mac: its access token, the program access of
+its entries, and what mk kept to read it offline. The entries stay in
+Bitwarden. A removed default leaves icloud as the default.
+
+Type y or yes and press Return to confirm, ignoring case. Without terminal
+stdin, --yes is required. Use it only for a store the owner asked to remove.`,
+		DisableFlagsInUseLine: true,
+		Args:                  countArgs("store remove takes one store name", 1, 1),
+		ValidArgsFunction:     completeStores(env, false),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			yes, _ := cmd.Flags().GetBool("yes")
+			if !yes && !term.IsTerminal(int(env.Stdin.Fd())) {
+				return withHint(usageError("standard input is not a terminal and store remove needs --yes"),
+					"use --yes only for the store the owner asked to remove")
+			}
+			ctx, id := cmd.Context(), args[0]
+			var err error
+			if yes {
+				err = env.ChangeStore(ctx, agent.OpRemoveStore, id)
+			} else {
+				config, readErr := env.Stores(ctx)
+				if readErr != nil {
+					return readErr
+				}
+				connection, lookupErr := config.Removable(id)
+				if lookupErr != nil {
+					return storeConnectionError(lookupErr)
+				}
+				prompt := fmt.Sprintf("Remove the store %s from this Mac? Its access token, its entries' program access, and the saved copy will be removed. Entries stay in Bitwarden.", connection.ID)
+				if config.Default == connection.ID {
+					prompt += " Commands will use icloud by default."
+				}
+				if err := confirm(ctx, env, prompt+" Continue? [y/N] ", "no store was removed"); err != nil {
+					return err
+				}
+				err = env.RemoveStore(ctx, connection)
+			}
+			if err != nil {
+				return storeConnectionError(err)
+			}
+			return writeResult(cmd, env, storeResult{Store: id, Action: "removed"}, id+": removed\n")
+		},
+	}
+	cmd.Flags().BoolP("yes", "y", false, "Remove without asking")
+	addJSONFlag(cmd, "Write the result or errors as JSON")
+	return cmd
+}
+
+func storeConnectionError(err error) error {
+	switch store.KindOf(err) {
+	case store.KindNotFound:
+		return withHint(atArgument(err, 1), listStoresHint)
+	case store.KindConflict:
+		return withHint(err, "run mk store list to check the store, then retry")
+	}
+	return err
+}
+
+func readStoreToken(cmd *cobra.Command, env *Env, fromStdin bool, prompt string, input secretInput) ([]byte, error) {
+	if !fromStdin && !term.IsTerminal(int(env.Stdin.Fd())) {
+		return nil, withHint(usageError("standard input is not a terminal and "+cmd.Parent().Name()+" "+cmd.Name()+" needs --stdin"),
+			"have the owner run this command in their terminal or pipe the access token with --stdin")
+	}
+	return readInput(cmd.Context(), env, prompt, fromStdin, input)
 }

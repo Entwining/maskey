@@ -3,17 +3,17 @@
 </p>
 <h1 align="center">Maskey</h1>
 
-Maskey stores API keys, tokens, passwords, and SSH keys in iCloud Keychain for scripts and coding agents. It has a macOS window and the `mk` command line. Entries sync across your Macs without another account or hosted service. To share entries between Macs on different Apple Accounts, it can also keep them in a [Bitwarden Secrets Manager project](docs/usage.md#stores).
+Maskey is a macOS app and command line (`mk`) that let scripts and coding agents use credentials without putting their values in prompts or project files. Keep entries in iCloud Keychain to sync them across Macs on the same Apple Account, or [connect a Bitwarden Secrets Manager project](docs/usage.md#stores) to share them across accounts.
 
 ## What it does
 
 ### Give a command its credentials
 
-[`mk run`](docs/usage.md#run-a-command) supplies selected entries as environment variables. It masks their exact values in stdout and stderr. No bootstrap token is needed.
+[`mk run`](docs/usage.md#run-a-command) gives a command just the API keys, tokens, or passwords you select, as environment variables. If the command prints an exact value to stdout or stderr, `mk` shows a marker such as `***`.
 
 ```sh
 mk set github/GITHUB_TOKEN      # prompts without echoing the value
-mk run github -- gh auth status
+mk run github/GITHUB_TOKEN -- gh auth status
 ```
 
 ### Lend an SSH key
@@ -30,7 +30,7 @@ For an [SSH Key entry](docs/usage.md#ssh-keys), the command gets a public key an
 
 ## Get started
 
-You need an Apple silicon Mac and Apple's Command Line Tools or Xcode.
+You need an Apple silicon Mac running macOS 13 or later and Apple's Command Line Tools or Xcode.
 
 ```sh
 brew install --cask entwining/tap/maskey
@@ -40,11 +40,11 @@ mk setup
 
 Maskey is signed ad hoc and is not notarized. The `xattr` command removes Gatekeeper's quarantine. You can also [install with a script or build from source](docs/install.md).
 
-For coding agents, run `mk skill install` to install the [shipped skill](resources/skills/maskey/SKILL.md). Sandboxes need permission to connect to the [Maskey service's socket](docs/security.md#sandboxed-agents).
+For coding agents, run `mk skill install` to install the [shipped skill](resources/skills/maskey/SKILL.md). Sandboxed commands that use the Maskey service need access to [its Unix socket](docs/security.md#sandboxed-agents).
 
 ## Know the limits
 
-Use commands you trust. Wrap the tool that needs the credential, not a whole coding agent, whose own logs `mk` cannot mask. Masking cannot protect credentials a command transforms, saves, or sends elsewhere. Other programs hosted by [Apple's Python can access the same Keychain items](docs/security.md). The activity record can also be altered by programs running as you.
+Wrap only the tool that needs the credential. A whole coding agent can write logs outside `mk`'s output. Give credentials only to commands you trust with them, since a command can [transform, save, or send a value beyond Maskey's masking](docs/security.md).
 
 ## Development
 

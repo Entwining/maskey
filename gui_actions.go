@@ -15,6 +15,7 @@ import (
 	"github.com/Entwining/maskey/internal/cli"
 	"github.com/Entwining/maskey/internal/sshagent"
 	"github.com/Entwining/maskey/internal/store"
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 // read loads id's value and passes it to use unless another entry was
@@ -103,7 +104,8 @@ func (g *gui) openNew() {
 		g.choose(entryID{})
 		g.selectionChanged()
 		g.pick = entryID{}
-		g.form = form{open: true, id: g.form.id + 1, store: to, chosenBefore: chosenBefore, namespaceFrom: namespace, namespace: namespace, kind: kindLabel(store.InferValueKind("")), inferredFrom: new(string)}
+		kind := kindLabel(store.InferValueKind(""))
+		g.form = form{open: true, id: g.form.id + 1, store: to, chosenBefore: chosenBefore, namespaceFrom: namespace, namespace: namespace, kind: kind, inferred: kind}
 	})
 }
 
@@ -143,7 +145,8 @@ func (g *gui) edit(id entryID) {
 				g.form.keepValue = true
 				_, _, g.form.keptKey = sshagent.Key(value)
 			default:
-				g.form.value, g.form.original = string(value), string(value)
+				loaded := string(value)
+				g.form.value, g.form.original = loaded, loaded
 			}
 		}
 	})
@@ -357,17 +360,22 @@ func (g *gui) submit(then func()) {
 			_, _, err = sshagent.Key(key)
 		}
 		if err != nil {
+			// mk set removes a passphrase only from a key it stores in an
+			// SSH Key entry: the entry edited, if it is one, or a new one
+			// whose name says so. The form's kind is SSH Key here, so
+			// nothing follows the command.
+			key, _ := g.terminalTarget()
 			// A kept value has no field to paste into.
 			replace := "Paste"
 			if f.keepValue {
-				replace = "In Terminal, use mk set --stdin to store"
+				replace = "In Terminal, use " + f.setCommand(key) + " < <file> to store"
 			}
 			f.err = formError{"value", "This is not an SSH private key. " + replace + " the private key itself, not its public key, or choose another kind."}
 			switch {
 			case errors.Is(err, sshagent.ErrPassphrase):
-				f.err.message = "This SSH key is protected by a passphrase, which mk run does not ask for. In Terminal, mk set --stdin removes it from a key it stores in an SSH Key entry, such as a new one whose name ends in SSH_KEY."
+				f.err.message = "This SSH key is protected by a passphrase, which mk run does not ask for. In Terminal, " + f.setCommand(key) + " < <file> stores it without the passphrase."
 			case errors.Is(err, sshagent.ErrPKCS8):
-				f.err.message = "This SSH key is protected by a passphrase that Maskey cannot remove. In Terminal, pipe openssl pkey -in <file> to mk set --stdin, which stores it without the passphrase."
+				f.err.message = "This SSH key is protected by a passphrase that Maskey cannot remove. In Terminal, openssl pkey -in <file> | " + f.setCommand(key) + " stores it without the passphrase."
 			case errors.Is(err, sshagent.ErrUnsupported):
 				f.err.message = "Maskey cannot lend this SSH key. " + replace + " the whole key, of type Ed25519, RSA, or ECDSA P-256, P-384, or P-521, or choose another kind."
 			}
@@ -424,17 +432,17 @@ func (g *gui) submit(then func()) {
 	})
 }
 
-// askDelete deletes id once the user confirms. Nothing undoes a delete, so
-// no button is the default: Return deletes nothing.
+// askDelete deletes id once the user confirms. It names the entry and its
+// store, since two stores can hold the same reference, and says who loses
+// the entry. Maskey undoes no delete, so no button is the default: Return
+// deletes nothing.
 func (g *gui) askDelete(id entryID) {
-	// The window shows the entry asked about, but for another row's Delete…
-	// beside a form, which names it.
-	message := "Delete this entry?"
-	if g.form.open && g.form.from != id {
-		message = fmt.Sprintf("Delete “%s” from %s?", id.ref.Name, id.ref.Namespace)
+	detail := "It’s deleted from this Mac and the other Macs that sync this iCloud Keychain. You can’t undo this action."
+	if connection, _ := g.stores.Find(id.store); connection.Type == stores.Bitwarden {
+		detail = "It’s moved to Bitwarden’s trash and leaves the shared project for everyone who uses it. Maskey can’t restore it."
 	}
 	target := g.target(id.store)
-	g.message(alert{message: message, detail: "You can’t undo this action.",
+	g.message(alert{message: fmt.Sprintf("Delete “%s” from “%s”?", id.ref, id.store), detail: detail,
 		buttons: []alertButton{{title: "Delete", destructive: true}, {title: "Cancel", isCancel: true}}}, func(button int) {
 		// A store that left this Mac while the question stood, or whose
 		// name came to mean another connection, takes no delete: the

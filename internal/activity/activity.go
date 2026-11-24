@@ -1,6 +1,5 @@
-// Package activity keeps this Mac's record of Maskey's Keychain operations:
-// which program got, read, wrote, or changed program access to which entry,
-// and with what result. The record never holds a value, anything derived
+// Package activity records which program acted on which Maskey entry on this
+// Mac and with what result. The record never holds a value, anything derived
 // from one, notes, arguments, or the environment.
 //
 // Each record is one JSON line appended to a file per UTC month, which

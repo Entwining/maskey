@@ -279,8 +279,21 @@ func TestUnreadableAnswers(t *testing.T) {
 	if _, err := client.Index(ctx, project); err != nil {
 		t.Errorf("the index read the value: %v", err)
 	}
-	// Bitwarden answering with fewer secrets than asked for.
-	if _, err := client.Read(ctx, []string{created.ID, created.ID}); !store.IsKind(err, store.KindRemote) {
+}
+
+func TestReadRejectsAnIncompleteAnswer(t *testing.T) {
+	fake, client := newFake(t)
+	ctx := context.Background()
+	var ids []string
+	for _, key := range []string{"a/B#token", "a/C#token"} {
+		h, err := client.Create(ctx, project, key, []byte("v"), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, h.ID)
+	}
+	fake.ReadIDs = func(requested []string) []string { return requested[:1] }
+	if _, err := client.Read(ctx, ids); !store.IsKind(err, store.KindRemote) {
 		t.Errorf("an answer missing a secret: %v, want remote_error", err)
 	}
 }

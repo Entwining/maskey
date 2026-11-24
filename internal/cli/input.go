@@ -33,19 +33,30 @@ func prompts(env *Env) (*os.File, io.Writer) {
 // readValue reads ref from stdin or a hidden terminal prompt. Piped input
 // follows withoutLineEnding; i is the zero-based position in a batch of n.
 func readValue(ctx context.Context, env *Env, ref store.Ref, i, n int, fromStdin bool) ([]byte, error) {
-	if !fromStdin {
-		position := ""
-		if n > 1 {
-			position = fmt.Sprintf("%d of %d, ", i+1, n)
-		}
-		in, out := prompts(env)
-		return readHidden(ctx, in, out, fmt.Sprintf("Value for %s (%sinput hidden): ", ref, position))
+	position := ""
+	if n > 1 {
+		position = fmt.Sprintf("%d of %d, ", i+1, n)
 	}
-	value, err := readUnlessCancelled(ctx, func() ([]byte, error) {
-		value, err := io.ReadAll(env.Stdin)
-		return withoutLineEnding(value), err
-	})
-	return value, readError(ctx, err)
+	return readInput(ctx, env, fmt.Sprintf("Value for %s (%sinput hidden): ", ref, position), fromStdin, entryInput)
+}
+
+type secretInput struct {
+	label, unchanged, cancelled string
+}
+
+var entryInput = secretInput{"value", "no entry was written", "cancelled before any entry was written"}
+
+func readInput(ctx context.Context, env *Env, prompt string, fromStdin bool, input secretInput) ([]byte, error) {
+	var value []byte
+	var err error
+	if fromStdin {
+		value, err = readUnlessCancelled(ctx, func() ([]byte, error) { return io.ReadAll(env.Stdin) })
+		value = withoutLineEnding(value)
+	} else {
+		in, out := prompts(env)
+		value, err = readHidden(ctx, in, out, prompt)
+	}
+	return value, input.readError(ctx, err)
 }
 
 // readHidden writes prompt on out and reads one line from the terminal in
@@ -56,23 +67,22 @@ func readHidden(ctx context.Context, in *os.File, out io.Writer, prompt string) 
 	// restore the terminal state here as well.
 	state, err := term.GetState(fd)
 	if err != nil {
-		return nil, inputError()
+		return nil, err
 	}
 	defer func() { _ = term.Restore(fd, state) }()
 	fmt.Fprint(out, prompt)
 	defer fmt.Fprintln(out)
-	value, err := readUnlessCancelled(ctx, func() ([]byte, error) { return term.ReadPassword(fd) })
-	return value, readError(ctx, err)
+	return readUnlessCancelled(ctx, func() ([]byte, error) { return term.ReadPassword(fd) })
 }
 
 // readError is how a read of a value that ended with err failed: cancelled
 // once ctx is done, whatever err says, and otherwise an input failure.
-func readError(ctx context.Context, err error) error {
+func (input secretInput) readError(ctx context.Context, err error) error {
 	switch {
 	case ctx.Err() != nil:
-		return &store.Error{Kind: store.KindCancelled, Message: "cancelled before any entry was written"}
+		return &store.Error{Kind: store.KindCancelled, Message: input.cancelled}
 	case err != nil:
-		return inputError()
+		return withHint(&store.Error{Kind: kindIO, Message: "cannot read the " + input.label}, "check the input source; "+input.unchanged)
 	}
 	return nil
 }
@@ -89,7 +99,7 @@ func removePassphrase(cmd *cobra.Command, env *Env, ref store.Ref, value []byte)
 	prompt := "Passphrase (input hidden): "
 	for {
 		passphrase, err := readHidden(cmd.Context(), tty, tty, prompt)
-		if err != nil {
+		if err := entryInput.readError(cmd.Context(), err); err != nil {
 			return nil, err
 		}
 		if len(passphrase) == 0 {
@@ -107,10 +117,6 @@ func removePassphrase(cmd *cobra.Command, env *Env, ref store.Ref, value []byte)
 			return plain, nil
 		}
 	}
-}
-
-func inputError() error {
-	return withHint(&store.Error{Kind: kindIO, Message: "cannot read the value"}, "check the input source; no entry was written")
 }
 
 // withoutLineEnding drops the line ending of a value of one line, which

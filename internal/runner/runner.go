@@ -97,7 +97,7 @@ func Run(ctx context.Context, c Command) (Exit, error) {
 	if err != nil {
 		return Exit{}, &Error{Code: ExitFailure, Message: err.Error()}
 	}
-	stderr, _ := redact.NewWriter(c.Stderr, values)
+	stderr := stdout.ForOutput(c.Stderr)
 
 	path, err := exec.LookPath(c.Path)
 	if err != nil {

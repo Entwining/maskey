@@ -198,13 +198,14 @@ func TestExitWaitsForAChangeToStores(t *testing.T) {
 			close(release)
 			h.settle()
 			if failure != nil {
-				if h.g.closed || *quit || h.g.exit != noExit || h.g.settings.err == "" || h.g.settings.busy != "" {
-					t.Fatalf("after a failed change: closed %v, quit %v, error %q", h.g.closed, *quit, h.g.settings.err)
+				// Settings, closed since the change started, shows why.
+				if h.g.closed || *quit || h.g.exit != noExit || h.g.settings.err == "" || h.g.settings.busy != "" || h.settingsShown != 1 {
+					t.Fatalf("after a failed change: closed %v, quit %v, error %q, Settings opened %d times", h.g.closed, *quit, h.g.settings.err, h.settingsShown)
 				}
 				continue
 			}
-			if !h.g.closed || *quit != (leaving == quitExit) {
-				t.Fatalf("after the change: closed %v, quit %v", h.g.closed, *quit)
+			if !h.g.closed || *quit != (leaving == quitExit) || h.settingsShown != 0 {
+				t.Fatalf("after the change: closed %v, quit %v, Settings opened %d times", h.g.closed, *quit, h.settingsShown)
 			}
 		}
 	}

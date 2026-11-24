@@ -80,8 +80,8 @@ func (g *gui) entryCard(c *ui.Context, id entryID) {
 	kind := g.kind(id)
 	heading(c, ref.Name, monospace, ref.Namespace, kind)
 	v, h := inputPadding(t)
-	// A value stays on one line, as in Passwords, so that a name never
-	// breaks into what reads as two.
+	// A field other than Value stays on one line, as in Passwords, so that
+	// a name never breaks into what reads as two.
 	line := func(s, font string) ui.Element {
 		return ui.Text(c, s).Font(font).TextColor(t.Text).SingleLine().Selectable().Padding(v+1, h+1)
 	}
@@ -224,7 +224,7 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 				for _, connection := range g.stores.All() {
 					ids = append(ids, connection.ID)
 				}
-				input(ui.Select(c.Key("store"), &f.store, ids))
+				edited(input(ui.Select(c.Key("store"), &f.store, ids)))
 			})
 		})
 	}
@@ -248,7 +248,7 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 				// The input takes this pass's typing as it returns, so the
 				// kind follows the name here, before the Kind field shows it.
 				f.followName()
-			}).Error(f.err.on("name"))
+			}).Error(f.err.on("name")).Description(g.caseNote())
 		},
 		func() {
 			cardField(c, "Kind", func() {
@@ -265,9 +265,9 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 				case f.loading:
 					ui.Spinner(c).Size(16, 16).Margin(4, 0).Label("Loading value")
 				case f.keepValue:
-					ui.Text(c, "This value contains carriage returns, which this editor would change, so it stays as it is. Replace it with mk set --stdin.").TextColor(t.TextMuted)
+					ui.Text(c, "This value contains carriage returns, which this editor would change, so it stays as it is. "+g.linesHint()).TextColor(t.TextMuted)
 				case f.from == (entryID{}) || f.original != "":
-					edited(valueEditor(c, input(ui.TextArea(c.Key("value"), &f.value)), &f.err, &g.valueField, f.from != (entryID{})))
+					edited(g.valueEditor(c, input(ui.TextArea(c.Key("value"), &f.value)), f.from != (entryID{})))
 				}
 			}).Error(f.err.on("value"))
 		},
@@ -300,13 +300,14 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 	}
 }
 
-// valueEditor sets up the text area editing a value, which keeps LF line
-// endings; it turns CRLF into LF, so it refuses to paste CRLF rather than
-// change a value without saying so.
-func valueEditor(c *ui.Context, area ui.Element, err *formError, field *ui.Handle, autofocus bool) ui.Element {
-	area.Bind(field).Font(monospace).Lines(3, 8).OnPaste(func(text string) bool {
+// valueEditor sets up the text area editing the form's value, which keeps
+// LF line endings; it turns CRLF into LF, so it refuses to paste CRLF rather
+// than change a value without saying so.
+func (g *gui) valueEditor(c *ui.Context, area ui.Element, autofocus bool) ui.Element {
+	f := &g.form
+	area.Bind(&g.valueField).Font(monospace).Lines(3, 8).OnPaste(func(text string) bool {
 		if strings.Contains(text, "\r\n") {
-			*err = formError{"value", "The pasted text has CRLF line endings, which this editor would change to LF. Use mk set --stdin to keep them."}
+			f.err = formError{"value", "The pasted text has CRLF line endings, which this editor would change to LF. " + g.linesHint()}
 			return true
 		}
 		return false
@@ -327,12 +328,12 @@ func formButtons(c *ui.Context, action string, enabled, submitting bool) (cancel
 		label = "Close"
 	}
 	cancel = ui.Button(c.Key("cancel"), label).MinWidth(toolbarButtonWidth).Height(28).Clicked()
-	submit = ui.PrimaryButton(c.Key("submit"), "").Label(action).MinWidth(toolbarButtonWidth).Height(28).Disabled(!enabled || submitting).Children(func() {
+	submit = ui.PrimaryButton(c.Key("submit"), "").Label(action).MinWidth(toolbarButtonWidth).Height(28).Disabled(!enabled).Children(func() {
 		if submitting {
 			ui.Spinner(c).Size(14, 14).TextColor(t.AccentText).Label(action + " in progress")
 		} else {
 			ui.Text(c, action).SingleLine()
 		}
-	}).Clicked() || enabled && !submitting && c.Shortcut(ui.Cmd, ui.KeyEnter)
+	}).Clicked() || enabled && c.Shortcut(ui.Cmd, ui.KeyEnter)
 	return cancel, submit
 }

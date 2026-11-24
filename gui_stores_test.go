@@ -195,7 +195,7 @@ func TestStoresListedTogether(t *testing.T) {
 	if rows := h.g.rows(); !slices.Equal(rows, all) || !h.tt.HasText("5 entries") {
 		t.Fatalf("rows %v, showing %q", rows, h.tt.Texts())
 	}
-	if items := h.sidebarItems(); !slices.Equal(items, []string{"All Entries 5 Stores Shown", "icloud", "app 2", "db 1", "work", "app 1", "deploy 1"}) {
+	if items := h.sidebarItems(); !slices.Equal(items, []string{"All Entries 5", "icloud", "app 2", "db 1", "work", "app 1", "deploy 1"}) {
 		t.Fatalf("the sidebar lists %q", items)
 	}
 
@@ -377,7 +377,7 @@ func TestNewEntryStore(t *testing.T) {
 	}
 
 	r.config.Default = "work"
-	h.showStore("All Stores")
+	h.click("All Entries")
 	h.reload()
 	h.click("New Entry")
 	h.typeNamespace("app")
@@ -483,6 +483,10 @@ func TestStoresThatCannotBeRead(t *testing.T) {
 	starting.g.storesRead = false
 	starting.g.loadStores = unreadable
 	starting.reload()
+	// New Entry is disabled where openNew would ignore it.
+	if button, _ := starting.tt.Access("New Entry"); !button.Disabled || starting.g.newItem.IsEnabled() {
+		t.Fatalf("New Entry before the stores were read: button %+v, menu item enabled %v", button, starting.g.newItem.IsEnabled())
+	}
 	starting.g.openNew()
 	starting.settle()
 	if starting.g.form.open {
@@ -535,7 +539,7 @@ func TestEmptyStoreAppearsWithItsFirstEntry(t *testing.T) {
 	r := h.addRemote()
 	r.backend = storetest.New()
 	h.reload()
-	if items := h.sidebarItems(); !slices.Equal(items, []string{"All Entries 3 Stores Shown", "icloud", "app 2", "db 1"}) || !isHeading(h.g.rows()[0]) || len(h.g.rows()) != 4 {
+	if items := h.sidebarItems(); !slices.Equal(items, []string{"All Entries 3", "icloud", "app 2", "db 1"}) || !isHeading(h.g.rows()[0]) || len(h.g.rows()) != 4 {
 		t.Fatalf("the sidebar lists %q, rows %v", items, h.g.rows())
 	}
 	h.click("New Entry")
@@ -550,7 +554,7 @@ func TestEmptyStoreAppearsWithItsFirstEntry(t *testing.T) {
 	if v, _ := r.value("deploy/FIRST_KEY"); v != "synthetic-first-4c9e" || h.g.entry != work("deploy", "FIRST_KEY") {
 		t.Fatalf("stored in work %v, entry %v", v == "synthetic-first-4c9e", h.g.entry)
 	}
-	if items := h.sidebarItems(); !slices.Equal(items, []string{"All Entries 4 Stores Shown", "icloud", "app 2", "db 1", "work", "deploy 1"}) {
+	if items := h.sidebarItems(); !slices.Equal(items, []string{"All Entries 4", "icloud", "app 2", "db 1", "work", "deploy 1"}) {
 		t.Fatalf("after the first entry the sidebar lists %q", items)
 	}
 }

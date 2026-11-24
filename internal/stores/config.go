@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Entwining/maskey/internal/bitwarden"
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -68,6 +69,9 @@ func (c Connection) Target() string {
 // configuration, as inside a sandbox: the Maskey service, which writes the
 // file, can read it for that process.
 var ErrDenied error = &store.Error{Kind: store.KindPrerequisite, Message: "this Mac's store configuration cannot be read"}
+
+// ErrNoStore distinguishes a missing local store from a missing remote project.
+var ErrNoStore = &store.Error{Kind: store.KindNotFound, Message: "this Mac has no store with that name"}
 
 func configPath(dir string) string { return filepath.Join(dir, "stores.json") }
 
@@ -127,20 +131,59 @@ func (c Config) Resolve(id string) (Connection, error) {
 	if id == "" {
 		id = c.Default
 	}
-	connection, ok := c.Find(id)
-	if !ok {
-		return Connection{}, &store.Error{Kind: store.KindNotFound, Message: "this Mac has no store with that name"}
+	return c.Named(id)
+}
+
+// Named returns the store an operation on stores names, which unlike a
+// command on entries has no default to mean.
+func (c Config) Named(id string) (Connection, error) {
+	if connection, ok := c.Find(id); ok && id != "" {
+		return connection, nil
+	}
+	return Connection{}, ErrNoStore
+}
+
+// Connection validates an addition's local fields and fills in their defaults.
+func (a Addition) Connection() (Connection, error) {
+	connection := Connection{ID: a.ID, Type: a.Type, Region: a.Region}
+	if connection.ID == "" {
+		connection.ID = Bitwarden
+	}
+	if connection.Region == "" {
+		connection.Region = "us"
+	}
+	switch {
+	case connection.Type != Bitwarden:
+		return Connection{}, &store.Error{Kind: store.KindInvalid, Message: "the only store type to add is bitwarden"}
+	case !idPattern.MatchString(connection.ID):
+		return Connection{}, &store.Error{Kind: store.KindInvalid, Message: "a store name starts with a lowercase ASCII letter or digit, followed by up to 31 lowercase letters, digits or '-'"}
+	}
+	if _, ok := bitwarden.Regions[connection.Region]; !ok {
+		return Connection{}, &store.Error{Kind: store.KindInvalid, Message: "the region is us or eu"}
 	}
 	return connection, nil
 }
 
-// named returns the store an operation on stores names, which unlike a
-// command on entries has no default to mean.
-func (c Config) named(id string) (Connection, error) {
-	if id == "" {
-		return Connection{}, &store.Error{Kind: store.KindNotFound, Message: "this Mac has no store with that name"}
+func (c Config) CheckNewName(id string) error {
+	if _, taken := c.Find(id); taken {
+		return &store.Error{Kind: store.KindExists, Message: "a store with that name exists; choose another name"}
 	}
-	return c.Resolve(id)
+	return nil
+}
+
+func CheckTokenStore(id string) error {
+	if id == ICloud {
+		return &store.Error{Kind: store.KindInvalid, Message: "iCloud Keychain has no access token"}
+	}
+	return nil
+}
+
+// Removable returns the local connection a removal would forget.
+func (c Config) Removable(id string) (Connection, error) {
+	if id == ICloud {
+		return Connection{}, &store.Error{Kind: store.KindInvalid, Message: "iCloud Keychain is built in"}
+	}
+	return c.Named(id)
 }
 
 func (c Config) write(dir string) error {

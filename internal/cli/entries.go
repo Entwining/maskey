@@ -70,23 +70,28 @@ no stderr message.`,
 					return &store.Error{Kind: store.KindNotFound, Argument: 1, Message: "the namespace has no entries"}
 				}
 			}
-			type entry struct {
-				store.Ref
-				Kind          store.ValueKind `json:"kind"`
-				Modified      time.Time       `json:"modified,omitzero"`
-				ProgramAccess bool            `json:"program_access"`
+			if jsonOutput(cmd) {
+				type entry struct {
+					store.Ref
+					Kind          store.ValueKind `json:"kind"`
+					Modified      time.Time       `json:"modified,omitzero"`
+					ProgramAccess bool            `json:"program_access"`
+				}
+				entries := make([]entry, len(refs))
+				for i, ref := range refs {
+					a := attributes[ref]
+					entries[i] = entry{ref, store.ValueKindOf(ref.Name, a.Kind), a.Modified.UTC(), a.ProgramAccess}
+				}
+				return writeJSON(env.Stdout, map[string]any{"entries": entries})
 			}
-			entries := make([]entry, len(refs))
 			var text strings.Builder
-			for i, ref := range refs {
-				a := attributes[ref]
-				entries[i] = entry{ref, store.ValueKindOf(ref.Name, a.Kind), a.Modified.UTC(), a.ProgramAccess}
+			for _, ref := range refs {
 				fmt.Fprintln(&text, ref)
 			}
-			if len(refs) == 0 && !jsonOutput(cmd) {
+			if len(refs) == 0 {
 				fmt.Fprintln(env.Stderr, "mk: no entries")
 			}
-			return writeResult(cmd, env, map[string]any{"entries": entries}, text.String())
+			return writeText(env, text.String())
 		},
 	}
 	addJSONFlag(cmd, "Write entries or errors as JSON")
@@ -169,15 +174,13 @@ access. New entries start without program access.`,
 			}
 			var replacing []store.Ref
 			for _, ref := range refs {
-				if slices.Contains(existing, ref) {
+				if _, exists := attributes[ref]; exists {
 					replacing = append(replacing, ref)
 					continue
 				}
 				var twins []string
-				for _, other := range existing {
-					if strings.EqualFold(ref.String(), other.String()) {
-						twins = append(twins, other.String())
-					}
+				for _, twin := range store.CaseTwins(ref, existing) {
+					twins = append(twins, twin.String())
 				}
 				if len(twins) > 0 {
 					warn(cmd, env, fmt.Sprintf("%s differs only in case from %s", ref, strings.Join(twins, " and ")),
@@ -247,7 +250,7 @@ access. New entries start without program access.`,
 				values[i] = value
 			}
 			return writeEach(cmd, env, refs, func(i int, ref store.Ref) (string, error) {
-				if ask && !slices.Contains(replacing, ref) {
+				if _, existed := attributes[ref]; ask && !existed {
 					// Unconfirmed, so an entry created since the listing
 					// fails rather than being replaced.
 					return "created", env.store.Create(cmd.Context(), ref, values[i], store.Details{Kind: store.InferValueKind(ref.Name)})
@@ -275,7 +278,7 @@ func getCommand(env *Env) *cobra.Command {
 environment variable. Use mk get for a helper that must capture stdout.
 
 Only the owner can grant an entry program access. Once granted, any
-program that can run mk with access to that Keychain can obtain the
+program that can run mk with access to that store can obtain the
 value. The grant applies to the entry, across consumers.
 
 get refuses terminal stdout and entries without program access. On
@@ -294,7 +297,7 @@ newline, label, or JSON wrapper.`,
 			// Checked before the lookup, so a refused value is never read.
 			if f, ok := env.Stdout.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 				return withHint(usageError("get cannot write a raw value to terminal stdout"),
-					"use mk run <namespace>/<NAME> -- <command>, or have the helper capture mk get itself; to see the value yourself, use Reveal in Maskey")
+					"use mk run <namespace>/<NAME> -- <command>, or have the helper capture mk get itself; to see the value yourself, choose Show Value in Maskey")
 			}
 			value, err := env.store.GrantedValue(cmd.Context(), ref)
 			if err != nil {
@@ -388,12 +391,12 @@ the initial check.`,
 				return withHint(usageError("standard input is not a terminal and delete needs --yes"),
 					"use --yes only for the entries the owner asked to delete")
 			}
-			_, existing, _, err := env.store.Listing(cmd.Context())
+			_, _, attributes, err := env.store.Listing(cmd.Context())
 			if err != nil {
 				return err
 			}
 			for i, ref := range refs {
-				if !slices.Contains(existing, ref) {
+				if _, exists := attributes[ref]; !exists {
 					return &store.Error{Kind: store.KindNotFound, Argument: i + 1, Message: "the entry does not exist"}
 				}
 			}
@@ -422,7 +425,6 @@ the initial check.`,
 	return cmd
 }
 
-// result is a write of set or delete that the Keychain confirmed.
 type result struct {
 	store.Ref
 	Action string `json:"action"`

@@ -285,7 +285,7 @@ func TestBackendKeepsTheSnapshotOnlyWhileBitwardenAllows(t *testing.T) {
 		s.now = s.now.Add(snapshotFresh)
 		test.refuse(s.fake)
 		value, err := s.read(s.backend, "a/B")
-		if store.KindOf(err) != test.want || (value == "value") != test.kept {
+		if test.want == "" && err != nil || store.KindOf(err) != test.want || (value == "value") != test.kept {
 			t.Errorf("%s: read %q, %v", name, value, err)
 		}
 		_, statErr := os.Stat(s.path)

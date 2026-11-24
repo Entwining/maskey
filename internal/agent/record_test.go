@@ -109,8 +109,7 @@ func TestDispatchRecordsAStoreThatDoesNotOpen(t *testing.T) {
 	}
 }
 
-// A replacement crosses the socket as one: the add that finds the entry is
-// not recorded, while an add on its own is.
+// Only the update is recorded when the add is part of a replacement.
 func TestReplacingReachesTheService(t *testing.T) {
 	ctx := context.Background()
 	recorder := new(storetest.Recorder)

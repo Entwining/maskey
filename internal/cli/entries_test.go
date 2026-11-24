@@ -63,6 +63,11 @@ func TestEntryCommands(t *testing.T) {
 	if outcome.Code != 3 || stdout != "" || stderr != want {
 		t.Fatalf("second delete: %+v %q %q", outcome, stdout, stderr)
 	}
+	outcome, stdout, stderr = h.run(t, "", "delete", "--yes", "app/ONE", "app/TWO", "app/TWO", "app/ONE")
+	want = "mk: error[usage]: argument 3: repeats argument 2\nmk: hint: pass each entry once\n"
+	if outcome.Code != 2 || stdout != "" || stderr != want {
+		t.Fatalf("repeated entries: %+v %q %q", outcome, stdout, stderr)
+	}
 }
 
 // A namespace keeps the case it was given: GitHub and github are two
@@ -336,7 +341,8 @@ func TestGet(t *testing.T) {
 	}
 	var errOut bytes.Buffer
 	outcome = Run(context.Background(), []string{"get", "app/TOKEN"}, h.env(nil, terminal(t, ""), &errOut))
-	if outcome.Code != 2 || !strings.HasPrefix(errOut.String(), "mk: error[usage]: get cannot write a raw value to terminal stdout\n") {
+	if outcome.Code != 2 || !strings.HasPrefix(errOut.String(), "mk: error[usage]: get cannot write a raw value to terminal stdout\n") ||
+		!strings.HasSuffix(errOut.String(), "choose Show Value in Maskey\n") {
 		t.Fatalf("terminal: %+v %q", outcome, errOut.String())
 	}
 }

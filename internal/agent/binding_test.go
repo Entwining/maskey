@@ -149,15 +149,27 @@ func TestClientLeavesASentRequestToTheService(t *testing.T) {
 		}
 		return nil
 	}
-	path, _, _ := startTestService(t, backend, inService, nil, nil, notReplaced)
+	path, stop, finished := startTestService(t, backend, inService, nil, nil, notReplaced)
 	client := NewRemote(workStore, inClient, nil, true)
 	client.path = path
 	_, err := client.Read(ctx, []string{"test/NAME"})
 	close(release)
+	stop()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("test service did not stop")
+	}
 	if !store.IsKind(err, store.KindCancelled) {
 		t.Fatalf("a read cancelled after it was sent: %v", err)
 	}
 	if got := outcomes(inClient); len(got) != 0 {
 		t.Errorf("the client recorded %v", got)
+	}
+	if got, want := outcomes(inService), []string{"read test/NAME ok"}; !slices.Equal(got, want) {
+		t.Errorf("the service recorded %v, want %v", got, want)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,7 +38,8 @@ ok       skill        linked in ~/.claude/skills and ~/.agents/skills
 	h.check = &store.Error{Kind: store.KindPrerequisite, Message: "no interpreter"}
 	h.backend.Before = func(string, string) error { return &store.Error{Kind: store.KindLocked, Message: "locked"} }
 	outcome, stdout, stderr := h.run(t, "", "doctor")
-	if outcome.Code != 6 || stderr != "" || !strings.HasPrefix(stdout, "error    interpreter  no interpreter\nerror    keychain     locked\n                      hint: unlock this Mac, then retry\n") {
+	if outcome.Code != 6 || stderr != "" || !strings.HasPrefix(stdout, "error    interpreter  no interpreter\nerror    keychain     locked\n                      hint: unlock this Mac, then retry\n") ||
+		!strings.Contains(stdout, "hint: run mk setup in a normal terminal so Bitwarden stores, program access changes, and sandboxed commands can reach the Maskey service\n") {
 		t.Fatalf("doctor: %+v %q %q", outcome, stdout, stderr)
 	}
 	outcome, stdout, _ = h.run(t, "", "doctor", "--json")
@@ -101,6 +103,11 @@ func TestSkill(t *testing.T) {
 		if outcome, stdout, stderr := h.run(t, "", "skill", "install"); outcome.Code != 0 || stdout != "linked "+claude+"\nlinked "+agents+"\n" {
 			t.Fatalf("install: %+v %q %q", outcome, stdout, stderr)
 		}
+	}
+	outcome, stdout, stderr := h.run(t, "", "skill", "install", "--json")
+	links, _ := decode(t, stdout)["links"].([]any)
+	if outcome.Code != 0 || stderr != "" || !slices.Equal(links, []any{claude, agents}) {
+		t.Fatalf("install JSON: %+v %q %q", outcome, stdout, stderr)
 	}
 	for _, link := range []string{claude, agents} {
 		if target, err := os.Readlink(link); err != nil || target != h.source {

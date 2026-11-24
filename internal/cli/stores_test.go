@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -58,6 +59,34 @@ func TestUnknownStore(t *testing.T) {
 	}
 }
 
+func TestEmptyStoreFlag(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	h.config.Default = "work"
+	outcome, stdout, stderr := h.run(t, "", "list", "--store=", "--json")
+	if outcome.Code != 2 || stdout != "" || stderr != `{"error":{"kind":"usage","message":"--store needs a name","exit_code":2,"recovery":"give --store a name from mk store list"}}`+"\n" {
+		t.Fatalf("%+v %q %q", outcome, stdout, stderr)
+	}
+}
+
+func TestUsageNamesTheStoreOnce(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	for _, test := range []struct {
+		args []string
+		hint string
+		code int
+	}{
+		{[]string{"set", "--store", "work", "--stdin", "app/A", "app/B"}, "mk set --stdin --store work [--json] <namespace>/<NAME>", 2},
+		{[]string{"run", "--store", "work"}, "mk run --store work [--json] <selector>... -- <command> [<arg>...]", 125},
+	} {
+		outcome, _, stderr := h.run(t, "", test.args...)
+		if outcome.Code != test.code || !strings.HasSuffix(stderr, "mk: hint: usage: "+test.hint+"\n") {
+			t.Errorf("%q: %+v %q", test.args, outcome, stderr)
+		}
+	}
+}
+
 func TestStoreList(t *testing.T) {
 	h := newHarness(t)
 	h.connect()
@@ -101,19 +130,17 @@ func TestStoreAdd(t *testing.T) {
 	if outcome, _, stderr := h.run(t, "", "store", "add", "vault", "--stdin"); outcome.Code != 2 || errorKind(stderr) != "usage" {
 		t.Fatalf("another type: %+v %s", outcome, stderr)
 	}
-
-	h.storeErr = &store.Error{Kind: store.KindExists, Message: "this Mac already has a store with that name"}
-	_, _, stderr = h.run(t, "synthetic-token\n", "store", "add", "bitwarden", "--stdin")
-	if stderr != "mk: error[exists]: this Mac already has a store with that name\nmk: hint: pass another name with --name, or remove the store first with mk store remove\n" {
-		t.Fatalf("%s", stderr)
-	}
 }
 
 func TestStoreChanges(t *testing.T) {
 	h := newHarness(t)
 	h.connect()
 	for _, c := range []struct{ command, done string }{{"default", "now the default"}, {"sync", "synced"}, {"remove", "removed"}} {
-		outcome, stdout, stderr := h.run(t, "", "store", c.command, "work")
+		args := []string{"store", c.command, "work"}
+		if c.command == "remove" {
+			args = append(args, "--yes")
+		}
+		outcome, stdout, stderr := h.run(t, "", args...)
 		if outcome.Code != 0 || stdout != "work: "+c.done+"\n" || stderr != "" {
 			t.Errorf("store %s: %+v %q %s", c.command, outcome, stdout, stderr)
 		}
@@ -121,7 +148,7 @@ func TestStoreChanges(t *testing.T) {
 	if !slices.Equal(h.storeChanges, []string{"store_default work", "store_sync work", "store_remove work"}) {
 		t.Fatalf("%v", h.storeChanges)
 	}
-	outcome, _, stderr := h.run(t, "", "store", "remove", "gone")
+	outcome, _, stderr := h.run(t, "", "store", "remove", "--yes", "gone")
 	if outcome.Code != 3 || stderr != "mk: error[not_found]: argument 1: this Mac has no store with that name\nmk: hint: run mk store list to see this Mac's stores\n" {
 		t.Fatalf("%+v %s", outcome, stderr)
 	}
@@ -133,6 +160,81 @@ func TestStoreChanges(t *testing.T) {
 	// The list shows nothing of a sync or of a token.
 	if _, _, stderr = h.run(t, "", "store", "sync", "work"); !strings.HasSuffix(stderr, "mk: hint: repeat the command, which is safe to run again\n") {
 		t.Fatalf("%s", stderr)
+	}
+}
+
+func TestSyncStoreRecoveries(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	for _, test := range []struct {
+		name string
+		kind store.Kind
+		code int
+		hint string
+	}{
+		{"gone", store.KindNotFound, 3, listStoresHint},
+		{"work", store.KindNotFound, 3, "check that the machine account can read the project in Bitwarden"},
+		{"work", store.KindPermissionDenied, 15, "check that the machine account can read the project in Bitwarden"},
+	} {
+		h.storeErr = &store.Error{Kind: test.kind, Message: "synthetic Bitwarden project failure"}
+		outcome, stdout, stderr := h.run(t, "", "store", "sync", test.name, "--json")
+		body := decode(t, stderr)["error"].(map[string]any)
+		if outcome.Code != test.code || stdout != "" || body["kind"] != string(test.kind) ||
+			body["recovery"] != test.hint || (body["argument"] == float64(1)) != (test.name == "gone") {
+			t.Errorf("sync %s: %+v %q %s", test.name, outcome, stdout, stderr)
+		}
+	}
+}
+
+func TestStoreRemoveNeedsYesWithoutTerminal(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	outcome, stdout, stderr := h.run(t, "y\n", "store", "remove", "work")
+	want := "mk: error[usage]: standard input is not a terminal and store remove needs --yes\n" +
+		"mk: hint: use --yes only for the store the owner asked to remove\n"
+	if outcome.Code != 2 || stdout != "" || stderr != want || len(h.storeChanges) != 0 || h.terminalOpens != 0 {
+		t.Fatalf("%+v %q %q, changes %v, %d terminal opens", outcome, stdout, stderr, h.storeChanges, h.terminalOpens)
+	}
+}
+
+func TestStoreRemoveConfirmsOnTerminal(t *testing.T) {
+	const prompt = "Remove the store work from this Mac? Its access token, its entries' program access, and the saved copy will be removed. Entries stay in Bitwarden."
+	h := newHarness(t)
+	h.connect()
+	h.config.Default = "work"
+	outcome, stdout, stderr, onTerminal := h.runAsking(t, "\n", "store", "remove", "work", "--json")
+	if outcome.Code != 130 || stdout != "" || stderr != `{"error":{"kind":"cancelled","message":"no store was removed","exit_code":130}}`+"\n" ||
+		len(h.storeChanges) != 0 || !strings.Contains(onTerminal, prompt+" Commands will use icloud by default. Continue? [y/N] ") {
+		t.Fatalf("declined: %+v %q %q, changes %v, terminal %q", outcome, stdout, stderr, h.storeChanges, onTerminal)
+	}
+	h.config.Default = stores.ICloud
+	outcome, stdout, stderr, onTerminal = h.runAsking(t, "y\n", "store", "remove", "work")
+	if outcome.Code != 0 || stdout != "work: removed\n" || stderr != "" ||
+		!slices.Equal(h.storeChanges, []string{`store_remove work target="bitwarden/eu/org-1/p-1"`}) || !strings.Contains(onTerminal, prompt+" Continue? [y/N] ") {
+		t.Fatalf("confirmed: %+v %q %q, changes %v, terminal %q", outcome, stdout, stderr, h.storeChanges, onTerminal)
+	}
+}
+
+func TestStoreChangeJSON(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"add", "bitwarden", "--name", "team", "--region", "eu", "--stdin"}, `{"store":"team","action":"added","connection":{"id":"team","type":"bitwarden","region":"eu","organization":"org-1","project":"p-1","project_name":"Deploy"}}`},
+		{[]string{"token", "work", "--stdin"}, `{"store":"work","action":"token_replaced"}`},
+		{[]string{"default", "work"}, `{"store":"work","action":"default_changed"}`},
+		{[]string{"sync", "work"}, `{"store":"work","action":"synced"}`},
+		{[]string{"remove", "work", "-y"}, `{"store":"work","action":"removed"}`},
+	} {
+		t.Run(test.args[0], func(t *testing.T) {
+			args := append(append([]string{"store"}, test.args...), "--json")
+			outcome, stdout, stderr := h.run(t, "synthetic-token\n", args...)
+			if outcome.Code != 0 || stderr != "" || !reflect.DeepEqual(decode(t, stdout), decode(t, test.want+"\n")) {
+				t.Fatalf("%+v %q %q", outcome, stdout, stderr)
+			}
+		})
 	}
 }
 
@@ -176,6 +278,13 @@ func TestStoreCompletion(t *testing.T) {
 		if _, stdout, _ := h.run(t, "", "__complete", "store", command, ""); !strings.HasPrefix(stdout, want) {
 			t.Errorf("store %s: %q", command, stdout)
 		}
+	}
+}
+
+func TestStoreRegionCompletion(t *testing.T) {
+	h := newHarness(t)
+	if _, stdout, _ := h.run(t, "", "__complete", "store", "add", "bitwarden", "--region", ""); stdout != "eu\nus\n:4\n" {
+		t.Fatalf("region completion %q", stdout)
 	}
 }
 
@@ -273,6 +382,12 @@ func TestDoctorChecksStores(t *testing.T) {
 	if outcome.Code != 13 || !strings.Contains(stdout, "\nerror    store work   Bitwarden cannot be reached\n") {
 		t.Fatalf("the default store: %+v\n%s", outcome, stdout)
 	}
+	h.storeErr = &store.Error{Kind: store.KindNotFound, Message: "the machine account cannot read the project"}
+	outcome, stdout, stderr := h.run(t, "", "doctor")
+	if outcome.Code != 3 || stderr != "" || !strings.Contains(stdout, "\nerror    store work   the machine account cannot read the project\n"+
+		"                      hint: check that the machine account can read the project in Bitwarden\n") {
+		t.Errorf("missing Bitwarden project: %+v %q\n%s", outcome, stderr, stdout)
+	}
 	// Without the configuration no command finds its default store.
 	h.configErr = &store.Error{Kind: store.KindPrerequisite, Message: "this Mac's store configuration cannot be read"}
 	outcome, stdout, _ = h.run(t, "", "doctor")
@@ -293,7 +408,7 @@ func TestStoreToken(t *testing.T) {
 	h := newHarness(t)
 	h.connect()
 	outcome, stdout, stderr := h.run(t, "synthetic-renewed\n", "store", "token", "--stdin", "work")
-	if outcome.Code != 0 || stdout != "work: token replaced\n" || stderr != "" || !slices.Equal(h.storeChanges, []string{"token work synthetic-renewed"}) {
+	if outcome.Code != 0 || stdout != "work: token replaced\n" || stderr != "" || !slices.Equal(h.storeChanges, []string{`token work target="" synthetic-renewed`}) {
 		t.Fatalf("%+v %q %s %v", outcome, stdout, stderr, h.storeChanges)
 	}
 	if outcome, _, stderr := h.run(t, "", "store", "token", "work", "synthetic-renewed"); outcome.Code != 2 || errorKind(stderr) != "usage" {

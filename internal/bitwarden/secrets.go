@@ -17,17 +17,17 @@ type Project struct {
 // Header is a secret without its value and note, as a listing returns it.
 // Revision changes with every write and has no other meaning.
 type Header struct {
-	ID       string
-	Project  string
-	Key      string
-	Revision string
+	ID       string `json:"id"`
+	Project  string `json:"project"`
+	Key      string `json:"key"`
+	Revision string `json:"revision"`
 }
 
 // Secret is a whole secret, read in one request.
 type Secret struct {
 	Header
-	Value []byte
-	Note  string
+	Value []byte `json:"value"`
+	Note  string `json:"note"`
 }
 
 type projectReply struct {

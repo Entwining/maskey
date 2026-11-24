@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -57,18 +58,18 @@ func doctor(cmd *cobra.Command, env *Env) error {
 	ctx := cmd.Context()
 	var checks []check
 	var failure *store.Error
-	fail := func(name string, err error) {
+	fail := func(name string, err error, recovery string) {
 		var e *store.Error
 		if !errors.As(err, &e) {
 			e = &store.Error{Kind: store.KindKeychain, Message: err.Error()}
 		}
-		checks = append(checks, check{Check: name, Status: "error", Error: &errorBody{Error: e, ExitCode: exitCode(e.Kind), Recovery: doctorRecovery(e.Kind)}})
+		checks = append(checks, check{Check: name, Status: "error", Error: &errorBody{Error: e, ExitCode: exitCode(e.Kind), Recovery: cmp.Or(recovery, doctorRecovery(e.Kind))}})
 		if failure == nil {
 			failure = e
 		}
 	}
 	if err := env.Check(ctx); err != nil {
-		fail("interpreter", err)
+		fail("interpreter", err, "")
 	} else {
 		checks = append(checks, check{Check: "interpreter", Status: "ok", Detail: keychain.Interpreter})
 	}
@@ -88,15 +89,13 @@ func doctor(cmd *cobra.Command, env *Env) error {
 		return count(entries, "entry", "entries") + " in " + count(len(namespaces), "namespace", "namespaces"), nil
 	}
 	if detail, err := entries(stores.ICloud); err != nil {
-		fail("keychain", err)
+		fail("keychain", err, "")
 	} else {
 		checks = append(checks, check{Check: "keychain", Status: "ok", Detail: detail})
 	}
-	// Direct access, the keychain row, decides whether mk works; the service
-	// adds grants, revokes, and access from a sandbox, so its row is a
-	// warning.
+	// Commands can still use iCloud Keychain directly without the service.
 	if err := env.CheckService(ctx); err != nil {
-		checks = append(checks, check{Check: "service", Status: "warning", Detail: errorMessage(err), Recovery: "run mk setup in a normal terminal so mk grant, mk revoke, and sandboxed commands can reach the Keychain"})
+		checks = append(checks, check{Check: "service", Status: "warning", Detail: errorMessage(err), Recovery: "run mk setup in a normal terminal so Bitwarden stores, program access changes, and sandboxed commands can reach the Maskey service"})
 	} else {
 		checks = append(checks, check{Check: "service", Status: "ok", Detail: "running this build"})
 	}
@@ -121,6 +120,7 @@ func doctor(cmd *cobra.Command, env *Env) error {
 	for _, connection := range config.Remote() {
 		name := "store " + connection.ID
 		err := env.ChangeStore(ctx, agent.OpSyncStore, connection.ID)
+		recovery := syncStoreRecovery(err)
 		var detail string
 		if err == nil {
 			detail, err = entries(connection.ID)
@@ -129,13 +129,27 @@ func doctor(cmd *cobra.Command, env *Env) error {
 		case err == nil:
 			checks = append(checks, check{Check: name, Status: "ok", Detail: detail + ", read from " + typeNames[connection.Type] + " now"})
 		case connection.ID == config.Default:
-			fail(name, err)
+			fail(name, err, recovery)
 		default:
-			checks = append(checks, check{Check: name, Status: "warning", Detail: errorMessage(err), Recovery: doctorRecovery(store.KindOf(err))})
+			checks = append(checks, check{Check: name, Status: "warning", Detail: errorMessage(err), Recovery: cmp.Or(recovery, doctorRecovery(store.KindOf(err)))})
 		}
 	}
 	checks = append(checks, skillCheck(env))
+	if jsonOutput(cmd) {
+		err = writeJSON(env.Stdout, map[string]any{"version": env.Version, "checks": checks})
+	} else {
+		err = writeDoctorText(env, checks)
+	}
+	if err != nil {
+		return err
+	}
+	if failure != nil {
+		return &exitError{Outcome{Code: exitCode(failure.Kind)}}
+	}
+	return nil
+}
 
+func writeDoctorText(env *Env, checks []check) error {
 	var text strings.Builder
 	for _, c := range checks {
 		detail, recovery := c.Detail, c.Recovery
@@ -147,28 +161,22 @@ func doctor(cmd *cobra.Command, env *Env) error {
 			fmt.Fprintf(&text, "%22shint: %s\n", "", recovery)
 		}
 	}
-	if err := writeResult(cmd, env, map[string]any{"version": env.Version, "checks": checks}, text.String()); err != nil {
-		return err
-	}
-	if failure != nil {
-		return &exitError{Outcome{Code: exitCode(failure.Kind)}}
-	}
-	return nil
+	return writeText(env, text.String())
 }
 
 func setupCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "setup [--json]",
-		Short: "Install the Maskey service for sandboxes and program access",
-		Long: `Install and start the per-user Maskey service, which serves sandboxed
-commands and carries out mk grant and mk revoke.
+		Short: "Install the Maskey service",
+		Long: `Install and start the per-user Maskey service. Bitwarden stores,
+mk grant, and mk revoke always use it. The service also handles Keychain
+requests from sandboxed commands.
 
 Run outside the agent sandbox so the service can reach the Keychain.
 The service verifies that callers are the same signed Maskey executable.
 mk uses the service where direct Keychain access is unavailable, and for
 the operations mk activity shows where it cannot write the activity
-record. Commands stay in the caller's sandbox; grants and revokes always
-use the service.
+record. Commands stay in the caller's sandbox.
 
 Maskey > Install Command Line Tool installs the service and the mk link.
 mk setup installs only the service. After an update, the service moves to
@@ -240,11 +248,14 @@ fails, the completed link remains; retry after resolving the problem.`,
 			if err != nil {
 				return err
 			}
+			if jsonOutput(cmd) {
+				return writeJSON(env.Stdout, map[string]any{"links": links})
+			}
 			var text strings.Builder
 			for _, link := range links {
 				fmt.Fprintln(&text, "linked", link)
 			}
-			return writeResult(cmd, env, map[string]any{"links": links}, text.String())
+			return writeText(env, text.String())
 		},
 	}
 	addJSONFlag(install, "Write the linked paths or errors as JSON")

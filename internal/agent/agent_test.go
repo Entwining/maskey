@@ -24,27 +24,29 @@ import (
 // A service that rejects the client closes before its hello; the write was
 // not sent, so it is unavailable rather than uncertain.
 func TestExchangeSendsNothingBeforeHello(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	client, server := net.Pipe()
-	defer client.Close()
-	received := make(chan []byte, 1)
-	go func() {
-		data, _ := io.ReadAll(server)
-		received <- data
-	}()
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		server.Close()
-	}()
-	_, err := exchange(ctx, client, request{Op: "add", Account: "test/NAME", Value: []byte("synthetic-value")})
-	client.Close()
-	if !store.IsKind(err, store.KindUnavailable) {
-		t.Fatalf("closed before hello: %v", err)
-	}
-	if data := <-received; len(data) != 0 {
-		t.Fatal("a request was sent before the hello")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		client, server := net.Pipe()
+		defer client.Close()
+		received := make(chan []byte, 1)
+		go func() {
+			data, _ := io.ReadAll(server)
+			received <- data
+		}()
+		go func() {
+			synctest.Wait()
+			server.Close()
+		}()
+		_, err := exchange(ctx, client, request{Op: "add", Account: "test/NAME", Value: []byte("synthetic-value")})
+		client.Close()
+		if !store.IsKind(err, store.KindUnavailable) {
+			t.Fatalf("closed before hello: %v", err)
+		}
+		if data := <-received; len(data) != 0 {
+			t.Fatal("a request was sent before the hello")
+		}
+	})
 }
 
 // Once a request is sent, only the service's answer settles a write: a
@@ -69,12 +71,14 @@ func TestExchangeAfterRequestSent(t *testing.T) {
 		{"delete lost", request{Op: "delete", Account: "test/NAME"}, false, nil, store.KindUncertain},
 		{"grant lost", grant, false, nil, store.KindUncertain},
 		{"read lost", read, false, nil, store.KindUnavailable},
+		{"stores lost", request{Op: "stores"}, false, nil, store.KindUnavailable},
 		{"add cancelled, answered", add, true, &response{OK: true}, ""},
 		{"add cancelled, lost", add, true, nil, store.KindUncertain},
 		{"grant withdrawn", grant, true, cancelled, store.KindCancelled},
 		{"grant approved before the withdrawal", grant, true, changed, ""},
 		{"grant withdrawn, lost", grant, true, nil, store.KindUncertain},
 		{"read cancelled", read, true, nil, store.KindCancelled},
+		{"stores cancelled", request{Op: "stores"}, true, nil, store.KindCancelled},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -109,7 +113,7 @@ func TestExchangeAfterRequestSent(t *testing.T) {
 			}()
 			result, err := exchange(ctx, client, tc.req)
 			client.Close()
-			if store.KindOf(err) != tc.want || err == nil && tc.want != "" {
+			if tc.want == "" && err != nil || store.KindOf(err) != tc.want {
 				t.Fatalf("got %v, want %q", err, tc.want)
 			}
 			if tc.answer == changed && !reflect.DeepEqual(result.Changes, changed.Changes) {
@@ -406,40 +410,42 @@ func TestAgentWithdrawalBeforeApproval(t *testing.T) {
 func TestAgentFinishesApprovedChange(t *testing.T) {
 	for _, hangUp := range []bool{false, true} {
 		t.Run(fmt.Sprintf("hang up=%v", hangUp), func(t *testing.T) {
-			reached, release := make(chan struct{}), make(chan struct{})
-			written := make(chan context.Context, 1)
-			backend := accessHook{storetest.New(), func(ctx context.Context) {
-				close(reached)
-				<-release
-				written <- ctx
-			}}
-			backend.Put("test/NAME", []byte("synthetic-value"))
-			approve := func(context.Context, string) (string, error) { return "dialog", nil }
-			client, decoder, done := startRequest(t, backend, new(storetest.Recorder), approve, request{Op: "grant", Accounts: []string{"test/NAME"}})
-			<-reached
-			if hangUp {
-				client.Close()
-			} else if err := json.NewEncoder(client).Encode(withdrawal{Cancel: true}); err != nil {
-				t.Fatal(err)
-			}
-			// Let a withdrawal that would end the write arrive first.
-			time.Sleep(50 * time.Millisecond)
-			close(release)
-			ctx := <-written
-			if _, ok := ctx.Deadline(); ok || ctx.Err() != nil {
-				t.Fatalf("the write's context: %v", ctx.Err())
-			}
-			if !hangUp {
-				var result response
-				if err := decoder.Decode(&result); err != nil || !result.OK || len(result.Changes) != 1 || result.Auth != "dialog" {
-					t.Fatalf("answer: %+v, %v", result, err)
+			synctest.Test(t, func(t *testing.T) {
+				reached, release := make(chan struct{}), make(chan struct{})
+				written := make(chan context.Context, 1)
+				backend := accessHook{storetest.New(), func(ctx context.Context) {
+					close(reached)
+					<-release
+					written <- ctx
+				}}
+				backend.Put("test/NAME", []byte("synthetic-value"))
+				approve := func(context.Context, string) (string, error) { return "dialog", nil }
+				client, decoder, done := startRequest(t, backend, new(storetest.Recorder), approve, request{Op: "grant", Accounts: []string{"test/NAME"}})
+				<-reached
+				if hangUp {
+					client.Close()
+				} else if err := json.NewEncoder(client).Encode(withdrawal{Cancel: true}); err != nil {
+					t.Fatal(err)
 				}
-				client.Close()
-			}
-			<-done
-			if items, _ := backend.Items(context.Background()); !items[0].ProgramAccess {
-				t.Fatal("the approved change was not written")
-			}
+				// Let a withdrawal that would end the write arrive first.
+				synctest.Wait()
+				close(release)
+				ctx := <-written
+				if _, ok := ctx.Deadline(); ok || ctx.Err() != nil {
+					t.Fatalf("the write's context: %v", ctx.Err())
+				}
+				if !hangUp {
+					var result response
+					if err := decoder.Decode(&result); err != nil || !result.OK || len(result.Changes) != 1 || result.Auth != "dialog" {
+						t.Fatalf("answer: %+v, %v", result, err)
+					}
+					client.Close()
+				}
+				<-done
+				if items, _ := backend.Items(context.Background()); !items[0].ProgramAccess {
+					t.Fatal("the approved change was not written")
+				}
+			})
 		})
 	}
 }

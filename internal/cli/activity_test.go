@@ -139,6 +139,53 @@ func TestActivityReadFailure(t *testing.T) {
 	}
 }
 
+func TestActivityFiltersByRecordedStore(t *testing.T) {
+	h := newHarness(t)
+	t.Cleanup(func() { h.activity.Remove() })
+	ctx := context.Background()
+	h.activity.Record(ctx, activity.Record{Op: "get", Entry: "app/TOKEN", Result: "ok"})
+	h.activity.Record(activity.WithStore(ctx, "former"), activity.Record{Op: "get", Entry: "app/TOKEN", Result: "ok"})
+	h.activity.Record(activity.WithStore(ctx, "former"), activity.Record{Op: "get", Entry: "app/OTHER", Result: "ok"})
+	for _, test := range []struct{ name, want string }{{"former", "former:app/TOKEN"}, {"icloud", "icloud:app/TOKEN"}} {
+		t.Run(test.name, func(t *testing.T) {
+			outcome, stdout, stderr := h.run(t, "", "activity", "--store", test.name, "app/TOKEN")
+			if outcome.Code != 0 || stderr != "" || strings.Count(stdout, "\n") != 2 || !strings.Contains(stdout, test.want) {
+				t.Fatalf("%+v %q %q", outcome, stdout, stderr)
+			}
+		})
+	}
+	outcome, stdout, stderr := h.run(t, "", "activity", "--store=", "app/TOKEN")
+	if outcome.Code != 2 || stdout != "" || stderr != "mk: error[usage]: --store needs a name\nmk: hint: give --store a name from the activity record\n" {
+		t.Fatalf("empty --store: %+v %q %q", outcome, stdout, stderr)
+	}
+}
+
+func TestActivityCompletesRecordedStores(t *testing.T) {
+	h := newHarness(t)
+	t.Cleanup(func() { h.activity.Remove() })
+	h.connect()
+	ctx := context.Background()
+	h.activity.Record(ctx, activity.Record{Op: "get", Entry: "app/TOKEN", Result: "ok"})
+	h.activity.Record(activity.WithStore(ctx, "former"), activity.Record{Op: "get", Entry: "app/TOKEN", Result: "ok"})
+	h.activity.Record(activity.WithStore(ctx, "former"), activity.Record{Op: "get", Entry: "app/OTHER", Result: "ok"})
+	outcome, stdout, _ := h.run(t, "", "__complete", "activity", "--store", "")
+	if outcome.Code != 0 || stdout != "former\nicloud\n:4\n" {
+		t.Fatalf("%+v store completion %q", outcome, stdout)
+	}
+}
+
+func TestActivityCompletesSelectorsInRecordedStore(t *testing.T) {
+	h := newHarness(t)
+	t.Cleanup(func() { h.activity.Remove() })
+	ctx := context.Background()
+	h.activity.Record(ctx, activity.Record{Op: "get", Entry: "personal/TOKEN", Result: "ok"})
+	h.activity.Record(activity.WithStore(ctx, "former"), activity.Record{Op: "get", Entry: "app/TOKEN", Result: "ok"})
+	outcome, stdout, _ := h.run(t, "", "__complete", "activity", "--store", "former", "")
+	if outcome.Code != 0 || stdout != "app\napp/TOKEN\n:4\n" {
+		t.Fatalf("%+v selector completion %q", outcome, stdout)
+	}
+}
+
 // reportingBackend reports failure after each get, as the Keychain client
 // reports a failure to record.
 type reportingBackend struct {

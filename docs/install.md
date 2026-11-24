@@ -1,6 +1,6 @@
 # Install and maintain Maskey
 
-You need an Apple silicon Mac and Apple's Command Line Tools (`xcode-select --install`) or Xcode, which provide `/usr/bin/python3`. To use entries on several Macs, turn on iCloud Keychain on each with the same Apple Account and install Maskey on each. Maskey has no sync settings of its own and cannot tell when a change reaches another Mac.
+Maskey requires an Apple silicon Mac running macOS 13 or later. Apple's Command Line Tools (`xcode-select --install`) or Xcode provide the Python interpreter Maskey uses at `/usr/bin/python3`. To sync iCloud entries, turn on iCloud Keychain on each Mac using the same Apple Account. Macs on different Apple Accounts can [connect to the same Bitwarden project](usage.md#stores).
 
 ## Homebrew
 
@@ -14,7 +14,7 @@ This puts Maskey in `/Applications` and `mk` on your `PATH`. Maskey is signed ad
 xattr -dr com.apple.quarantine /Applications/Maskey.app
 ```
 
-Maskey then updates itself. `brew upgrade` also replaces it with each new version, which is quarantined again because an ad hoc signature cannot carry your approval to the next version; set `HOMEBREW_NO_UPGRADE_AUTO_UPDATES_CASKS=1` to leave updates to Maskey, or run the `xattr` command again after an upgrade.
+After a Homebrew upgrade, run the `xattr` command again for the newly installed app. To leave routine updates to Maskey, set `HOMEBREW_NO_UPGRADE_AUTO_UPDATES_CASKS=1` for `brew upgrade`.
 
 ## Install script
 
@@ -22,7 +22,7 @@ Maskey then updates itself. `brew upgrade` also replaces it with each new versio
 curl -fsSL https://github.com/Entwining/maskey/releases/latest/download/install.sh | sh
 ```
 
-The script downloads the latest version, checks its signature against the key Maskey's updates are signed with, installs it in `/Applications` (or `~/Applications` when it cannot write there), and opens it. `curl` sets no quarantine attribute, so Gatekeeper does not block it.
+The script downloads the latest archive and verifies its signature with Maskey's update key. It replaces an existing installation in `/Applications` or `~/Applications`. For a new installation it uses `/Applications` if writable and `~/Applications` otherwise. It then tries to open Maskey. The `curl` download carries no quarantine attribute.
 
 Verify a release archive's [build provenance attestation](https://cli.github.com/manual/gh_attestation_verify) with `gh attestation verify maskey-<version>-darwin-arm64.tar.gz --repo Entwining/maskey`.
 
@@ -35,20 +35,22 @@ go tool mygo build -skip-dmg
 ditto build/darwin-arm64/Maskey.app /Applications/Maskey.app
 ```
 
-Like an installed copy, a source build offers to replace itself with each published release.
-
 ## Set up the command line
 
-Open Maskey and choose Maskey > Install Command Line Tool. This links `~/.local/bin/mk` to the app and installs a per-user Maskey service that starts at login without opening a window. Add `~/.local/bin` to your `PATH` if your shell cannot find `mk`. For a Homebrew install, run `mk setup` in a normal terminal to install the service; Homebrew already supplies the `mk` link.
+With Homebrew, run `mk setup` in a normal terminal. Homebrew supplies the `mk` link. For a script or source install, choose Maskey > Install Command Line Tool… in the app to link `~/.local/bin/mk` to it. Add `~/.local/bin` to your `PATH` if needed. Both paths install the per-user Maskey service, which starts at login without opening a window.
 
-For coding agents, `mk skill install` links the [shipped skill](../resources/skills/maskey/SKILL.md), which teaches agents to use credentials without putting their values in the conversation, into `~/.claude/skills` and `~/.agents/skills`. The links point into the app, so the skill matches the installed `mk`; `mk skill show` prints it for an agent that reads skills from elsewhere. Agents whose sandbox blocks Keychain access also need the socket permission described under [Sandboxed agents](security.md#sandboxed-agents).
+For coding agents, `mk skill install` links the [shipped skill](../resources/skills/maskey/SKILL.md) into `~/.claude/skills` and `~/.agents/skills`. The links point into the app, so the skill matches the installed `mk`. Use `mk skill show` for an agent that reads skills from elsewhere. Allow the [service socket](security.md#sandboxed-agents) for Bitwarden, CLI changes to program access, and iCloud requests that need the service.
 
 ## Upgrade
 
-Maskey checks for a new version shortly after it opens and then once a day, and Maskey > Check for Updates checks at once. It installs a version only after checking its signature, and the new version runs once you restart Maskey. Entries stay in the Keychain, `mk` and the skill links point into the app, and the Maskey service restarts from the new version the first time the new `mk` reaches it.
+Maskey can install signed updates, including over a source build, when it can write to its installation directory. With automatic checks enabled, it checks shortly after launch and normally once a day while running. Choose Maskey > Check for Updates… to check manually. When an update is available, the menu and sidebar open the update window. The new version runs after Maskey relaunches.
 
-Because each version's ad hoc signature differs, macOS can refuse that restart once, write a crash report for Maskey that names a Launch Constraint Violation, and start the new version about 10 seconds later; `mk` waits for it.
+An in-place update keeps entries in their stores and preserves the `mk` and skill links. If the running service rejects the new build, it exits and launchd restarts it. macOS can report a Launch Constraint Violation and delay that restart while `mk` waits. If the service is still unavailable, run `mk setup` in a normal terminal and check that the sandbox allows the [current socket](security.md#sandboxed-agents).
 
 ## Uninstall
 
-Entries stay in iCloud Keychain, on every Mac, and in Bitwarden when Maskey is gone; delete them in the window or with `mk delete` first if you no longer want them. Quit Maskey, then run `mk uninstall`: it lists what Maskey installed on this Mac, asks once, removes this Mac's Bitwarden stores with their access tokens, stops the Maskey service, and removes its configuration, the activity record, the window's saved state, and the `mk` and skill links. If it could not stop the service, or the Keychain service of a Maskey before 0.0.11, it keeps the files that service still writes and says so; run it again once the service has stopped. Then move Maskey.app to the Trash, or run `brew uninstall --cask maskey` if Homebrew installed it.
+Entries stay in their stores when you uninstall Maskey. If you want to [delete particular entries](usage.md#manage-entries), do that first. Then quit Maskey, run `mk uninstall` in a normal terminal, and confirm the listed removals.
+
+Maskey removes this Mac's Bitwarden connections, tokens, and program access first. If it cannot read the store configuration or finish removing a store, it stops before removing anything else. Then it stops the Maskey service and removes its configuration, the activity record, the window's saved state, and the `mk` and skill links, and reports a result for each item, including failures. With `--json`, `items` holds those results and `bundle` gives the path to `Maskey.app`. Files a service may still write are kept.
+
+If cleanup fails, keep the app, resolve the reported failure and run uninstall again. The recovery hint gives the executable path if the `mk` link is already gone. After cleanup succeeds, move `Maskey.app` to the Trash or run `brew uninstall --cask maskey` for a Homebrew installation.

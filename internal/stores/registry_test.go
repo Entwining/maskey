@@ -228,7 +228,7 @@ func TestRemoveForgetsTheStoreOnThisMacOnly(t *testing.T) {
 		t.Fatalf("the default is %s", config.Default)
 	}
 	for id, want := range map[string]store.Kind{ICloud: store.KindInvalid, "missing": store.KindNotFound, "": store.KindNotFound} {
-		if err := r.Remove(ctx, id); !store.IsKind(err, want) {
+		if err := r.Remove(ctx, id, ""); !store.IsKind(err, want) {
 			t.Errorf("removing %s: %v, want %s", id, err, want)
 		}
 	}
@@ -241,7 +241,7 @@ func TestRemoveForgetsTheStoreOnThisMacOnly(t *testing.T) {
 		t.Error("a removal that names no store removed a snapshot")
 	}
 
-	if err := r.Remove(ctx, "bitwarden"); err != nil {
+	if err := r.Remove(ctx, "bitwarden", ""); err != nil {
 		t.Fatal(err)
 	}
 	config, err := Load(f.dir)
@@ -338,17 +338,17 @@ func TestSetTokenKeepsTheStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	refused := []byte(strings.Replace(bitwardentest.Token, "C2Ig", "XXXX", 1))
-	if err := r.SetToken(ctx, "bitwarden", refused); !store.IsKind(err, store.KindUnauthenticated) {
+	if err := r.SetToken(ctx, "bitwarden", "", refused); !store.IsKind(err, store.KindUnauthenticated) {
 		t.Errorf("a refused token: %v", err)
 	}
 	for id, want := range map[string]store.Kind{ICloud: store.KindInvalid, "missing": store.KindNotFound, "": store.KindNotFound} {
-		if err := r.SetToken(ctx, id, []byte(bitwardentest.Token)); !store.IsKind(err, want) {
+		if err := r.SetToken(ctx, id, "", []byte(bitwardentest.Token)); !store.IsKind(err, want) {
 			t.Errorf("a token for %s: %v, want %s", id, err, want)
 		}
 	}
 	projects := f.fake.Projects
 	f.fake.Projects = []bitwardentest.ProjectInfo{{ID: "44444444-4444-4444-8444-444444444444", Name: "Other"}}
-	if err := r.SetToken(ctx, "bitwarden", []byte(bitwardentest.Token)); !store.IsKind(err, store.KindPermissionDenied) {
+	if err := r.SetToken(ctx, "bitwarden", "", []byte(bitwardentest.Token)); !store.IsKind(err, store.KindPermissionDenied) {
 		t.Errorf("a token for another project: %v", err)
 	}
 	f.fake.Projects = projects
@@ -357,7 +357,7 @@ func TestSetTokenKeepsTheStore(t *testing.T) {
 	}
 
 	delete(f.local, "token/bitwarden")
-	if err := r.SetToken(ctx, "bitwarden", []byte(bitwardentest.Token)); err != nil {
+	if err := r.SetToken(ctx, "bitwarden", target, []byte(bitwardentest.Token)); err != nil {
 		t.Fatal(err)
 	}
 	backend, err := r.Backend(ctx, "bitwarden", target)
@@ -366,6 +366,22 @@ func TestSetTokenKeepsTheStore(t *testing.T) {
 	}
 	if value, err := backend.Get(ctx, "a/B"); err != nil || string(value) != "value" {
 		t.Errorf("after the new token: %q, %v", value, err)
+	}
+}
+
+func TestSetTokenRejectsAStaleTargetBeforeSigningIn(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	r := f.registry()
+	connection, err := r.Add(ctx, bitwardenToken())
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection.Project = "old-project"
+	calls := f.fake.Count("POST /connect/token")
+	err = r.SetToken(ctx, connection.ID, connection.Target(), []byte(bitwardentest.Token))
+	if got := f.fake.Count("POST /connect/token") - calls; !store.IsKind(err, store.KindConflict) || got != 0 {
+		t.Fatalf("replace token with a stale target: %v, %d sign-ins, want conflict and no sign-in", err, got)
 	}
 }
 
@@ -427,7 +443,7 @@ func TestRemoveEndsTheBackendARequestHolds(t *testing.T) {
 	if err := held.Add(ctx, "a/B", []byte("value"), store.Details{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Remove(ctx, "bitwarden"); err != nil {
+	if err := r.Remove(ctx, "bitwarden", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := storetest.SetAccess(ctx, held, "a/B", true); !store.IsKind(err, store.KindConflict) {

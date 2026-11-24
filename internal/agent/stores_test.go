@@ -29,10 +29,10 @@ func (only) Config(context.Context) (stores.Config, error) { return stores.Confi
 func (only) Add(context.Context, stores.Addition) (stores.Connection, error) {
 	return stores.Connection{}, errNoStores
 }
-func (only) SetToken(context.Context, string, []byte) error { return errNoStores }
-func (only) Remove(context.Context, string) error           { return errNoStores }
-func (only) SetDefault(context.Context, string) error       { return errNoStores }
-func (only) Sync(context.Context, string) error             { return errNoStores }
+func (only) SetToken(context.Context, string, string, []byte) error { return errNoStores }
+func (only) Remove(context.Context, string, string) error           { return errNoStores }
+func (only) SetDefault(context.Context, string) error               { return errNoStores }
+func (only) Sync(context.Context, string) error                     { return errNoStores }
 
 // twoStores is a service with iCloud Keychain and one remote store named
 // work, which lists the changes asked of its stores.
@@ -65,12 +65,18 @@ func (s *twoStores) Add(_ context.Context, addition stores.Addition) (stores.Con
 	return stores.Connection{ID: addition.ID, Type: addition.Type}, nil
 }
 
-func (s *twoStores) SetToken(_ context.Context, id string, token []byte) error {
+func (s *twoStores) SetToken(_ context.Context, id, target string, token []byte) error {
+	if target != "" && target != workStore.Target() {
+		return &store.Error{Kind: store.KindConflict, Message: "the store was connected to another project"}
+	}
 	s.changes = append(s.changes, "token "+id+" "+string(token))
 	return nil
 }
 
-func (s *twoStores) Remove(_ context.Context, id string) error {
+func (s *twoStores) Remove(_ context.Context, id, target string) error {
+	if target != "" && target != workStore.Target() {
+		return &store.Error{Kind: store.KindConflict, Message: "the store was connected to another project"}
+	}
 	s.changes = append(s.changes, "remove "+id)
 	return nil
 }
@@ -81,6 +87,9 @@ func (s *twoStores) SetDefault(_ context.Context, id string) error {
 }
 
 func (s *twoStores) Sync(_ context.Context, id string) error {
+	if id != workStore.ID {
+		return stores.ErrNoStore
+	}
 	s.changes = append(s.changes, "sync "+id)
 	return nil
 }
@@ -195,6 +204,35 @@ func TestDispatchChangesStores(t *testing.T) {
 	}
 	if want := []string{"add work synthetic-token", "token work synthetic-renewed", "default work", "sync work", "remove work"}; !slices.Equal(registry.changes, want) {
 		t.Errorf("changes %v, want %v", registry.changes, want)
+	}
+}
+
+func TestSyncIdentifiesAMissingLocalStore(t *testing.T) {
+	path, _, _ := startTestRegistry(t, &twoStores{}, new(storetest.Recorder), nil, nil, notReplaced)
+	client := &Client{path: path}
+	if err := client.ChangeStore(context.Background(), OpSyncStore, "gone"); !errors.Is(err, stores.ErrNoStore) {
+		t.Fatalf("sync with a missing store: %T %v, want stores.ErrNoStore", err, err)
+	}
+}
+
+func TestRemoveStoreSendsTheConnectionTarget(t *testing.T) {
+	registry := &twoStores{}
+	path, _, _ := startTestRegistry(t, registry, new(storetest.Recorder), nil, nil, notReplaced)
+	client := &Client{path: path}
+	other := workStore
+	other.Project = "old-project"
+	if err := client.RemoveStore(context.Background(), other); !store.IsKind(err, store.KindConflict) {
+		t.Fatalf("remove with a stale target: %v, want conflict", err)
+	}
+}
+
+func TestSetStoreTokenSendsTheConnectionTarget(t *testing.T) {
+	path, _, _ := startTestRegistry(t, &twoStores{}, new(storetest.Recorder), nil, nil, notReplaced)
+	client := &Client{path: path}
+	old := workStore
+	old.Project = "old-project"
+	if err := client.SetStoreToken(context.Background(), old.ID, old.Target(), []byte("synthetic-renewed")); !store.IsKind(err, store.KindConflict) {
+		t.Fatalf("replace token with a stale target: %v, want conflict", err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"io"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -19,8 +20,9 @@ import (
 )
 
 func activityCommand(env *Env) *cobra.Command {
+	const emptyStoreHint = "give --store a name from the activity record"
 	cmd := &cobra.Command{
-		Use:   "activity [--since <duration|time>] [--full] [--json] [<selector>...]",
+		Use:   "activity [--store <name>] [--since <duration|time>] [--full] [--json] [<selector>...]",
 		Short: "Show which programs used entries on this Mac",
 		Long: `Show what Maskey recorded on this Mac: each get, read, add, update, edit,
 delete, grant, and revoke of an entry, its result, and the program that
@@ -37,8 +39,10 @@ with a count and the latest time, newest first; ENTRY is
 by its file name, nearest first, and the window as Maskey. --full lists
 each record instead, with full paths, the terminal, and how the owner
 approved a grant or revoke. Selectors, each a namespace or
-<namespace>/<NAME>, keep only their records. --since takes a duration such
-as 24h or 30d, or an RFC 3339 time.
+<namespace>/<NAME>, keep only their records. --store keeps records for
+that store name, even if the store has been removed. Records without a
+store name count as icloud. Without --store, selectors match across
+stores. --since takes a duration such as 24h or 30d, or an RFC 3339 time.
 
 Maskey keeps the current month's file and the 12 before it, and removes
 older ones when it writes a new month's first record. --json writes each
@@ -46,13 +50,22 @@ matching record as one JSON line, newest first, in the format of those
 files in ~/Library/Logs/` + store.Service + `.`,
 		Example: `  mk activity
   mk activity --since 24h github
+  mk activity --store work app/TOKEN
   mk activity --full anthropic/ANTHROPIC_API_KEY`,
 		DisableFlagsInUseLine: true,
 		Args:                  cobra.ArbitraryArgs,
-		ValidArgsFunction: func(_ *cobra.Command, args []string, _ string) ([]cobra.Completion, cobra.ShellCompDirective) {
-			return completeRecorded(env, args), cobra.ShellCompDirectiveNoFileComp
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, _ string) ([]cobra.Completion, cobra.ShellCompDirective) {
+			name, err := storeName(cmd, emptyStoreHint)
+			if err != nil {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			return completeRecorded(env, name, args), cobra.ShellCompDirectiveNoFileComp
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			name, err := storeName(cmd, emptyStoreHint)
+			if err != nil {
+				return err
+			}
 			value, _ := cmd.Flags().GetString("since")
 			since, err := parseSince(value, time.Now())
 			if err != nil {
@@ -63,7 +76,7 @@ files in ~/Library/Logs/` + store.Service + `.`,
 				return err
 			}
 			lines, skipped, err := env.Activity.Read(since, func(r activity.Record) bool {
-				return len(filters) == 0 || selects(filters, r.Entry) || r.To != "" && selects(filters, r.To)
+				return inRecordedStore(name, r) && (len(filters) == 0 || selects(filters, r.Entry) || r.To != "" && selects(filters, r.To))
 			})
 			if err != nil {
 				return withHint(&store.Error{Kind: kindIO, Message: "cannot read the activity record: " + err.Error()}, "check that you can read ~/Library/Logs/"+store.Service+" and its files")
@@ -100,6 +113,19 @@ files in ~/Library/Logs/` + store.Service + `.`,
 			}
 		},
 	}
+	cmd.Flags().String(storeFlag, "", "Show records for the store with this `<name>`")
+	_ = cmd.RegisterFlagCompletionFunc(storeFlag, func(*cobra.Command, []string, string) ([]cobra.Completion, cobra.ShellCompDirective) {
+		names := make(map[string]struct{})
+		// Collect names during the scan without retaining the records.
+		_, _, err := env.Activity.Read(time.Time{}, func(r activity.Record) bool {
+			names[recordedStore(r)] = struct{}{}
+			return false
+		})
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		return slices.Sorted(maps.Keys(names)), cobra.ShellCompDirectiveNoFileComp
+	})
 	cmd.Flags().String("since", "7d", "Show records since `<duration|time>`, such as 24h, 7d, or an RFC 3339 time (default 7d)")
 	cmd.Flags().Bool("full", false, "List each record instead of groups")
 	addJSONFlag(cmd, "Write matching records or errors as JSON Lines")
@@ -151,11 +177,19 @@ func caller(c activity.Caller, full bool) string {
 // gave it. A bare reference would read as the default store's, which need
 // not be the one the record is about.
 func subject(line activity.Line) string {
-	entry := cmp.Or(line.Store, stores.ICloud) + ":" + line.Entry
+	entry := recordedStore(line.Record) + ":" + line.Entry
 	if line.To != "" {
 		return entry + " -> " + line.To
 	}
 	return entry
+}
+
+func recordedStore(record activity.Record) string {
+	return cmp.Or(record.Store, stores.ICloud)
+}
+
+func inRecordedStore(name string, record activity.Record) bool {
+	return name == "" || recordedStore(record) == name
 }
 
 // groupRows folds lines, newest first, into one row per entry, operation
@@ -226,10 +260,10 @@ func count(n int, one, many string) string {
 	return strconv.Itoa(n) + " " + many
 }
 
-// completeRecorded lists the namespaces and entries the record names, in
-// every store, that given does not hold.
-func completeRecorded(env *Env, given []string) []cobra.Completion {
-	lines, _, err := env.Activity.Read(time.Time{}, func(activity.Record) bool { return true })
+// completeRecorded lists the namespaces and entries the selected records
+// name that given does not hold.
+func completeRecorded(env *Env, name string, given []string) []cobra.Completion {
+	lines, _, err := env.Activity.Read(time.Time{}, func(r activity.Record) bool { return inRecordedStore(name, r) })
 	if err != nil {
 		return nil
 	}

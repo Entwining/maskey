@@ -434,12 +434,12 @@ func TestRowMenuBesideForm(t *testing.T) {
 	}
 	h.tt.Key(ui.Cmd, ui.KeyBackspace)
 	h.settle()
-	if a := h.alert(); a.message != "Delete this entry?" {
+	if a := h.alert(); a.message != "Delete “app/URL” from “icloud”?" {
 		t.Fatalf("Cmd-Backspace beside the form asks %q", a.message)
 	}
 	h.escape()
 	h.choose("PASSWORD", "Delete…")
-	if f := h.g.form; h.alert().message != "Delete “PASSWORD” from db?" || !f.open || f.value != "synthetic-draft" || h.g.entry != urlRef {
+	if f := h.g.form; h.alert().message != "Delete “db/PASSWORD” from “icloud”?" || !f.open || f.value != "synthetic-draft" || h.g.entry != urlRef {
 		t.Fatalf("Delete…: asking %q, form open %v, entry %v", h.alert().message, f.open, h.g.entry)
 	}
 }
@@ -492,7 +492,6 @@ func (h *harness) focusList() {
 }
 
 func TestFormDirty(t *testing.T) {
-	inferred := ""
 	edit := func(change func(f *form)) form {
 		f := form{open: true, from: urlRef, namespace: "app", name: "URL", value: urlValue, original: urlValue,
 			kind: "URL", kindFrom: "URL"}
@@ -512,7 +511,7 @@ func TestFormDirty(t *testing.T) {
 		{"edit value", edit(func(f *form) { f.value = "synthetic-url-new" }), true},
 		{"edit kind", edit(func(f *form) { f.kind = "Other" }), true},
 		{"edit notes", edit(func(f *form) { f.notes = "Rotate" }), true},
-		{"new, as opened", form{open: true, namespaceFrom: "app", namespace: "app", kind: "API Key", inferredFrom: &inferred}, false},
+		{"new, as opened", form{open: true, namespaceFrom: "app", namespace: "app", kind: "API Key", inferred: "API Key"}, false},
 		{"new, kind picked", form{open: true, namespaceFrom: "app", namespace: "app", kind: "Other"}, false},
 		{"new namespace", form{open: true, namespace: "work"}, true},
 		{"new, namespace changed", form{open: true, namespaceFrom: "app", namespace: "work"}, true},

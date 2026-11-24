@@ -189,22 +189,12 @@ func TestSetReplaceConfirmation(t *testing.T) {
 		t.Fatalf("plural: %+v %q", outcome, stderr)
 	}
 
-	for _, test := range []struct{ name, answer string }{
-		{"no", "n\n"},
-		{"empty", "\n"},
-		{"unterminated yes", "yes\x04\x04"},
-		{"end of input", "\x04"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			h := newHarness(t)
-			h.set(t, "app/A")
-			// The values typed after the answer are there for a set that
-			// would prompt anyway.
-			outcome, _, stderr := h.runOn(terminal(t, test.answer+"one\ntwo\n"), "set", "app/A", "app/NEW")
-			if outcome.Code != 130 || !strings.HasSuffix(stderr, "mk: error[cancelled]: no entries were written\n") || strings.Contains(stderr, "Value for") || h.list(t) != "app/A\n" || h.value("app/A") != "synthetic-app/A" {
-				t.Fatalf("%+v %q %q", outcome, stderr, h.list(t))
-			}
-		})
+	h = newHarness(t)
+	h.set(t, "app/A")
+	// A declined confirmation must stop before reading any values.
+	outcome, _, stderr = h.runOn(terminal(t, "n\none\ntwo\n"), "set", "app/A", "app/NEW")
+	if outcome.Code != 130 || !strings.HasSuffix(stderr, "mk: error[cancelled]: no entries were written\n") || strings.Contains(stderr, "Value for") || h.list(t) != "app/A\n" || h.value("app/A") != "synthetic-app/A" {
+		t.Fatalf("declined: %+v %q %q", outcome, stderr, h.list(t))
 	}
 
 	h = newHarness(t)

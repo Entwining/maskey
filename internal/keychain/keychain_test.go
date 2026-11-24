@@ -308,20 +308,25 @@ func TestCancellation(t *testing.T) {
 			started := filepath.Join(t.TempDir(), "started")
 			k := fakeInterpreter(t, `cat >/dev/null; echo '{"ready": true}'; `+test.result+`
 touch `+started+`; exec sleep 10`)
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
-			go func() {
-				for {
-					if _, err := os.Stat(started); err == nil {
-						cancel()
-						return
-					}
-					time.Sleep(10 * time.Millisecond)
-				}
-			}()
+			finished := make(chan error, 1)
 			start := time.Now()
-			err := test.call(k, ctx)
-			if got := store.KindOf(err); got != test.want {
+			go func() { finished <- test.call(k, ctx) }()
+			for {
+				if _, err := os.Stat(started); err == nil {
+					break
+				}
+				select {
+				case err := <-finished:
+					t.Fatalf("the helper exited before signalling readiness: %v", err)
+				case <-ctx.Done():
+					t.Fatal("the helper did not signal readiness in time")
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+			cancel()
+			if err := <-finished; store.KindOf(err) != test.want {
 				t.Fatalf("error %v, want kind %q", err, test.want)
 			}
 			if elapsed := time.Since(start); elapsed > 5*time.Second {

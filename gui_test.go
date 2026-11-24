@@ -42,6 +42,8 @@ type harness struct {
 	// clears the window asked for, in order.
 	clipboard *fakeClipboard
 	clears    []scheduledClear
+	// settingsShown counts the times the window opened Settings itself.
+	settingsShown int
 }
 
 // sheet is an alert the window shows, waiting for its answer.
@@ -85,6 +87,7 @@ func newHarnessAt(t *testing.T, backend *storetest.Backend, layoutPath string) *
 	h.g = newGUI(context.Background(), store.New(taggedReads{backend, &h.reads}, new(storetest.Recorder)), approval.Approve, layoutPath)
 	h.g.post = func(fn func()) { h.posted <- fn }
 	h.g.showMessage = h.showMessage
+	h.g.showSettings = func() { h.settingsShown++ }
 	h.clipboard = new(fakeClipboard)
 	h.g.clipboard = h.clipboard
 	h.g.clearLater = func(delay time.Duration, run func()) { h.clears = append(h.clears, scheduledClear{delay, run}) }
@@ -352,16 +355,16 @@ func (h *harness) newInApp(name string) {
 // addWhileNamesLoad creates app/name and returns once the form has closed
 // and the listing that follows has started, which stays loading until
 // release.
-func (h *harness) addWhileNamesLoad(name string) (loading <-chan struct{}, release func()) {
+func (h *harness) addWhileNamesLoad(name string) (release func()) {
 	h.t.Helper()
 	h.newInApp(name)
 	h.typeValue("synthetic-new-31d2")
-	loading, release = h.pause("items")
+	loading, release := h.pause("items")
 	h.clickWithoutSettling("Add")
 	h.applyPostedWhile(func() bool { return h.g.form.open })
 	h.applyPostedUntil(loading)
 	h.tt.Frame()
-	return loading, release
+	return release
 }
 
 // icloud names an entry of iCloud Keychain, the store the harness starts

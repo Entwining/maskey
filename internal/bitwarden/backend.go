@@ -34,7 +34,7 @@ type Grants interface {
 // key is "<namespace>/<NAME>#<kind>", its value the entry's value, and its
 // note the entry's notes; secrets with any other key are not Maskey's.
 //
-// Bitwarden holds the entries. Reads come from a snapshot of the project
+// Bitwarden holds the entries. Reads come from a snapshot of those entries
 // that the backend refreshes when it is older than snapshotFresh, and that
 // stays in use while Bitwarden cannot be reached. Writes go to Bitwarden
 // first and fail without it.
@@ -62,11 +62,8 @@ func NewBackend(client *Client, project, path string, grants Grants) *Backend {
 
 type entry struct {
 	Secret
-	kind store.ValueKind
-	// ambiguous marks an entry that other secrets name too, whose IDs are
-	// others.
-	ambiguous bool
-	others    []string
+	kind   store.ValueKind
+	others []string // IDs of other secrets with the same account
 }
 
 // decodeKey splits a secret's key into an entry's account and kind. The
@@ -158,6 +155,10 @@ func (b *Backend) refresh(ctx context.Context, have *snapshot) (*snapshot, error
 			return nil, err
 		}
 	}
+	headers = slices.DeleteFunc(headers, func(h Header) bool {
+		_, _, ok := decodeKey(h.Key)
+		return !ok
+	})
 	known := map[string]Secret{}
 	if have != nil {
 		for _, secret := range have.Secrets {
@@ -187,9 +188,13 @@ func (b *Backend) refresh(ctx context.Context, have *snapshot) (*snapshot, error
 			known[secret.ID] = secret
 		}
 	}
-	fresh := &snapshot{Project: b.project, Refreshed: b.now(), Secrets: make([]Secret, len(headers))}
-	for i, header := range headers {
-		fresh.Secrets[i] = known[header.ID]
+	fresh := &snapshot{Project: b.project, Refreshed: b.now(), Secrets: make([]Secret, 0, len(headers))}
+	for _, header := range headers {
+		secret := known[header.ID]
+		// The secret may have been renamed between the index and get-by-ids.
+		if _, _, ok := decodeKey(secret.Key); ok {
+			fresh.Secrets = append(fresh.Secrets, secret)
+		}
 	}
 	return fresh, nil
 }
@@ -217,7 +222,7 @@ func (b *Backend) entries(ctx context.Context, current bool) (map[string]entry, 
 			continue
 		}
 		if first, twice := entries[account]; twice {
-			first.ambiguous, first.others = true, append(first.others, secret.ID)
+			first.others = append(first.others, secret.ID)
 			entries[account] = first
 			continue
 		}
@@ -240,7 +245,7 @@ func (b *Backend) entry(ctx context.Context, account string, current bool) (entr
 	if !ok {
 		return entry{}, &store.Error{Kind: store.KindNotFound, Message: "the entry does not exist"}
 	}
-	if found.ambiguous {
+	if len(found.others) != 0 {
 		return entry{}, ambiguous(account)
 	}
 	return found, nil
@@ -284,7 +289,7 @@ func (b *Backend) Read(ctx context.Context, accounts []string) (values map[strin
 	values = map[string]store.Stored{}
 	for _, account := range accounts {
 		if e, ok := entries[account]; ok {
-			if e.ambiguous {
+			if len(e.others) != 0 {
 				return nil, ambiguous(account)
 			}
 			values[account] = store.Stored{Value: slices.Clone(e.Value), Kind: e.kind}
@@ -354,7 +359,7 @@ func (b *Backend) Edit(ctx context.Context, account, to string, value []byte, de
 	if !ok {
 		return &store.Error{Kind: store.KindNotFound, Message: "the entry does not exist"}
 	}
-	if e.ambiguous {
+	if len(e.others) != 0 {
 		return ambiguous(account)
 	}
 	if _, taken := entries[to]; taken && to != account {
@@ -372,9 +377,7 @@ func (b *Backend) Edit(ctx context.Context, account, to string, value []byte, de
 	return b.written(ctx, header, value, note, err)
 }
 
-// SetProgramAccess changes a grant on this Mac, which needs no network. The
-// grant is the secret's, so a secret that took the name of the one listed as
-// id, deleted or renamed since, gets none and keeps none.
+// SetProgramAccess binds this Mac's grant to the listed UUID so a replacement cannot inherit it.
 func (b *Backend) SetProgramAccess(ctx context.Context, account, id string, granted bool) (err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

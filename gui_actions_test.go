@@ -94,8 +94,7 @@ func TestAddChecksNamespaceFirst(t *testing.T) {
 // row URL had. The list must not take that for URL moving.
 func TestAddEntryChosenOverTheListChoice(t *testing.T) {
 	h := newHarness(t)
-	loading, release := h.addWhileNamesLoad("NEW_KEY")
-	h.waitFor(loading)
+	release := h.addWhileNamesLoad("NEW_KEY")
 	h.clickWithoutSettling("URL")
 	release()
 	h.settle()
@@ -110,8 +109,7 @@ func TestAddEntryChosenOverTheListChoice(t *testing.T) {
 // whenever the search is cleared, however much later.
 func TestSearchEndsPendingChoice(t *testing.T) {
 	h := newHarness(t)
-	loading, release := h.addWhileNamesLoad("NEW_KEY")
-	h.waitFor(loading)
+	release := h.addWhileNamesLoad("NEW_KEY")
 	h.typeInto("Search entries", "tok")
 	release()
 	h.settle()
@@ -350,8 +348,11 @@ func TestSSHKeyNeedsUsableKey(t *testing.T) {
 	}
 	protected := string(pem.EncodeToMemory(encrypted))
 	const notKey = "This is not an SSH private key. Paste the private key itself, not its public key, or choose another kind."
-	const passphrase = "This SSH key is protected by a passphrase, which mk run does not ask for. In Terminal, mk set --stdin removes it from a key it stores in an SSH Key entry, such as a new one whose name ends in SSH_KEY."
-	const pkcs8 = "This SSH key is protected by a passphrase that Maskey cannot remove. In Terminal, pipe openssl pkey -in <file> to mk set --stdin, which stores it without the passphrase."
+	// mk set removes a passphrase from a key it stores in an SSH Key entry:
+	// the new one, or for an entry of another kind, a new one beside it.
+	const passphrase = "This SSH key is protected by a passphrase, which mk run does not ask for. In Terminal, mk set --store icloud --stdin app/DEPLOY_SSH_KEY < <file> stores it without the passphrase."
+	const besidePEM = "This SSH key is protected by a passphrase, which mk run does not ask for. In Terminal, mk set --store icloud --stdin app/<NAME>_SSH_KEY < <file> stores it without the passphrase."
+	const pkcs8 = "This SSH key is protected by a passphrase that Maskey cannot remove. In Terminal, openssl pkey -in <file> | mk set --store icloud --stdin app/DEPLOY_SSH_KEY stores it without the passphrase."
 	const unlendable = "Maskey cannot lend this SSH key. Paste the whole key, of type Ed25519, RSA, or ECDSA P-256, P-384, or P-521, or choose another kind."
 	p224, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
 	if err != nil {
@@ -394,7 +395,7 @@ func TestSSHKeyNeedsUsableKey(t *testing.T) {
 	h.click("Private Key")
 	h.click("SSH Key")
 	h.click("Save")
-	if f := h.g.form; !f.open || f.err != (formError{"value", passphrase}) {
+	if f := h.g.form; !f.open || f.err != (formError{"value", besidePEM}) {
 		t.Fatalf("form after choosing SSH Key: open %v, error %+v", f.open, f.err)
 	}
 	if got := h.attributes("app/SIGNING_KEY").Kind; got != store.ValuePEM {
@@ -405,8 +406,8 @@ func TestSSHKeyNeedsUsableKey(t *testing.T) {
 	// form, which shows no field for it, points to the terminal.
 	crlf := strings.ReplaceAll(string(pem.EncodeToMemory(plain)), "\n", "\r\n")
 	for _, tc := range []struct{ name, value, message string }{
-		{"CRLF_PUBLIC", "ssh-ed25519 AAAA synthetic\r\n", "This is not an SSH private key. In Terminal, use mk set --stdin to store the private key itself, not its public key, or choose another kind."},
-		{"CRLF_P224", strings.ReplaceAll(string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: p224DER})), "\n", "\r\n"), "Maskey cannot lend this SSH key. In Terminal, use mk set --stdin to store the whole key, of type Ed25519, RSA, or ECDSA P-256, P-384, or P-521, or choose another kind."},
+		{"CRLF_PUBLIC", "ssh-ed25519 AAAA synthetic\r\n", "This is not an SSH private key. In Terminal, use mk set --store icloud --stdin app/<NAME>_SSH_KEY < <file> to store the private key itself, not its public key, or choose another kind."},
+		{"CRLF_P224", strings.ReplaceAll(string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: p224DER})), "\n", "\r\n"), "Maskey cannot lend this SSH key. In Terminal, use mk set --store icloud --stdin app/<NAME>_SSH_KEY < <file> to store the whole key, of type Ed25519, RSA, or ECDSA P-256, P-384, or P-521, or choose another kind."},
 		{"CRLF_KEY", crlf, ""},
 	} {
 		h := newHarness(t)
@@ -499,7 +500,7 @@ func TestDeleteFromForm(t *testing.T) {
 	h := newHarness(t)
 	h.choose("URL", "Edit")
 	h.click("Delete")
-	if a := h.alert(); a.message != "Delete this entry?" || a.detail != "You can’t undo this action." || !slices.Equal(a.buttons, []alertButton{
+	if a := h.alert(); a.message != "Delete “app/URL” from “icloud”?" || !slices.Equal(a.buttons, []alertButton{
 		{title: "Delete", destructive: true}, {title: "Cancel", isCancel: true},
 	}) {
 		t.Fatalf("Delete asks %+v", a.alert)
@@ -547,7 +548,7 @@ func TestDeleteOutcomeShownAfterSelectionChanges(t *testing.T) {
 // own entry chosen, none for a new one, when they arrive.
 func TestEditKeepsItsEntry(t *testing.T) {
 	h := newHarness(t)
-	_, release := h.addWhileNamesLoad("NEW_KEY")
+	release := h.addWhileNamesLoad("NEW_KEY")
 	h.chooseWithoutSettling("URL", "Edit")
 	release()
 	h.settle()
@@ -561,7 +562,7 @@ func TestEditKeepsItsEntry(t *testing.T) {
 	}
 
 	h = newHarness(t)
-	_, release = h.addWhileNamesLoad("NEW_KEY")
+	release = h.addWhileNamesLoad("NEW_KEY")
 	h.clickWithoutSettling("New Entry")
 	release()
 	h.settle()
@@ -574,7 +575,7 @@ func TestEditKeepsItsEntry(t *testing.T) {
 // choice of that entry, which must not happen on returning to its namespace.
 func TestNamespaceSwitchDropsPendingChoice(t *testing.T) {
 	h := newHarness(t)
-	_, release := h.addWhileNamesLoad("NEW_KEY")
+	release := h.addWhileNamesLoad("NEW_KEY")
 	h.clickWithoutSettling("db")
 	release()
 	h.settle()

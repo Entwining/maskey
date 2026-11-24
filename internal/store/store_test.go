@@ -17,6 +17,15 @@ var ctx = context.Background()
 
 func ref(namespace, name string) store.Ref { return store.Ref{Namespace: namespace, Name: name} }
 
+func TestCaseTwins(t *testing.T) {
+	entry := ref("app", "TOKEN")
+	want := []store.Ref{ref("App", "TOKEN"), ref("app", "Token"), ref("APP", "token")}
+	others := []store.Ref{entry, want[0], ref("other", "TOKEN"), want[1], ref("app", "KEY"), want[2]}
+	if got := store.CaseTwins(entry, others); !slices.Equal(got, want) {
+		t.Fatalf("case twins of %s: %v, want %v", entry, got, want)
+	}
+}
+
 func TestIdentifierRules(t *testing.T) {
 	for _, namespace := range []string{"github", "GitHub", "aws.prod", "team_1", "a-b", "0"} {
 		if err := store.ValidateNamespace(namespace); err != nil {

@@ -174,14 +174,14 @@ func exitCodesTopic() *cobra.Command {
   1    internal_error          an unexpected internal failure
   2    usage                   the command line is wrong
   2    invalid                 a namespace, name, or value breaks a rule
-  3    not_found               an entry or namespace does not exist
-  4    exists                  an entry or installation path already exists
+  3    not_found               an entry, namespace, local store, or remote project was not found
+  4    exists                  an entry, store name, or installation path already exists
   5    conflict                concurrent change or conflicting selection
   6    prerequisite            this Mac lacks something mk needs
   7    locked                  the Keychain is locked until this Mac is unlocked
   8    keychain                another Keychain failure
   9    uncertain               a write may have happened; check before retrying
-  10   unavailable             the Keychain and mk's service are unreachable
+  10   unavailable             mk could not reach the Keychain or Maskey service it needs
   11   not_granted             program access is not granted
   12   io                      reading input or writing output failed
   13   network                 a remote store could not be reached; nothing was written
@@ -211,8 +211,9 @@ and changes neither output nor status.
 Questions and hidden value prompts appear on the controlling terminal, not
 on stdout or stderr, so with --json stderr holds only JSON lines; mk falls
 back to stdin and stderr only when it cannot open that terminal. Without a
-terminal on stdin, set needs --stdin, and delete and uninstall need --yes;
-set --stdin asks on the terminal only for an SSH key's passphrase.
+terminal on stdin, set, store add, and store token need --stdin. Delete,
+store remove, and uninstall need --yes. set --stdin asks on the terminal
+only for an SSH key's passphrase.
 
 set, delete, grant, and revoke validate all references and collect
 required input before writing. set without --stdin or --yes asks once
@@ -240,17 +241,30 @@ result only after the operation, so when they cannot write it, the
 operation was done: mk list shows a rename, and setup, skill install, and
 uninstall can run again for their report.
 
-doctor keeps check failures in its stdout report and returns the first
-failed interpreter or Keychain status. Service and skill warnings do not
-fail it. get prints raw bytes without an added newline; run keeps masked
-child output. Their --json flag changes mk errors only.
+store list --json prints {"stores":[...]} with each store's id (its name),
+type, default, and connection details for Bitwarden. On success, store
+add, remove, token, default, and sync with --json print a document with
+store (the name) and action: added, removed, token_replaced,
+default_changed, or synced, respectively. store add also includes
+connection with id, type, region, organization, project, and project_name.
 
-uninstall prints one row per item on stdout, also with --json and when an
-item fails. An absent item is not a failure; a kept item is one it must
-not remove, such as a link to something else, or the service's files
-while the service may still be loaded. Any failed item makes the status
-prerequisite; resolve it, then run uninstall again. It never touches
-Keychain entries or Maskey.app.`,
+doctor keeps check failures in its stdout report. The first failed
+interpreter, Keychain, store configuration, or default store check
+determines the exit status. Service, skill, and other store problems
+are warnings. get prints raw bytes without an added newline; run keeps
+masked child output. Their --json flag changes mk errors only.
+
+uninstall removes this Mac's Bitwarden stores first, including their
+access tokens and program access in the Keychain. If it cannot read the
+store configuration or finish removing a store, it stops before removing
+the service or other files and reports the failure on stderr. Otherwise
+the stdout report has one row per item in text, or one JSON document
+with items (the per-item results) and bundle (the path to Maskey.app).
+Both forms include failed items. An absent item is not a failure; a kept
+item is one it must not remove, such as a link to something else, or the
+service's files while the service may still be loaded. Any failed item makes the status
+prerequisite; resolve it, then run uninstall again. Entries stay in
+iCloud Keychain and Bitwarden, and Maskey.app stays on this Mac.`,
 		Args: noArgs("exit-codes takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}

@@ -139,9 +139,16 @@ func TestRunTagsReads(t *testing.T) {
 // its key, and as its public key under its name, never as the key itself.
 func TestRunLendsSSHKeys(t *testing.T) {
 	h := newHarness(t)
-	fixtures := keyFixtures(t)
-	h.run(t, string(fixtures[0].plain), "set", "--stdin", "deploy/ED_SSH_KEY")
-	h.run(t, string(fixtures[1].plain), "set", "--stdin", "deploy/RSA_SSH_KEY")
+	keys := []struct {
+		name string
+		pem  []byte
+	}{
+		{"ED_SSH_KEY", plainOpenSSHKey(t, newOpenSSHKey(t))},
+		{"RSA_SSH_KEY", plainLegacyKey(legacyKeyDER(t))},
+	}
+	for _, key := range keys {
+		h.run(t, string(key.pem), "set", "--stdin", "deploy/"+key.name)
+	}
 	h.set(t, "deploy/TOKEN")
 
 	dir := t.TempDir()
@@ -163,14 +170,14 @@ printf '%s' "$TOKEN"`
 	}
 	environment, _ := os.ReadFile(filepath.Join(dir, "env"))
 	listed, _ := os.ReadFile(filepath.Join(dir, "listed"))
-	for _, fixture := range fixtures {
-		key, _ := ssh.ParseRawPrivateKey(fixture.plain)
+	for _, fixture := range keys {
+		key, _ := ssh.ParseRawPrivateKey(fixture.pem)
 		signer, _ := ssh.NewSignerFromKey(key)
 		public := strings.TrimSuffix(string(ssh.MarshalAuthorizedKey(signer.PublicKey())), "\n")
 		if !bytes.Contains(environment, []byte("_SSH_KEY="+public+"\n")) || !bytes.Contains(listed, []byte(public)) {
 			t.Errorf("%s: environment %q, listed %q, want its public key in both", fixture.name, environment, listed)
 		}
-		if bytes.Contains(environment, bytes.TrimSpace(bytes.Split(fixture.plain, []byte("\n"))[1])) {
+		if bytes.Contains(environment, bytes.TrimSpace(bytes.Split(fixture.pem, []byte("\n"))[1])) {
 			t.Errorf("%s: the private key reached the environment", fixture.name)
 		}
 	}
@@ -189,7 +196,7 @@ printf '%s' "$TOKEN"`
 // for, finds no agent once the command has exited.
 func TestRunEndsSSHAgentWithCommand(t *testing.T) {
 	h := newHarness(t)
-	h.run(t, string(keyFixtures(t)[0].plain), "set", "--stdin", "deploy/DEPLOY_SSH_KEY")
+	h.run(t, string(plainOpenSSHKey(t, newOpenSSHKey(t))), "set", "--stdin", "deploy/DEPLOY_SSH_KEY")
 	dir := t.TempDir()
 	script := `(sleep 1; ssh-add -L > /dev/null 2>&1; echo $? > "$1/listed") &`
 	if outcome, _, stderr := h.run(t, "", "run", "deploy", "--", "/bin/sh", "-c", script, "sh", dir); outcome.Code != 0 {
@@ -204,7 +211,7 @@ func TestRunEndsSSHAgentWithCommand(t *testing.T) {
 // the command starts.
 func TestRunRejectsUnusableSSHKeys(t *testing.T) {
 	h := newHarness(t)
-	h.store.Create(context.Background(), store.Ref{Namespace: "deploy", Name: "PROTECTED"}, keyFixtures(t)[0].protected, store.Details{Kind: store.ValueSSH})
+	h.store.Create(context.Background(), store.Ref{Namespace: "deploy", Name: "PROTECTED"}, protectedOpenSSHKey(t, newOpenSSHKey(t)), store.Details{Kind: store.ValueSSH})
 	h.store.Create(context.Background(), store.Ref{Namespace: "deploy", Name: "PKCS8"}, pkcs8, store.Details{Kind: store.ValueSSH})
 	h.store.Create(context.Background(), store.Ref{Namespace: "deploy", Name: "PUBLIC"}, []byte("ssh-ed25519 AAAA synthetic"), store.Details{Kind: store.ValueSSH})
 	h.store.Create(context.Background(), store.Ref{Namespace: "deploy", Name: "P224"}, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: p224(t)}), store.Details{Kind: store.ValueSSH})
