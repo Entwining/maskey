@@ -362,9 +362,10 @@ func deleteCommand(env *Env) *cobra.Command {
 		Use:        "delete [--store <name>] [--yes] [--json] <namespace>/<NAME>...",
 		SuggestFor: []string{"rm", "remove"},
 		Short:      "Delete entries from their store, wherever it is used",
-		Long: `Delete entries from their store: in iCloud Keychain from this Mac and
-other Macs syncing this Keychain, in a Bitwarden store from its project, for
-everyone who uses it. Deletion cannot be undone.
+		Long: `Delete entries from their store. In iCloud Keychain, deletion removes them
+from this Mac and other Macs syncing this Keychain and cannot be undone. In
+a Bitwarden store, it moves them to Bitwarden's trash and removes them from
+the project for everyone who uses it; Maskey cannot restore them.
 
 mk checks that every entry exists, lists the entries, and asks once.
 Type y or yes and press Return to confirm, ignoring case. Without terminal
@@ -402,15 +403,16 @@ the initial check.`,
 			}
 			if !yes {
 				var prompt strings.Builder
-				place := "this Mac and Macs syncing this Keychain"
+				place, outcome := "this Mac and Macs syncing this Keychain", "This cannot be undone."
 				if env.connection.Type != stores.ICloud {
 					place = remotePlace(env.connection) + ", for everyone who uses it"
+					outcome = "Bitwarden moves deleted entries to its trash, and Maskey cannot restore them."
 				}
 				fmt.Fprintf(&prompt, "Delete %s from %s:\n", count(len(refs), "entry", "entries"), place)
 				for _, ref := range refs {
 					fmt.Fprintf(&prompt, "  %s\n", ref)
 				}
-				prompt.WriteString("This cannot be undone. Continue? [y/N] ")
+				prompt.WriteString(outcome + " Continue? [y/N] ")
 				if err := confirm(cmd.Context(), env, prompt.String(), "no entries were deleted"); err != nil {
 					return err
 				}

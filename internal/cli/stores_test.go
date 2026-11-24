@@ -261,7 +261,7 @@ func TestHintsAndPromptsNameTheStore(t *testing.T) {
 		t.Errorf("list in the default store: %s", stderr)
 	}
 	_, _, _, onTerminal := h.runAsking(t, "n\n", "delete", "app/TOKEN")
-	if want := "Delete 1 entry from the Bitwarden project Deploy (store work), for everyone who uses it:\n  app/TOKEN\n"; !strings.Contains(onTerminal, want) {
+	if want := "Delete 1 entry from the Bitwarden project Deploy (store work), for everyone who uses it:\n  app/TOKEN\nBitwarden moves deleted entries to its trash, and Maskey cannot restore them. Continue? [y/N] "; !strings.Contains(onTerminal, want) {
 		t.Errorf("delete asked %q", onTerminal)
 	}
 	_, _, _, onTerminal = h.runAsking(t, "n\n", "set", "app/TOKEN")
