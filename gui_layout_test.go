@@ -356,3 +356,17 @@ func TestDividerDragKeepsFocus(t *testing.T) {
 		}
 	}
 }
+
+// A double click on a divider puts its pane back to a new window's width.
+func TestDividerDoubleClickResets(t *testing.T) {
+	h := newHarness(t)
+	h.dragDivider(sidebarDefaultWidth, 30)
+	h.dragDivider(sidebarDefaultWidth+30+1+listDefaultWidth, -40)
+	h.expectPanes("after dragging", sidebarDefaultWidth+30, listDefaultWidth-40)
+	for _, x := range []float32{sidebarDefaultWidth + 30, sidebarDefaultWidth + 1 + listDefaultWidth - 40} {
+		h.tt.ClickAt(x+3, 300)
+		h.tt.ClickAt(x+3, 300)
+		h.tt.Advance(time.Second)
+	}
+	h.expectPanes("after double clicks", sidebarDefaultWidth, listDefaultWidth)
+}

@@ -8,10 +8,12 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/agent"
@@ -20,6 +22,7 @@ import (
 	"github.com/Entwining/maskey/internal/owner"
 	"github.com/Entwining/maskey/internal/runner"
 	"github.com/Entwining/maskey/internal/store"
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 // mygo.json is the one source of the version, for the CLI as well: reading
@@ -57,9 +60,22 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	record := activityLog(func(err error) { fmt.Fprintln(os.Stderr, "mk: warning:", err) })
-	k := keychain.New(store.Service, record)
-	if len(args) == 1 && args[0] == "--keychain-service" {
-		err := agent.Serve(ctx, k, record, k.Check, owner.NewApproval(owner.NativeAuthenticate, owner.Clock, "program access changes from mk").Approve)
+	k := keychain.New(store.Service)
+	if len(args) == 1 && args[0] == agent.ServiceArg {
+		dir, err := stores.Dir()
+		if err == nil {
+			registry := stores.NewRegistry(dir, k, k, remoteClient())
+			// An approval the owner gave in the window does not let mk
+			// change program access, nor the other way around.
+			fromMk := owner.NewApproval(owner.NativeAuthenticate, owner.Clock, "program access changes from mk")
+			fromWindow := owner.NewApproval(owner.NativeAuthenticate, owner.Clock, "program access changes in the Maskey window to entries outside iCloud Keychain")
+			err = agent.Serve(ctx, registry, record, k.Check, func(ctx context.Context, reason string) (string, error) {
+				if agent.FromWindow(ctx) {
+					return fromWindow.Approve(ctx, reason)
+				}
+				return fromMk.Approve(ctx, reason)
+			})
+		}
 		stop()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -67,15 +83,50 @@ func main() {
 		}
 		return
 	}
-	backend := agent.New(k, record.ReportFailure, record.Writable())
+	if len(args) == 1 && args[0] == agent.LegacyArg {
+		// Installing ends this process, the earlier service's job, with the
+		// signal launchd sends it. Handling that signal would cancel the
+		// wait for the job to stop, which reads as a job that did not stop
+		// and gets its configuration back. After a failure the process
+		// waits, so that launchd does not start it again every few seconds;
+		// mk setup then installs the service.
+		stop()
+		if err := agent.Install(context.Background(), executable()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			ended := make(chan os.Signal, 1)
+			signal.Notify(ended, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+			<-ended
+		}
+		return
+	}
+	recordable := record.Writable()
+	backend := agent.New(k, record, record.ReportFailure, recordable)
 	home, _ := os.UserHomeDir()
 	app := manifest()
 	// The program that started mk is described before any operation, while
 	// it surely runs.
 	ctx = activity.WithCaller(ctx, activity.Invoker(os.Getpid()))
 	outcome := cli.Run(ctx, args, cli.Env{
-		Store:        store.New(backend, record),
-		ChangeAccess: backend.ChangeProgramAccess,
+		OpenStore: func(_ context.Context, id string) (cli.StoreAccess, error) {
+			// iCloud Keychain, named, needs no configuration to be found.
+			config, err := storesConfig()
+			if err != nil && id != stores.ICloud {
+				return cli.StoreAccess{}, err
+			}
+			connection, err := config.Resolve(id)
+			if err != nil {
+				return cli.StoreAccess{}, err
+			}
+			client := backend
+			if connection.Type != stores.ICloud {
+				client = agent.NewRemote(connection.ID, record, record.ReportFailure, recordable)
+			}
+			return cli.StoreAccess{Connection: connection, Store: store.New(client, record), ChangeAccess: client.ChangeProgramAccess}, nil
+		},
+		Stores:       func(context.Context) (stores.Config, error) { return storesConfig() },
+		AddStore:     backend.AddStore,
+		SetToken:     backend.SetStoreToken,
+		ChangeStore:  backend.ChangeStore,
 		Activity:     record,
 		Check:        k.Check,
 		CheckService: backend.CheckService,
@@ -129,6 +180,27 @@ func exitBySignal(sig syscall.Signal) {
 	script := fmt.Sprintf("kill -%d $$; exit %d", n, 128+n)
 	_ = syscall.Exec("/bin/sh", []string{"sh", "-c", script}, nil)
 	os.Exit(128 + n)
+}
+
+// remoteTimeout bounds one request to a remote store, so that a store that
+// does not answer fails well within the time a client waits for the service.
+const remoteTimeout = 15 * time.Second
+
+// remoteClient makes the requests to a remote store. It follows no
+// redirect: a request carries the store's access token or a session's, and
+// following one would send that to wherever the answer points.
+func remoteClient() *http.Client {
+	return &http.Client{Timeout: remoteTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+// storesConfig is this Mac's stores, which the Maskey service writes.
+// Without a home directory there is only iCloud Keychain.
+func storesConfig() (stores.Config, error) {
+	dir, err := stores.Dir()
+	if err != nil {
+		return stores.Config{Default: stores.ICloud}, nil
+	}
+	return stores.Load(dir)
 }
 
 // activityLog is this Mac's activity record, which reports a failure to

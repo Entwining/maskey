@@ -27,7 +27,7 @@ func TestClientChangesProgramAccessOnlyThroughService(t *testing.T) {
 	backend.Put("test/NAME", []byte("synthetic-value"))
 	calls := 0
 	backend.Before = func(string, string) error { calls++; return nil }
-	client := New(backend, nil, true)
+	client := New(backend, new(storetest.Recorder), nil, true)
 	client.path = filepath.Join(t.TempDir(), "missing.sock")
 	_, _, err := client.ChangeProgramAccess(context.Background(), []store.Ref{{Namespace: "test", Name: "NAME"}}, true)
 	if !store.IsKind(err, store.KindUnavailable) || calls != 0 {
@@ -37,7 +37,7 @@ func TestClientChangesProgramAccessOnlyThroughService(t *testing.T) {
 
 func TestClientDirectRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	client := New(storetest.New(), nil, true)
+	client := New(storetest.New(), new(storetest.Recorder), nil, true)
 	client.path = filepath.Join(t.TempDir(), "missing.sock")
 	account := "test/NAME"
 	for _, test := range []struct {
@@ -98,7 +98,7 @@ func TestClientFallbackOnlyUnavailable(t *testing.T) {
 				backend := storetest.New()
 				calls := 0
 				backend.Before = func(op, account string) error { calls++; return want }
-				client := New(backend, nil, true)
+				client := New(backend, new(storetest.Recorder), nil, true)
 				client.path = filepath.Join(t.TempDir(), "missing.sock")
 				got := method.call(client)
 				if kind == store.KindUnavailable {
@@ -135,7 +135,7 @@ func countedService(t *testing.T, before func(op string) error) (string, *atomic
 		served.Add(1)
 		return before(op)
 	}
-	path, _, _ := startTestService(t, backend, nil, func(context.Context) error { return nil }, nil, notReplaced)
+	path, _, _ := startTestService(t, backend, new(storetest.Recorder), func(context.Context) error { return nil }, nil, notReplaced)
 	return path, &served
 }
 
@@ -151,7 +151,7 @@ func TestClientRoutesByRecordability(t *testing.T) {
 				direct := storetest.New()
 				performed := 0
 				direct.Before = func(string, string) error { performed++; return nil }
-				client := New(direct, nil, recordable)
+				client := New(direct, new(storetest.Recorder), nil, recordable)
 				client.path = path
 				if err := method.call(client); store.IsKind(err, store.KindUnavailable) {
 					t.Fatal(err)
@@ -176,10 +176,10 @@ func TestClientWithoutServicePerformsDirectly(t *testing.T) {
 	if err := os.WriteFile(blocker, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	direct := recordingReads{storetest.New(), activity.New(filepath.Join(blocker, "Logs"), nil)}
+	direct := storetest.New()
 	direct.Put("test/NAME", []byte("synthetic-value"))
 	var warnings []error
-	client := New(direct, func(err error) { warnings = append(warnings, err) }, false)
+	client := New(direct, activity.New(filepath.Join(blocker, "Logs"), nil), func(err error) { warnings = append(warnings, err) }, false)
 	client.path = filepath.Join(t.TempDir(), "missing.sock")
 	values, err := client.Read(context.Background(), []string{"test/NAME"})
 	if err != nil || !bytes.Equal(values["test/NAME"].Value, []byte("synthetic-value")) || len(direct.Reads) != 1 {
@@ -210,8 +210,8 @@ func TestClientRemembersUnavailableSides(t *testing.T) {
 	}
 	remote := storetest.New()
 	remote.Put("test/NAME", []byte("synthetic-value"))
-	path, stop, finished := startTestService(t, remote, nil, func(context.Context) error { return nil }, nil, notReplaced)
-	client := New(direct, nil, false)
+	path, stop, finished := startTestService(t, remote, new(storetest.Recorder), func(context.Context) error { return nil }, nil, notReplaced)
+	client := New(direct, new(storetest.Recorder), nil, false)
 	client.path = path
 	// mk delete lists the entries, then deletes them.
 	if items, err := client.Items(ctx); err != nil || len(items) != 1 {
@@ -242,7 +242,7 @@ func TestClientWithoutEitherSide(t *testing.T) {
 	direct.Before = func(string, string) error {
 		return &store.Error{Kind: store.KindUnavailable, Message: "direct backend error"}
 	}
-	client := New(direct, nil, false)
+	client := New(direct, new(storetest.Recorder), nil, false)
 	client.path = filepath.Join(t.TempDir(), "missing.sock")
 	started := time.Now()
 	if _, err := client.Get(context.Background(), "test/NAME"); err == nil || err.Error() != unavailable().Error() || time.Since(started) >= restartWait {
@@ -259,7 +259,7 @@ func TestClientKeepsServiceAnswer(t *testing.T) {
 	direct := storetest.New()
 	performed := 0
 	direct.Before = func(string, string) error { performed++; return nil }
-	client := New(direct, nil, false)
+	client := New(direct, new(storetest.Recorder), nil, false)
 	client.path = path
 	for range 2 {
 		if err := client.Update(context.Background(), "test/NAME", []byte("synthetic-value")); !store.IsKind(err, store.KindUncertain) {

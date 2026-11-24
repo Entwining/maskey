@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -21,7 +22,7 @@ func uninstallCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "uninstall [--yes] [--json]",
 		Short: "Remove what Maskey installed on this Mac outside its app",
-		Long: `Stop the Keychain service and remove its configuration, the activity
+		Long: `Stop the Maskey service and remove its configuration, the activity
 record, the window's saved state, and the mk and skill links. Quit Maskey
 first.
 
@@ -29,8 +30,13 @@ mk lists what it will remove and asks once. Type y or yes and press
 Return to confirm, ignoring case. Without terminal stdin, --yes is
 required. Use it only when the owner asked to uninstall Maskey.
 
-Keychain entries stay in iCloud Keychain on every Mac: delete them with
-mk delete first if they are no longer wanted. Maskey.app stays too; move it
+A Bitwarden store goes first, with its access token and its entries'
+program access, which are in this Mac's Keychain: if one cannot be
+removed, or the store configuration cannot be read, uninstall stops there,
+so that a later uninstall still finds it.
+
+Entries stay in iCloud Keychain on every Mac, and in Bitwarden: delete them
+with mk delete first if they are no longer wanted. Maskey.app stays too; move it
 to the Trash afterwards, or run brew uninstall --cask maskey.
 
 Print one row per item: removed, absent, kept (a file, link, or service
@@ -61,7 +67,7 @@ type removal struct {
 
 // uninstall removes everything Maskey writes outside its app bundle and the
 // Keychain, and what MyGo writes for the window. TestUninstall, and
-// TestRemoveServiceUndoesInstall for the Keychain service, write each item
+// TestRemoveServiceUndoesInstall for the Maskey service, write each item
 // where Maskey does and fail on what is left behind.
 func uninstall(cmd *cobra.Command, env *Env) error {
 	ctx := cmd.Context()
@@ -74,8 +80,15 @@ func uninstall(cmd *cobra.Command, env *Env) error {
 		return withHint(usageError("standard input is not a terminal and uninstall needs --yes"),
 			"use --yes only when the owner asked to uninstall Maskey")
 	}
+	remote, err := remoteStores(ctx, env)
+	if err != nil {
+		return err
+	}
 	if !yes {
 		var prompt strings.Builder
+		for _, id := range remote {
+			fmt.Fprintf(&prompt, "  %s\n", storeItem(id))
+		}
 		service := env.ServiceItems(ctx, env.Home)
 		for _, item := range service {
 			if item.Status == "" {
@@ -88,7 +101,7 @@ func uninstall(cmd *cobra.Command, env *Env) error {
 			}
 		}
 		if prompt.Len() > 0 {
-			prompt.WriteString("Entries stay in iCloud Keychain, and Maskey.app stays where it is. Continue? [y/N] ")
+			prompt.WriteString("Entries stay in their stores, and Maskey.app stays where it is. Continue? [y/N] ")
 			if err := confirm(ctx, env, "Remove what Maskey installed on this Mac:\n"+prompt.String(), "nothing was removed"); err != nil {
 				return err
 			}
@@ -97,6 +110,21 @@ func uninstall(cmd *cobra.Command, env *Env) error {
 	// What goes is decided again now: while the owner answers, mk setup can
 	// reinstall the service or a link can come to point at another copy.
 	var items []removal
+	// Only the service removes a store's Keychain items, so they go before
+	// it does, and a store that stays keeps the configuration that names it.
+	if remote, err = remoteStores(ctx, env); err != nil {
+		return err
+	}
+	for i, id := range remote {
+		if err := env.ChangeStore(ctx, agent.OpRemoveStore, id); err != nil {
+			removed := "nothing was removed"
+			if i > 0 {
+				removed = "only " + count(i, "store was", "stores were") + " removed"
+			}
+			return withHint(err, removed+"; run mk setup if the Maskey service is not running, then run uninstall again")
+		}
+		items = append(items, removal{Item: storeItem(id), Status: "removed"})
+	}
 	service := env.RemoveService(ctx, env.Home)
 	for _, item := range service {
 		items = append(items, removal{Item: item.Item, Status: item.Status, Detail: item.Detail})
@@ -147,14 +175,34 @@ func uninstall(cmd *cobra.Command, env *Env) error {
 	return nil
 }
 
-// removals are the items besides the Keychain service, given its rows,
+// remoteStores names this Mac's stores besides iCloud Keychain. Uninstall
+// stops at a configuration that cannot be read: removing it would leave its
+// stores' access tokens in the Keychain with nothing that names them.
+func remoteStores(ctx context.Context, env *Env) ([]string, error) {
+	config, err := env.Stores(ctx)
+	if err != nil {
+		return nil, withHint(&store.Error{Kind: store.KindPrerequisite, Message: "this Mac's store configuration cannot be read, so mk cannot tell which stores to remove"},
+			"nothing was removed; repair ~/Library/Application Support/"+store.Service+"/stores.json, or delete it and revoke its stores' access tokens in Bitwarden, since uninstall then leaves them in this Mac's Keychain")
+	}
+	ids := make([]string, len(config.Stores))
+	for i, connection := range config.Remote() {
+		ids[i] = connection.ID
+	}
+	return ids, nil
+}
+
+func storeItem(id string) string {
+	return "store " + id + ", with its access token and program access"
+}
+
+// removals are the items besides the Maskey service, given its rows,
 // each with what removing it would do now.
 func removals(env *Env, service []agent.ServiceItem) []removal {
 	activity := removePath(env.Activity.Dir(), env.Activity.Remove)
 	// The service writes the activity record, so the record stays while the
 	// service may still be loaded, as the service's own files do.
 	if job := service[0].Status; activity.remove != nil && (job == "kept" || job == "failed") {
-		activity = removal{Item: activity.Item, Status: "kept", Detail: "the Keychain service may still be loaded"}
+		activity = removal{Item: activity.Item, Status: "kept", Detail: "the Maskey service may still be loaded"}
 	}
 	userData := filepath.Join(env.Home, "Library", "Application Support", env.App)
 	items := []removal{

@@ -2,6 +2,14 @@
 
 ## 0.0.11
 
+- Entries can live in a Bitwarden Secrets Manager project as well as in iCloud Keychain, so that Macs on different Apple Accounts can share them. Connect a project in Maskey > Settings… or with `mk store add bitwarden`; each Mac keeps its own access token in its Keychain. Commands work on this Mac's default store or the one `--store <name>` names, the window lists each store's namespaces under the store's name and can show one store alone, and `mk store` lists, syncs, removes, and sets the default. Reading keeps working from an encrypted copy while Bitwarden cannot be reached; changes need it.
+- New error kinds for a store that is not on this Mac: `network` (exit status 13), `unauthenticated` (14), `permission_denied` (15), `rate_limited` (16), and `remote_error` (17). `mk help exit-codes` describes them.
+- `mk activity` also records an operation that could not be performed because neither the Keychain nor the Maskey service was reachable, one on a store the service could not open, and a new entry the window could not create because it exists.
+- `mk activity` shows each entry after its store, as `icloud:github/GITHUB_TOKEN`, `mk doctor` reads each Bitwarden store from Bitwarden, `mk store token` replaces a store's expired access token, and `mk uninstall` removes this Mac's Bitwarden stores, with their access tokens, before the Maskey service.
+- The Keychain service is now the Maskey service, since it also reaches Bitwarden stores, and its socket is `~/Library/Application Support/io.github.entwining.maskey/service.sock`: a sandbox that allowed `keychain.sock` must allow the new path, and one that restricts reading must allow `stores.json` beside it. After the update, run `mk setup` in a normal terminal, or log in again, to replace the earlier service; until then `mk grant`, `mk revoke`, and sandboxed commands fail with `unavailable`.
+- `mk` reaches the Maskey service from a sandbox that keeps it from inspecting other processes, such as Claude Code's, where it failed with "the Maskey service identity could not be verified".
+- Double-click the line between the sidebar and the list, or between the list and the entry, to return the pane before it to its width in a new window.
+- In dark mode, tooltips are dark with light text, as macOS's are, instead of near white.
 - In dark mode, the update button under the sidebar lightens while the pointer is over it, instead of looking the same as at rest.
 - In an entry's details, the Show Value and Copy Value icons and the Program access switch end at the card's inner edge, where the edit form's fields end, instead of short of it and out of line with each other.
 

@@ -222,7 +222,7 @@ func TestAgentRejectsClientSuppliedAccessAndApproval(t *testing.T) {
 		go func() {
 			defer close(done)
 			defer server.Close()
-			serveRequest(context.Background(), server, backend, nil, nil, nil)
+			serveRequest(context.Background(), server, nil, only{backend}, new(storetest.Recorder), nil, nil)
 		}()
 		decoder := json.NewDecoder(client)
 		if err := decoder.Decode(&hello{}); err != nil {
@@ -251,7 +251,7 @@ func TestAgentChangesProgramAccess(t *testing.T) {
 	backend.Put("test/B", []byte("synthetic-b"))
 	approvals := 0
 	approve := func(context.Context, string) (string, error) { approvals++; return "dialog", nil }
-	result, err := roundTrip(t, backend, nil, approve, request{Op: "grant", Accounts: []string{"test/A"}})
+	result, err := roundTrip(t, backend, new(storetest.Recorder), approve, request{Op: "grant", Accounts: []string{"test/A"}})
 	if want := []store.AccessChange{{Ref: store.Ref{Namespace: "test", Name: "A"}, Changed: true}}; err != nil || !reflect.DeepEqual(result.Changes, want) || result.Auth != "dialog" {
 		t.Fatalf("grant: %+v, %v", result, err)
 	}
@@ -265,7 +265,7 @@ func TestAgentChangesProgramAccess(t *testing.T) {
 		return nil
 	}
 	backend.SetProgramAccess(context.Background(), "test/B", true)
-	result, err = roundTrip(t, backend, nil, approve, request{Op: "revoke", Accounts: []string{"test/A", "test/B"}})
+	result, err = roundTrip(t, backend, new(storetest.Recorder), approve, request{Op: "revoke", Accounts: []string{"test/A", "test/B"}})
 	if want := []store.AccessChange{{Ref: store.Ref{Namespace: "test", Name: "A"}, Changed: true}}; !store.IsKind(err, store.KindUncertain) || !reflect.DeepEqual(result.Changes, want) || result.Auth != "dialog" || approvals != 2 {
 		t.Fatalf("failed revoke: %+v, %v after %d approvals", result, err, approvals)
 	}
@@ -291,7 +291,7 @@ func startRequest(t *testing.T, backend store.Backend, recorder activity.Recorde
 	go func() {
 		defer close(done)
 		defer server.Close()
-		serveRequest(context.Background(), server, backend, recorder, nil, approve)
+		serveRequest(context.Background(), server, nil, only{backend}, recorder, nil, approve)
 	}()
 	t.Cleanup(func() {
 		client.Close()
@@ -415,7 +415,7 @@ func TestAgentFinishesApprovedChange(t *testing.T) {
 			}}
 			backend.Put("test/NAME", []byte("synthetic-value"))
 			approve := func(context.Context, string) (string, error) { return "dialog", nil }
-			client, decoder, done := startRequest(t, backend, nil, approve, request{Op: "grant", Accounts: []string{"test/NAME"}})
+			client, decoder, done := startRequest(t, backend, new(storetest.Recorder), approve, request{Op: "grant", Accounts: []string{"test/NAME"}})
 			<-reached
 			if hangUp {
 				client.Close()
@@ -472,7 +472,7 @@ func TestAgentErrorResponses(t *testing.T) {
 
 func agentRoundTrip(t *testing.T, backend store.Backend, req request) (response, error) {
 	t.Helper()
-	return roundTrip(t, backend, nil, nil, req)
+	return roundTrip(t, backend, new(storetest.Recorder), nil, req)
 }
 
 func roundTrip(t *testing.T, backend store.Backend, recorder activity.Recorder, approve store.Approve, req request) (response, error) {
@@ -483,7 +483,7 @@ func roundTrip(t *testing.T, backend store.Backend, recorder activity.Recorder, 
 	go func() {
 		defer close(done)
 		defer server.Close()
-		serveRequest(ctx, server, backend, recorder, func(context.Context) error { return nil }, approve)
+		serveRequest(ctx, server, nil, only{backend}, recorder, func(context.Context) error { return nil }, approve)
 	}()
 	defer func() {
 		client.Close()

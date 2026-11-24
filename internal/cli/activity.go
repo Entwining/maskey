@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/store"
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 func activityCommand(env *Env) *cobra.Command {
@@ -30,7 +32,8 @@ holds values, notes, arguments, or environment variables, and mk activity
 never reads the Keychain.
 
 By default, mk groups the records by entry, operation, result, and caller,
-with a count and the latest time, newest first; CALLER names each program
+with a count and the latest time, newest first; ENTRY is
+<store>:<namespace>/<NAME>, and CALLER names each program
 by its file name, nearest first, and the window as Maskey. --full lists
 each record instead, with full paths, the terminal, and how the owner
 approved a grant or revoke. Selectors, each a namespace or
@@ -46,8 +49,8 @@ files in ~/Library/Logs/` + store.Service + `.`,
   mk activity --full anthropic/ANTHROPIC_API_KEY`,
 		DisableFlagsInUseLine: true,
 		Args:                  cobra.ArbitraryArgs,
-		ValidArgsFunction: func(cmd *cobra.Command, args []string, _ string) ([]cobra.Completion, cobra.ShellCompDirective) {
-			return completeNames(cmd.Context(), env, args, true)
+		ValidArgsFunction: func(_ *cobra.Command, args []string, _ string) ([]cobra.Completion, cobra.ShellCompDirective) {
+			return completeRecorded(env, args), cobra.ShellCompDirectiveNoFileComp
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			value, _ := cmd.Flags().GetString("since")
@@ -144,12 +147,15 @@ func caller(c activity.Caller, full bool) string {
 	return strings.Join(programs, " < ")
 }
 
-// subject is a record's entry, and the reference a rename gave it.
+// subject is a record's entry after its store, and the reference a rename
+// gave it. A bare reference would read as the default store's, which need
+// not be the one the record is about.
 func subject(line activity.Line) string {
+	entry := cmp.Or(line.Store, stores.ICloud) + ":" + line.Entry
 	if line.To != "" {
-		return line.Entry + " -> " + line.To
+		return entry + " -> " + line.To
 	}
-	return line.Entry
+	return entry
 }
 
 // groupRows folds lines, newest first, into one row per entry, operation
@@ -218,4 +224,24 @@ func count(n int, one, many string) string {
 		return "1 " + one
 	}
 	return strconv.Itoa(n) + " " + many
+}
+
+// completeRecorded lists the namespaces and entries the record names, in
+// every store, that given does not hold.
+func completeRecorded(env *Env, given []string) []cobra.Completion {
+	lines, _, err := env.Activity.Read(time.Time{}, func(activity.Record) bool { return true })
+	if err != nil {
+		return nil
+	}
+	var names []cobra.Completion
+	for _, line := range lines {
+		for _, entry := range []string{line.Entry, line.To} {
+			if namespace, _, ok := strings.Cut(entry, "/"); ok {
+				names = append(names, namespace, entry)
+			}
+		}
+	}
+	slices.Sort(names)
+	names = slices.Compact(names)
+	return slices.DeleteFunc(names, func(name string) bool { return slices.Contains(given, name) })
 }

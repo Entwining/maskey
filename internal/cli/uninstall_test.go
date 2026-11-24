@@ -59,7 +59,7 @@ func TestUninstall(t *testing.T) {
 	writeFile(t, filepath.Join(claude, "SKILL.md"))
 
 	outcome, stdout, stderr := h.run(t, "", "uninstall", "--yes")
-	want := strings.ReplaceAll(`absent   Keychain service
+	want := strings.ReplaceAll(`absent   Maskey service
 removed  ~/Library/Logs/io.github.entwining.maskey
 removed  ~/Library/Application Support/Maskey
 kept     ~/.claude/skills/maskey
@@ -96,7 +96,7 @@ Maskey.app is still at `+filepath.Dir(filepath.Dir(filepath.Dir(h.executable)))+
 	}
 }
 
-// A failed row of the Keychain service fails uninstall after the rest goes,
+// A failed row of the Maskey service fails uninstall after the rest goes,
 // except the activity record, which the service may still write, with a hint
 // that names the executable, since the mk link is gone.
 func TestUninstallServiceFailure(t *testing.T) {
@@ -108,13 +108,13 @@ func TestUninstallServiceFailure(t *testing.T) {
 	env := h.env(nil, &stdout, &stderr)
 	env.RemoveService = func(context.Context, string) []agent.ServiceItem {
 		return []agent.ServiceItem{
-			{Item: "Keychain service", Status: "failed", Detail: "synthetic launchctl failure"},
-			{Item: "service.plist", Status: "kept", Detail: "the Keychain service may still be loaded"},
+			{Item: "Maskey service", Status: "failed", Detail: "synthetic launchctl failure"},
+			{Item: "service.plist", Status: "kept", Detail: "the Maskey service may still be loaded"},
 		}
 	}
 	outcome := Run(context.Background(), []string{"uninstall", "--yes"}, env)
-	rows := "failed   Keychain service\n         synthetic launchctl failure\nkept     service.plist\n         the Keychain service may still be loaded\n" +
-		"kept     " + h.logs + "\n         the Keychain service may still be loaded\n"
+	rows := "failed   Maskey service\n         synthetic launchctl failure\nkept     service.plist\n         the Maskey service may still be loaded\n" +
+		"kept     " + h.logs + "\n         the Maskey service may still be loaded\n"
 	hint := "mk: error[prerequisite]: 1 item was not removed\nmk: hint: resolve the failed items, then run " + h.executable + " uninstall again\n"
 	if outcome.Code != 6 || !strings.HasPrefix(stdout.String(), rows) || stderr.String() != hint {
 		t.Fatalf("%+v\n%s%s", outcome, &stdout, &stderr)
@@ -148,17 +148,17 @@ func TestUninstallConfirmation(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	env := h.env(terminal(t, "no\n"), &stdout, &stderr)
 	env.ServiceItems = func(context.Context, string) []agent.ServiceItem {
-		return []agent.ServiceItem{{Item: "Keychain service"}, {Item: "foreign.plist", Status: "kept", Detail: "not this Maskey's"}}
+		return []agent.ServiceItem{{Item: "Maskey service"}, {Item: "foreign.plist", Status: "kept", Detail: "not this Maskey's"}}
 	}
 	outcome := Run(context.Background(), []string{"uninstall"}, env)
 	link := filepath.Join(h.home, ".claude", "skills", "maskey")
-	prompt := "Remove what Maskey installed on this Mac:\n  Keychain service\n  " + link + "\n  " + filepath.Join(h.home, ".agents", "skills", "maskey") + "\nEntries stay in iCloud Keychain, and Maskey.app stays where it is. Continue? [y/N] "
+	prompt := "Remove what Maskey installed on this Mac:\n  Maskey service\n  " + link + "\n  " + filepath.Join(h.home, ".agents", "skills", "maskey") + "\nEntries stay in their stores, and Maskey.app stays where it is. Continue? [y/N] "
 	if _, err := os.Lstat(link); outcome.Code != 130 || !strings.HasPrefix(stderr.String(), prompt) || err != nil {
 		t.Fatalf("%+v %q, link %v", outcome, &stderr, err)
 	}
 }
 
-// While the Keychain service may still be loaded, the question leaves out
+// While the Maskey service may still be loaded, the question leaves out
 // the activity record, which uninstall would keep.
 func TestUninstallConfirmationKeepsActivity(t *testing.T) {
 	h := newHarness(t)
@@ -168,7 +168,7 @@ func TestUninstallConfirmationKeepsActivity(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	env := h.env(terminal(t, "no\n"), &stdout, &stderr)
 	env.ServiceItems = func(context.Context, string) []agent.ServiceItem {
-		return []agent.ServiceItem{{Item: "Keychain service", Status: "failed", Detail: "synthetic launchctl failure"}}
+		return []agent.ServiceItem{{Item: "Maskey service", Status: "failed", Detail: "synthetic launchctl failure"}}
 	}
 	outcome := Run(context.Background(), []string{"uninstall"}, env)
 	if outcome.Code != 130 || !strings.HasPrefix(stderr.String(), "Remove what Maskey installed") || strings.Contains(stderr.String(), h.logs) {
@@ -183,7 +183,7 @@ func (f writeFunc) Write(p []byte) (int, error) { return f(p) }
 
 // What uninstall removes is decided once the owner confirms: a link that
 // comes to point at another copy while the question waits stays, and the
-// Keychain service is removed only after the answer.
+// Maskey service is removed only after the answer.
 func TestUninstallDecidesAfterConfirmation(t *testing.T) {
 	h := newHarness(t)
 	h.run(t, "", "skill", "install")
@@ -226,7 +226,7 @@ func TestUninstallWithoutHome(t *testing.T) {
 	env := h.env(nil, &stdout, &stderr)
 	env.Home = ""
 	env.RemoveService = func(context.Context, string) []agent.ServiceItem {
-		t.Fatal("the Keychain service was removed")
+		t.Fatal("the Maskey service was removed")
 		return nil
 	}
 	outcome := Run(context.Background(), []string{"uninstall", "--yes"}, env)
@@ -246,6 +246,9 @@ var homePathFiles = map[string]string{
 	"internal/agent/agent.go":            "the service's socket",
 	"internal/agent/service_darwin.go":   "the service's configuration",
 	"internal/agent/uninstall_darwin.go": "the service's socket directory",
+	"internal/agent/legacy_darwin.go":    "no write: the files of the service under its earlier name, which it removes",
+	"internal/keychain/keychain.go":      "no path: the service of this Mac's own Keychain items, which go with their store",
+	"internal/stores/config.go":          "the stores' configuration and snapshots, in the service's socket directory",
 	"internal/cli/setup.go":              "the skill and mk links",
 	"internal/cli/uninstall.go":          "MyGo's directory for the window",
 }

@@ -6,10 +6,13 @@ import "github.com/Entwining/maskey/internal/store"
 type form struct {
 	open bool
 	id   int
-	from store.Ref // zero for a new entry
+	from entryID // zero for a new entry
+	// store is the store the form writes to: from's, or the one chosen for
+	// a new entry.
+	store string
 	// chosenBefore is the entry chosen before a new entry's form opened,
 	// chosen again when it closes.
-	chosenBefore store.Ref
+	chosenBefore entryID
 	// namespaceFrom is the namespace a new entry's form opened with: the
 	// one chosen in the sidebar, or none.
 	namespaceFrom string
@@ -40,13 +43,13 @@ type form struct {
 
 // ready reports whether submitting the form would write anything.
 func (f *form) ready() bool {
-	if f.from == (store.Ref{}) {
+	if f.from == (entryID{}) {
 		return f.namespace != "" && f.name != "" && f.value != ""
 	}
 	if f.loading || f.original == "" && !f.keepValue {
 		return false
 	}
-	return f.namespace != f.from.Namespace || f.name != f.from.Name || !f.keepValue && f.value != f.original || f.detailsChanged()
+	return f.namespace != f.from.ref.Namespace || f.name != f.from.ref.Name || !f.keepValue && f.value != f.original || f.detailsChanged()
 }
 
 func (f *form) detailsChanged() bool { return f.kind != f.kindFrom || f.notes != f.notesFrom }
@@ -55,10 +58,10 @@ func (f *form) detailsChanged() bool { return f.kind != f.kindFrom || f.notes !=
 // still loading or kept as stored is not, and neither, in a new entry's
 // form, are its kind and the namespace it opened with.
 func (f *form) dirty() bool {
-	if f.from == (store.Ref{}) {
+	if f.from == (entryID{}) {
 		return f.namespace != f.namespaceFrom || f.name != "" || f.value != "" || f.notes != ""
 	}
-	return f.namespace != f.from.Namespace || f.name != f.from.Name || f.value != f.original || f.detailsChanged()
+	return f.namespace != f.from.ref.Namespace || f.name != f.from.ref.Name || f.value != f.original || f.detailsChanged()
 }
 
 // followName infers the kind from the name, unless the user picked a kind

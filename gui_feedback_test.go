@@ -66,7 +66,7 @@ func TestCompletedWritePreservesReopenedForm(t *testing.T) {
 				h.tt.Frame()
 				h.applyPostedWhile(func() bool { return h.g.form.loading })
 			},
-			state: func(g *gui) (bool, string) { return g.form.open, g.form.from.Name },
+			state: func(g *gui) (bool, string) { return g.form.open, g.form.from.ref.Name },
 		},
 	} {
 		t.Run(tc.action, func(t *testing.T) {

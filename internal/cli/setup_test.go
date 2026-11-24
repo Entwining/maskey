@@ -33,7 +33,7 @@ ok       skill        linked in ~/.claude/skills and ~/.agents/skills
 
 	// A missing service is a warning; the first failed check decides the
 	// status, and failures stay in the report on stdout.
-	h.service = &store.Error{Kind: store.KindUnavailable, Message: "the Keychain service is not reachable"}
+	h.service = &store.Error{Kind: store.KindUnavailable, Message: "the Maskey service is not reachable"}
 	h.check = &store.Error{Kind: store.KindPrerequisite, Message: "no interpreter"}
 	h.backend.Before = func(string, string) error { return &store.Error{Kind: store.KindLocked, Message: "locked"} }
 	outcome, stdout, stderr := h.run(t, "", "doctor")
@@ -80,7 +80,7 @@ func TestSetup(t *testing.T) {
 			if calls != 1 || outcome.Code != test.code {
 				t.Fatalf("setup calls=%d, %+v, stdout %q, stderr %q", calls, outcome, &stdout, &stderr)
 			}
-			if test.err == nil && stdout.String() != "installed the Keychain service\n" || test.err != nil && errorKind(stderr.String()) != "prerequisite" {
+			if test.err == nil && stdout.String() != "installed the Maskey service\n" || test.err != nil && errorKind(stderr.String()) != "prerequisite" {
 				t.Fatalf("stdout %q stderr %q", &stdout, &stderr)
 			}
 		})

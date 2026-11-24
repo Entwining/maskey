@@ -10,23 +10,28 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Entwining/maskey/internal/agent"
 	"github.com/Entwining/maskey/internal/keychain"
 	"github.com/Entwining/maskey/internal/store"
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 func doctorCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor [--json]",
-		Short: "Check Keychain access, interpreter, service, and agent skill",
+		Short: "Check Keychain access, interpreter, service, stores, and agent skill",
 		Long: `Check whether mk can use the Keychain here.
 
 Check Apple's Python interpreter, Keychain access directly or through the
-service, whether the service runs this build, and the installed agent
-skill. This reads entry attributes, never values. It cannot check iCloud
-Keychain sync to other Macs.
+service, whether the service runs this build, each other store, which mk
+reads from its remote now, and the installed agent skill. It prints
+counts, never values; reading a Bitwarden store renews its snapshot on
+this Mac, which holds the values sealed. It cannot check iCloud Keychain
+sync to other Macs.
 
-Print one row per check. The first failed interpreter or Keychain check
-determines the exit status; service and skill problems are warnings.
+Print one row per check. The first failed interpreter, Keychain, store
+configuration, or default store check determines the exit status;
+service, skill, and other store problems are warnings.
 Check failures stay in the stdout report, including with --json.`,
 		DisableFlagsInUseLine: true,
 		Args:                  noArgs("doctor takes no arguments"),
@@ -57,11 +62,7 @@ func doctor(cmd *cobra.Command, env *Env) error {
 		if !errors.As(err, &e) {
 			e = &store.Error{Kind: store.KindKeychain, Message: err.Error()}
 		}
-		recovery, ok := doctorRecoveries[e.Kind]
-		if !ok {
-			recovery = recoveries[e.Kind]
-		}
-		checks = append(checks, check{Check: name, Status: "error", Error: &errorBody{Error: e, ExitCode: exitCodes[e.Kind], Recovery: recovery}})
+		checks = append(checks, check{Check: name, Status: "error", Error: &errorBody{Error: e, ExitCode: exitCode(e.Kind), Recovery: doctorRecovery(e.Kind)}})
 		if failure == nil {
 			failure = e
 		}
@@ -71,27 +72,61 @@ func doctor(cmd *cobra.Command, env *Env) error {
 	} else {
 		checks = append(checks, check{Check: "interpreter", Status: "ok", Detail: keychain.Interpreter})
 	}
-	if namespaces, err := env.Store.Namespaces(ctx); err != nil {
-		fail("keychain", err)
-	} else {
+	entries := func(id string) (string, error) {
+		access, err := env.OpenStore(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		namespaces, err := access.Store.Namespaces(ctx)
+		if err != nil {
+			return "", err
+		}
 		entries := 0
 		for _, n := range namespaces {
 			entries += n.Entries
 		}
-		checks = append(checks, check{Check: "keychain", Status: "ok", Detail: count(entries, "entry", "entries") + " in " + count(len(namespaces), "namespace", "namespaces")})
+		return count(entries, "entry", "entries") + " in " + count(len(namespaces), "namespace", "namespaces"), nil
+	}
+	if detail, err := entries(stores.ICloud); err != nil {
+		fail("keychain", err)
+	} else {
+		checks = append(checks, check{Check: "keychain", Status: "ok", Detail: detail})
 	}
 	// Direct access, the keychain row, decides whether mk works; the service
 	// adds grants, revokes, and access from a sandbox, so its row is a
 	// warning.
 	if err := env.CheckService(ctx); err != nil {
-		var e *store.Error
-		detail := err.Error()
-		if errors.As(err, &e) {
-			detail = e.Message
-		}
-		checks = append(checks, check{Check: "service", Status: "warning", Detail: detail, Recovery: "run mk setup in a normal terminal so mk grant, mk revoke, and sandboxed commands can reach the Keychain"})
+		checks = append(checks, check{Check: "service", Status: "warning", Detail: errorMessage(err), Recovery: "run mk setup in a normal terminal so mk grant, mk revoke, and sandboxed commands can reach the Keychain"})
 	} else {
 		checks = append(checks, check{Check: "service", Status: "ok", Detail: "running this build"})
+	}
+	// A store other than iCloud Keychain is read from its remote now, which
+	// shows that its access token still signs in. Commands that name no
+	// store fail with the default, so only its failure decides the status.
+	config, err := env.Stores(ctx)
+	if err != nil {
+		e := &store.Error{Kind: store.KindPrerequisite, Message: errorMessage(err)}
+		checks = append(checks, check{Check: "stores", Status: "error", Error: &errorBody{Error: e, ExitCode: exitCode(e.Kind),
+			Recovery: "repair ~/Library/Application Support/" + store.Service + "/stores.json; until then commands need --store icloud"}})
+		if failure == nil {
+			failure = e
+		}
+	}
+	for _, connection := range config.Remote() {
+		name := "store " + connection.ID
+		err := env.ChangeStore(ctx, agent.OpSyncStore, connection.ID)
+		var detail string
+		if err == nil {
+			detail, err = entries(connection.ID)
+		}
+		switch {
+		case err == nil:
+			checks = append(checks, check{Check: name, Status: "ok", Detail: detail + ", read from " + typeNames[connection.Type] + " now"})
+		case connection.ID == config.Default:
+			fail(name, err)
+		default:
+			checks = append(checks, check{Check: name, Status: "warning", Detail: errorMessage(err), Recovery: doctorRecovery(store.KindOf(err))})
+		}
 	}
 	checks = append(checks, skillCheck(env))
 
@@ -110,7 +145,7 @@ func doctor(cmd *cobra.Command, env *Env) error {
 		return err
 	}
 	if failure != nil {
-		return &exitError{Outcome{Code: exitCodes[failure.Kind]}}
+		return &exitError{Outcome{Code: exitCode(failure.Kind)}}
 	}
 	return nil
 }
@@ -118,8 +153,8 @@ func doctor(cmd *cobra.Command, env *Env) error {
 func setupCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "setup [--json]",
-		Short: "Install the Keychain service for sandboxes and program access",
-		Long: `Install and start the per-user Keychain service, which serves sandboxed
+		Short: "Install the Maskey service for sandboxes and program access",
+		Long: `Install and start the per-user Maskey service, which serves sandboxed
 commands and carries out mk grant and mk revoke.
 
 Run outside the agent sandbox so the service can reach the Keychain.
@@ -142,7 +177,7 @@ the new build when the new mk connects.`,
 				}
 				return err
 			}
-			return writeResult(cmd, env, map[string]bool{"installed": true}, "installed the Keychain service\n")
+			return writeResult(cmd, env, map[string]bool{"installed": true}, "installed the Maskey service\n")
 		},
 	}
 	addJSONFlag(cmd, "Write the result or errors as JSON")
@@ -307,4 +342,13 @@ func InstallCLI(home, executable string) (string, error) {
 		return "", err
 	}
 	return link, nil
+}
+
+// errorMessage is err's message without the entry a store error names.
+func errorMessage(err error) string {
+	var e *store.Error
+	if errors.As(err, &e) {
+		return e.Message
+	}
+	return err.Error()
 }

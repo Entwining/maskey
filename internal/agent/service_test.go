@@ -36,7 +36,7 @@ func TestServiceMetadata(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0700 {
 		t.Fatalf("directory permissions: %v %v", info, err)
 	}
-	path := filepath.Join(dir, "keychain.lock")
+	path := filepath.Join(dir, "service.lock")
 	lock, err := lockFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +69,7 @@ func TestServiceMetadata(t *testing.T) {
 
 func TestRemoveStaleSocket(t *testing.T) {
 	dir := serviceTempDir(t)
-	path := filepath.Join(dir, "keychain.sock")
+	path := filepath.Join(dir, "service.sock")
 	if err := os.WriteFile(path, []byte("ordinary file"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -114,12 +114,12 @@ func TestServeLimitsAndDrainsWrites(t *testing.T) {
 		}
 		return nil
 	}
-	path, cancel, finished := startTestService(t, backend, nil, func(context.Context) error { return nil }, nil, notReplaced)
+	path, cancel, finished := startTestService(t, backend, new(storetest.Recorder), func(context.Context) error { return nil }, nil, notReplaced)
 	info, err := os.Stat(path)
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatalf("socket permissions: %v %v", info, err)
 	}
-	if err := serve(context.Background(), path, backend, nil, func(context.Context) error { return nil }, nil, notReplaced); !errors.Is(err, errServiceRunning) {
+	if err := serve(context.Background(), path, only{backend}, nil, func(context.Context) error { return nil }, nil, notReplaced); !errors.Is(err, errServiceRunning) {
 		t.Fatalf("second service instance: %v", err)
 	}
 	results := make(chan error, 4)
@@ -206,7 +206,7 @@ func TestServeWaitsForOwnerWithoutSlots(t *testing.T) {
 		<-answer
 		return nil
 	}, func() (time.Duration, bool) { return 0, true }, "")
-	path, _, _ := startTestService(t, backend, nil, func(context.Context) error { return nil }, approval.Approve, notReplaced)
+	path, _, _ := startTestService(t, backend, new(storetest.Recorder), func(context.Context) error { return nil }, approval.Approve, notReplaced)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	auths := make(chan string, len(names))
@@ -286,7 +286,7 @@ func TestShutdownFinishesApprovedChange(t *testing.T) {
 	}}
 	backend.Put("fixture/NAME", []byte("synthetic"))
 	approve := func(context.Context, string) (string, error) { return "dialog", nil }
-	path, stop, finished := startTestService(t, backend, nil, func(context.Context) error { return nil }, approve, notReplaced)
+	path, stop, finished := startTestService(t, backend, new(storetest.Recorder), func(context.Context) error { return nil }, approve, notReplaced)
 	changed := make(chan response, 1)
 	go func() {
 		r, err := (&Client{path: path}).remote(context.Background(), request{Op: "grant", Accounts: []string{"fixture/NAME"}})
@@ -313,18 +313,6 @@ func TestShutdownFinishesApprovedChange(t *testing.T) {
 	}
 }
 
-// recordingReads records each read in log, as the Keychain does.
-type recordingReads struct {
-	*storetest.Backend
-	log *activity.Log
-}
-
-func (b recordingReads) Read(ctx context.Context, accounts []string) (map[string]store.Stored, error) {
-	values, err := b.Backend.Read(ctx, accounts)
-	b.log.Record(ctx, activity.Record{Op: "read", Entry: accounts[0], Result: "ok"})
-	return values, err
-}
-
 // The service's failure to record reaches the client, whose own warning
 // reports it, and leaves the result alone.
 func TestServiceFailureToRecordReachesClient(t *testing.T) {
@@ -334,9 +322,9 @@ func TestServiceFailureToRecordReachesClient(t *testing.T) {
 	}
 	var serviceWarnings atomic.Int32
 	log := activity.New(filepath.Join(blocker, "Logs"), func(error) { serviceWarnings.Add(1) })
-	backend := recordingReads{storetest.New(), log}
+	backend := storetest.New()
 	backend.Put("fixture/NAME", []byte("synthetic"))
-	path, _, _ := startTestService(t, backend, nil, func(context.Context) error { return nil }, nil, notReplaced)
+	path, _, _ := startTestService(t, backend, log, func(context.Context) error { return nil }, nil, notReplaced)
 	var warnings []error
 	client := &Client{path: path, failed: func(err error) { warnings = append(warnings, err) }}
 	r, err := client.remote(context.Background(), request{Op: "read", Accounts: []string{"fixture/NAME"}})
@@ -428,7 +416,7 @@ func TestServeRetiresOnlyWhenReplaced(t *testing.T) {
 	for _, replaced := range []bool{false, true} {
 		t.Run(fmt.Sprintf("replaced=%v", replaced), func(t *testing.T) {
 			var asked atomic.Int32
-			path, _, finished := startTestService(t, storetest.New(), nil, func(context.Context) error { return nil }, nil, func() bool {
+			path, _, finished := startTestService(t, storetest.New(), new(storetest.Recorder), func(context.Context) error { return nil }, nil, func() bool {
 				asked.Add(1)
 				return replaced
 			})
@@ -469,7 +457,7 @@ func TestClientWaitsForRestartedService(t *testing.T) {
 	for _, mode := range []string{"once", "always", "never"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
-			path := filepath.Join(serviceTempDir(t), "keychain.sock")
+			path := filepath.Join(serviceTempDir(t), "service.sock")
 			script := "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])\ns.listen(4)\nprint(flush=True)\nwhile sys.argv[2]!='never':\n c,_=s.accept()\n c.close()\n if sys.argv[2]=='once':\n  break\n"
 			old := exec.Command("/usr/bin/python3", "-I", "-S", "-c", script, path, mode)
 			old.Env = []string{"PATH=" + servicePATH}
@@ -524,7 +512,7 @@ func TestClientWaitsForRestartedService(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			finished := make(chan error, 1)
 			go func() {
-				finished <- serve(ctx, path, storetest.New(), nil, func(context.Context) error { return nil }, nil, notReplaced)
+				finished <- serve(ctx, path, only{storetest.New()}, nil, func(context.Context) error { return nil }, nil, notReplaced)
 			}()
 			defer func() {
 				cancel()
@@ -543,7 +531,7 @@ func TestClientWaitsForRestartedService(t *testing.T) {
 func TestAwaitServicePreservesHostFailure(t *testing.T) {
 	var checks atomic.Int32
 	failure := &store.Error{Kind: store.KindPrerequisite, Message: "synthetic host check failure"}
-	path, _, _ := startTestService(t, storetest.New(), nil, func(context.Context) error { checks.Add(1); return failure }, nil, notReplaced)
+	path, _, _ := startTestService(t, storetest.New(), new(storetest.Recorder), func(context.Context) error { checks.Add(1); return failure }, nil, notReplaced)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err := awaitService(ctx, path)
@@ -566,10 +554,11 @@ func notReplaced() bool { return false }
 
 func startTestService(t *testing.T, backend store.Backend, recorder activity.Recorder, check func(context.Context) error, approve store.Approve, replaced func() bool) (string, context.CancelFunc, <-chan error) {
 	t.Helper()
-	path := filepath.Join(serviceTempDir(t), "keychain.sock")
+	path := filepath.Join(serviceTempDir(t), "service.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan error, 1)
-	go func() { finished <- serve(ctx, path, backend, recorder, check, approve, replaced); close(finished) }()
+	registry := only{backend}
+	go func() { finished <- serve(ctx, path, registry, recorder, check, approve, replaced); close(finished) }()
 	t.Cleanup(func() {
 		cancel()
 		select {

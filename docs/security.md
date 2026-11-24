@@ -6,16 +6,24 @@ For an SSH Key entry, `mk run` reads the private key into its own process and gi
 
 Maskey reaches the Keychain through Apple's `/usr/bin/python3`, so any program hosted by that interpreter can reach the same items, without asking you and without a record. The activity record and the 5-minute approval for program access are Maskey's own policy, not protections macOS enforces, and a program running as you can also edit the record unless a sandbox keeps it from writing the record's directory. Entries stay readable after the Mac's first unlock since startup, so unattended jobs keep working while the screen is locked.
 
+## Bitwarden stores
+
+A Bitwarden store's access token can read and write every secret in its project, so anything this page says about a program running as you applies to that project too. The token stays in this Mac's Keychain, in an item that does not sync, and only the Maskey service uses it. Entry names, values, and notes are encrypted on this Mac with the organization's key before they reach Bitwarden, as Bitwarden's own clients encrypt them.
+
+To keep reading while Bitwarden cannot be reached, the service keeps a copy of the project in `~/Library/Application Support/io.github.entwining.maskey/stores`, encrypted with that organization key, which only the token opens. The copy does not expire: an entry deleted or a machine account disabled in Bitwarden stays readable on this Mac until the Mac next reaches Bitwarden, and `mk store remove` deletes the copy. Program access to a Bitwarden entry is this Mac's own record, kept in the Keychain beside the token; Bitwarden does not know it, and anyone who can read the project there can read the value whatever this Mac allows.
+
 ## Sandboxed agents
 
-A sandbox that blocks direct Keychain access can use Maskey's per-user Keychain service. Allow this Unix socket in the sandbox's network permissions:
+A sandbox that blocks direct Keychain access can use the per-user Maskey service. Allow this Unix socket in the sandbox's network permissions:
 
 ```text
-~/Library/Application Support/io.github.entwining.maskey/keychain.sock
+~/Library/Application Support/io.github.entwining.maskey/service.sock
 ```
+
+`mk` reads which stores this Mac has from `stores.json` beside the socket. A sandbox that also keeps it from reading that file must allow the read, or its commands on entries need `--store icloud`.
 
 `mk` uses the Keychain directly where allowed, except for recorded operations when the sandbox cannot write the activity record: those go to the service, which performs and records them outside the sandbox. Do not let a sandbox write `~/Library/Logs/io.github.entwining.maskey`, since a process that can write there can rewrite or delete the record. If the service cannot be reached, `mk` still uses the Keychain directly where it can, and warns when an operation was not recorded.
 
-Both ends check that they are the same signed executable before a request or value is sent. Only Keychain operations and program access approval go through the service; the command and the masking of its output stay in the sandbox. `mk` authenticates with its executable identity, not a stored token.
+Both ends check that they are the same signed executable before a request or value is sent. Only Keychain operations, a Bitwarden store's requests, and program access approval go through the service; the command and the masking of its output stay in the sandbox. `mk` authenticates with its executable identity, not a stored token.
 
-For SSH Key entries, `mk run` also creates an agent socket in a private directory under `TMPDIR`. The sandbox must allow `mk` to create Unix sockets there and the command to connect to them. This socket lasts only for the run and is separate from the Keychain service's socket above.
+For SSH Key entries, `mk run` also creates an agent socket in a private directory under `TMPDIR`. The sandbox must allow `mk` to create Unix sockets there and the command to connect to them. This socket lasts only for the run and is separate from the Maskey service's socket above.

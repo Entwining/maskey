@@ -111,8 +111,8 @@ func TestSearchWhileEditing(t *testing.T) {
 	h.tt.Frame()
 	kept := func(when string) {
 		t.Helper()
-		if f := h.g.form; !f.open || f.from.Name != "URL" || f.value != "synthetic-draft" || h.g.confirmLeave {
-			t.Fatalf("%s: form open %v for %s, asking %v", when, f.open, f.from, h.g.confirmLeave)
+		if f := h.g.form; !f.open || f.from.ref.Name != "URL" || f.value != "synthetic-draft" || h.g.confirmLeave {
+			t.Fatalf("%s: form open %v for %v, asking %v", when, f.open, f.from, h.g.confirmLeave)
 		}
 	}
 	if h.tt.HasText("API_TOKEN") {

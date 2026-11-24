@@ -13,6 +13,7 @@ import (
 	"github.com/Entwining/maskey/internal/owner"
 	"github.com/Entwining/maskey/internal/store"
 	"github.com/Entwining/maskey/internal/store/storetest"
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 const (
@@ -218,6 +219,22 @@ func (h *harness) applyPostedWhile(cond func() bool) {
 	}
 }
 
+// applyPostedUntil applies posted results until started closes: a listing
+// starts only once the result of reading the stores is applied.
+func (h *harness) applyPostedUntil(started <-chan struct{}) {
+	h.t.Helper()
+	for {
+		select {
+		case <-started:
+			return
+		case fn := <-h.posted:
+			fn()
+		case <-time.After(5 * time.Second):
+			h.t.Fatal("the operation did not start")
+		}
+	}
+}
+
 // pause holds every backend operation op until release is called, and
 // closes started when the first begins.
 func (h *harness) pause(op string) (started <-chan struct{}, release func()) {
@@ -332,8 +349,9 @@ func (h *harness) newInApp(name string) {
 	h.typeName(name)
 }
 
-// addWhileNamesLoad creates app/name and returns once the form has closed,
-// while the names that follow stay loading until release.
+// addWhileNamesLoad creates app/name and returns once the form has closed
+// and the listing that follows has started, which stays loading until
+// release.
 func (h *harness) addWhileNamesLoad(name string) (loading <-chan struct{}, release func()) {
 	h.t.Helper()
 	h.newInApp(name)
@@ -341,8 +359,15 @@ func (h *harness) addWhileNamesLoad(name string) (loading <-chan struct{}, relea
 	loading, release = h.pause("items")
 	h.clickWithoutSettling("Add")
 	h.applyPostedWhile(func() bool { return h.g.form.open })
+	h.applyPostedUntil(loading)
 	h.tt.Frame()
 	return loading, release
+}
+
+// icloud names an entry of iCloud Keychain, the store the harness starts
+// with.
+func icloud(namespace, name string) entryID {
+	return entryID{stores.ICloud, store.Ref{Namespace: namespace, Name: name}}
 }
 
 func (h *harness) attributes(account string) store.Attributes {
@@ -401,10 +426,10 @@ func TestEntriesLineUpWithSidebar(t *testing.T) {
 // chosen; choosing a namespace ends it.
 func TestSearchCoversEveryNamespace(t *testing.T) {
 	h := newHarness(t)
-	for query, want := range map[string][]store.Ref{
-		"pass": {{Namespace: "db", Name: "PASSWORD"}},
-		"DB":   {{Namespace: "db", Name: "PASSWORD"}},
-		"p":    {{Namespace: "app", Name: "API_TOKEN"}, {Namespace: "app", Name: "URL"}, {Namespace: "db", Name: "PASSWORD"}},
+	for query, want := range map[string][]entryID{
+		"pass": {icloud("db", "PASSWORD")},
+		"DB":   {icloud("db", "PASSWORD")},
+		"p":    {icloud("app", "API_TOKEN"), icloud("app", "URL"), icloud("db", "PASSWORD")},
 	} {
 		h.replaceText("Search entries", query)
 		if got := h.g.rows(); !slices.Equal(got, want) {
@@ -519,7 +544,7 @@ func TestStaleRevealIgnored(t *testing.T) {
 	release()
 	h.settle()
 	if h.g.revealed != "" || h.tt.HasText(tokenValue) {
-		t.Fatalf("a stale reveal shows under %s", h.g.entry)
+		t.Fatalf("a stale reveal shows under %v", h.g.entry)
 	}
 }
 
@@ -541,8 +566,8 @@ func TestReadAfterReplacementReadsAgain(t *testing.T) {
 			if tc.shown {
 				h.click("Show Value")
 			}
-			token := store.Ref{Namespace: "app", Name: "API_TOKEN"}
-			listed := h.g.attributes[token].Modified
+			token := icloud("app", "API_TOKEN")
+			listed := h.g.attributes(token).Modified
 			h.clickWithoutSettling(tc.button)
 			var read func()
 			select {
@@ -552,7 +577,7 @@ func TestReadAfterReplacementReadsAgain(t *testing.T) {
 			}
 			h.backend.Put("app/API_TOKEN", []byte("synthetic-replaced-5c1e"))
 			h.g.refresh()
-			h.applyPostedWhile(func() bool { return h.g.attributes[token].Modified.Equal(listed) })
+			h.applyPostedWhile(func() bool { return h.g.attributes(token).Modified.Equal(listed) })
 			read()
 			h.settle()
 			if got := tc.got(h); got != "synthetic-replaced-5c1e" {

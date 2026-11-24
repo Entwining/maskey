@@ -21,7 +21,7 @@ import (
 
 func runCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:        "run [--json] <selector>... -- <command> [<arg>...]",
+		Use:        "run [--store <name>] [--json] <selector>... -- <command> [<arg>...]",
 		SuggestFor: []string{"exec", "env"},
 		Short:      "Run a command with selected credentials and mask its output",
 		Long: `Each selector gives the command one entry (github/GITHUB_TOKEN) or a
@@ -69,14 +69,14 @@ use 125, 126, or 127. See mk help exit-codes.`,
 				// The command's arguments are the shell's to complete.
 				return nil, cobra.ShellCompDirectiveDefault
 			}
-			return completeNames(cmd.Context(), env, args, true)
+			return completeNames(cmd, env, args, true)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			selectors, command, err := runOperands(cmd, args)
 			if err != nil {
 				return err
 			}
-			entries, err := env.Store.Values(activity.WithVia(cmd.Context(), "run"), selectors)
+			entries, err := env.store.Values(activity.WithVia(cmd.Context(), "run"), selectors)
 			if err != nil {
 				return err
 			}

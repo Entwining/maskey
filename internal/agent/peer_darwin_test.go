@@ -11,12 +11,27 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
 )
 
-func TestAuthenticateSameBinary(t *testing.T) {
+func TestAuthenticateSameBinary(t *testing.T) { authenticateSameBinary(t, nil) }
+
+// A command sandbox lets its commands ask about no process outside it, the
+// service included, and they must still tell whose socket they reached.
+func TestAuthenticateFromASandbox(t *testing.T) {
+	sandbox := []string{"/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)(deny process-info*)(allow process-info* (target self))"}
+	if err := exec.Command(sandbox[0], append(sandbox[1:], "/usr/bin/true")...).Run(); err != nil {
+		t.Skip("native boundary test context unavailable: cannot start a sandbox here:", err)
+	}
+	authenticateSameBinary(t, sandbox)
+}
+
+// authenticateSameBinary has this test binary authenticate a copy of itself
+// started through wrap, and that copy authenticate it.
+func authenticateSameBinary(t *testing.T, wrap []string) {
 	if len(os.Args) == 4 && os.Args[2] == "--" {
 		conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: os.Args[3], Net: "unix"})
 		if err != nil {
@@ -40,7 +55,8 @@ func TestAuthenticateSameBinary(t *testing.T) {
 	listener := peerListener(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAuthenticateSameBinary$", "--", listener.Addr().String())
+	argv := slices.Concat(wrap, []string{os.Args[0], "-test.run=^" + t.Name() + "$", "--", listener.Addr().String()})
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// A coverage build of the test writes its data under TMPDIR.
 	cmd.Env = []string{"PATH=" + servicePATH, "TMPDIR=" + os.TempDir()}
 	var output bytes.Buffer
@@ -58,7 +74,8 @@ func TestAuthenticateSameBinary(t *testing.T) {
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	// The kernel reports the peer, whatever it claims.
+	// The kernel reports the peer, whatever it claims; sandbox-exec replaces
+	// itself with the command, so the pid is still the command's.
 	if pid, err := authenticate(conn); err != nil || pid != cmd.Process.Pid {
 		t.Fatalf("authenticated pid %d, %v; want %d", pid, err, cmd.Process.Pid)
 	}
@@ -71,6 +88,31 @@ func TestAuthenticateSameBinary(t *testing.T) {
 	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("client: %v: %s", err, &output)
+	}
+}
+
+func TestAuthenticateAnotherBinary(t *testing.T) {
+	listener := peerListener(t)
+	cmd := exec.Command("/usr/bin/nc", "-U", listener.Addr().String())
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		stdin.Close()
+		cmd.Process.Kill()
+		cmd.Wait()
+	}()
+	conn, err := listener.AcceptUnix()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := authenticate(conn); !errors.Is(err, errPeerMismatch) {
+		t.Fatalf("another signed executable: %v, want a mismatch", err)
 	}
 }
 

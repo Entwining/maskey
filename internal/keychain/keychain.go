@@ -16,7 +16,6 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -46,13 +45,10 @@ type Keychain struct {
 	service     string
 	interpreter string
 	timeout     time.Duration
-	// recorder receives a record of every operation that touches a value
-	// or program access.
-	recorder activity.Recorder
 }
 
-func New(service string, recorder activity.Recorder) *Keychain {
-	return &Keychain{service: service, interpreter: Interpreter, timeout: Timeout, recorder: recorder}
+func New(service string) *Keychain {
+	return &Keychain{service: service, interpreter: Interpreter, timeout: Timeout}
 }
 
 type request struct {
@@ -95,7 +91,7 @@ type response struct {
 }
 
 func (k *Keychain) Items(ctx context.Context) ([]store.Item, error) {
-	result, err := k.call(ctx, request{Op: "items"})
+	result, err := k.exchange(ctx, request{Op: "items"})
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +103,7 @@ func (k *Keychain) Items(ctx context.Context) ([]store.Item, error) {
 }
 
 func (k *Keychain) Read(ctx context.Context, accounts []string) (map[string]store.Stored, error) {
-	result, err := k.call(ctx, request{Op: "read", Accounts: accounts})
+	result, err := k.exchange(ctx, request{Op: "read", Accounts: accounts})
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +113,7 @@ func (k *Keychain) Read(ctx context.Context, accounts []string) (map[string]stor
 // Get leaves the decision to the helper, so that the value of an entry
 // without program access never leaves it.
 func (k *Keychain) Get(ctx context.Context, account string) ([]byte, error) {
-	result, err := k.call(ctx, request{Op: "get", Account: account})
+	result, err := k.exchange(ctx, request{Op: "get", Account: account})
 	if err != nil {
 		return nil, err
 	}
@@ -125,17 +121,17 @@ func (k *Keychain) Get(ctx context.Context, account string) ([]byte, error) {
 }
 
 func (k *Keychain) Add(ctx context.Context, account string, value []byte, details store.Details) error {
-	_, err := k.call(ctx, request{Op: "add", Account: account, Value: value, Details: &details})
+	_, err := k.exchange(ctx, request{Op: "add", Account: account, Value: value, Details: &details})
 	return err
 }
 
 func (k *Keychain) Update(ctx context.Context, account string, value []byte) error {
-	_, err := k.call(ctx, request{Op: "update", Account: account, Value: value})
+	_, err := k.exchange(ctx, request{Op: "update", Account: account, Value: value})
 	return err
 }
 
 func (k *Keychain) Edit(ctx context.Context, account, to string, value []byte, details *store.Details) error {
-	_, err := k.call(ctx, request{Op: "edit", Account: account, To: to, Value: value, Details: details})
+	_, err := k.exchange(ctx, request{Op: "edit", Account: account, To: to, Value: value, Details: details})
 	return err
 }
 
@@ -144,68 +140,52 @@ func (k *Keychain) SetProgramAccess(ctx context.Context, account string, granted
 	if granted {
 		op = "grant"
 	}
-	_, err := k.call(ctx, request{Op: op, Account: account})
+	_, err := k.exchange(ctx, request{Op: op, Account: account})
 	return err
 }
 
 func (k *Keychain) Delete(ctx context.Context, account string) error {
-	_, err := k.call(ctx, request{Op: "delete", Account: account})
+	_, err := k.exchange(ctx, request{Op: "delete", Account: account})
+	return err
+}
+
+// localService is the service attribute of the items that stay on this Mac:
+// a remote store's access token and the program access of its entries. They
+// do not sync, so no listing of entries finds them.
+func (k *Keychain) localService() string { return k.service + ".local" }
+
+// LocalGet reads the item account that stays on this Mac, and fails with
+// KindNotFound when there is none.
+func (k *Keychain) LocalGet(ctx context.Context, account string) ([]byte, error) {
+	result, err := k.exchange(ctx, request{Op: "local_get", Service: k.localService(), Account: account})
+	if err != nil {
+		return nil, err
+	}
+	return result.Value, nil
+}
+
+// LocalSet creates or replaces the item account that stays on this Mac.
+func (k *Keychain) LocalSet(ctx context.Context, account string, value []byte) error {
+	_, err := k.exchange(ctx, request{Op: "local_set", Service: k.localService(), Account: account, Value: value})
+	return err
+}
+
+func (k *Keychain) LocalDelete(ctx context.Context, account string) error {
+	_, err := k.exchange(ctx, request{Op: "local_delete", Service: k.localService(), Account: account})
 	return err
 }
 
 // Check starts the helper and confirms that it runs under Apple's
 // interpreter, without a Keychain call.
 func (k *Keychain) Check(ctx context.Context) error {
-	_, err := k.call(ctx, request{Op: "check"})
+	_, err := k.exchange(ctx, request{Op: "check"})
 	return err
 }
 
-// call runs req and enters it in the activity record.
-func (k *Keychain) call(ctx context.Context, req request) (*response, error) {
-	result, err := k.exchange(ctx, req)
-	k.record(ctx, req, result, err)
-	return result, err
-}
-
-func (k *Keychain) record(ctx context.Context, req request, result *response, err error) {
-	outcome := "ok"
-	if err != nil {
-		outcome = string(store.KindOf(err))
-	}
-	switch {
-	case !Records(req.Op):
-		return
-	case store.IsKind(err, store.KindUnavailable):
-		// It reached no item. Where mk falls back to the Keychain service,
-		// the service records the operation for this process.
-		return
-	case req.Op == "add" && store.IsKind(err, store.KindExists):
-		// It wrote nothing, so that a replacing mk set reads as the update
-		// that follows.
-		return
-	case req.Op == "read":
-		records := make([]activity.Record, len(req.Accounts))
-		for i, account := range req.Accounts {
-			outcome := outcome
-			if err == nil {
-				if _, read := result.Values[account]; !read {
-					outcome = string(store.KindNotFound)
-				}
-			}
-			records[i] = activity.Record{Op: req.Op, Entry: account, Result: outcome}
-		}
-		k.recorder.Record(ctx, records...)
-		return
-	}
-	r := activity.Record{Op: req.Op, Entry: req.Account, Result: outcome}
-	if req.Op == "edit" && req.To != req.Account {
-		r.To = req.To
-	}
-	k.recorder.Record(ctx, r)
-}
-
 func (k *Keychain) exchange(ctx context.Context, req request) (*response, error) {
-	req.Service = k.service
+	if req.Service == "" {
+		req.Service = k.service
+	}
 	input, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
@@ -256,7 +236,7 @@ func (k *Keychain) exchange(ctx context.Context, req request) (*response, error)
 // Writes reports whether op may change an entry. An operation not listed as
 // a read counts as a write, the safe guess.
 func Writes(op string) bool {
-	return op != "items" && op != "read" && op != "get" && op != "check"
+	return op != "items" && op != "read" && op != "get" && op != "check" && op != "local_get"
 }
 
 // Records reports whether the activity record keeps op: metadata listing

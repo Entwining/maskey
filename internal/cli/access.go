@@ -12,7 +12,7 @@ import (
 
 func grantCommand(env *Env) *cobra.Command {
 	return accessCommand(env, true, &cobra.Command{
-		Use:   "grant [--json] <namespace>/<NAME>...",
+		Use:   "grant [--store <name>] [--json] <namespace>/<NAME>...",
 		Short: "Give entries program access for mk get",
 		Long: `Grant entries program access, so that mk get writes their values for any
 program that can run mk. Only the owner of this Mac grants it: macOS asks
@@ -23,7 +23,7 @@ for their login password, Touch ID, or Apple Watch.`,
 
 func revokeCommand(env *Env) *cobra.Command {
 	return accessCommand(env, false, &cobra.Command{
-		Use:   "revoke [--json] <namespace>/<NAME>...",
+		Use:   "revoke [--store <name>] [--json] <namespace>/<NAME>...",
 		Short: "Take program access away from entries",
 		Long: `Revoke entries' program access, so that mk get refuses them again. mk run
 is unaffected. Like granting, revoking asks the owner of this Mac for their
@@ -43,7 +43,7 @@ One approval covers further grants and revokes by mk for 5 minutes; mk
 notes on stderr when a change needed no dialog. Entries already in the
 requested state are reported unchanged and need no approval. Cancelling
 the dialog, or interrupting mk while it is open, changes nothing; once the
-owner approves, mk finishes the changes. They go through the Keychain
+owner approves, mk finishes the changes. They go through the Maskey
 service that mk setup installs.
 
 Each reference may appear once. mk changes entries in argument order and
@@ -59,7 +59,7 @@ stops at the first failure. Earlier changes remain.`
 		if err != nil {
 			return err
 		}
-		changes, auth, err := env.ChangeAccess(cmd.Context(), refs, granted)
+		changes, auth, err := env.changeAccess(cmd.Context(), refs, granted)
 		results := make([]result, len(changes))
 		for i, change := range changes {
 			results[i] = result{change.Ref, "unchanged"}
@@ -84,7 +84,7 @@ stops at the first failure. Earlier changes remain.`
 			}
 			return stop(atArgument(err, len(changes)+1), len(changes)+1)
 		case store.IsKind(err, store.KindUnavailable):
-			return withHint(err, "run mk setup; program access changes only through the Keychain service")
+			return withHint(err, "run mk setup; program access changes only through the Maskey service")
 		case err != nil:
 			return err
 		}

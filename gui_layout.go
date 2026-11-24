@@ -127,7 +127,7 @@ func (g *gui) panes(c *ui.Context, vibrant bool) {
 		// fitPanes fits them once the dividers are done, so that nothing
 		// built later in the frame, or saved as the window closes, sees
 		// them unfitted.
-		g.sidebarWidth, *held = divider(c, sidebarLine, "Sidebar Divider", !g.sidebarHidden, w-1, g.sidebarWidth, sidebarMinWidth, sidebarMaxWidth)
+		g.sidebarWidth, *held = divider(c, sidebarLine, "Sidebar Divider", !g.sidebarHidden, w-1, g.sidebarWidth, sidebarDefaultWidth, sidebarMinWidth, sidebarMaxWidth)
 		// A drag hides the sidebar below half its minimum width and shows
 		// it again above five eighths of it, as AppKit's split view does
 		// with a collapsible pane; between the two the sidebar stays as it
@@ -135,7 +135,7 @@ func (g *gui) panes(c *ui.Context, vibrant bool) {
 		if *held && (g.sidebarHidden && g.sidebarWidth > sidebarMinWidth*5/8 || !g.sidebarHidden && g.sidebarWidth < sidebarMinWidth/2) {
 			g.toggleSidebar()
 		}
-		g.listWidth, _ = divider(c, listLine, "List Divider", true, w+g.listWidth, g.listWidth, listMinWidth, listMaxWidth)
+		g.listWidth, _ = divider(c, listLine, "List Divider", true, w+g.listWidth, g.listWidth, listDefaultWidth, listMinWidth, listMaxWidth)
 		g.fitPanes(room)
 	})
 	if g.sidebarHidden && *focused {
@@ -152,10 +152,11 @@ func (g *gui) panes(c *ui.Context, vibrant bool) {
 // pane's width follows from lo to hi: while the handle is held, where the
 // pointer's drag has put it since the press, also past lo or hi, so that
 // there the divider waits for the pointer to come back, as AppKit's do;
-// otherwise size, moved by a key's step. Inactive, the line takes neither
+// otherwise size, moved by a key's step, or initial, the pane's width in a
+// new window, after a double click. Inactive, the line takes neither
 // the focus nor keys, and the handle lets the pointer through, unless the
 // handle holds a press, which goes on.
-func divider(c *ui.Context, line ui.Element, label string, active bool, x, size, lo, hi float32) (at float32, held bool) {
+func divider(c *ui.Context, line ui.Element, label string, active bool, x, size, initial, lo, hi float32) (at float32, held bool) {
 	t := c.Theme()
 	grip, step := t.Space(1.5), t.Space(2.5)
 	line.Background(t.Border)
@@ -172,6 +173,9 @@ func divider(c *ui.Context, line ui.Element, label string, active bool, x, size,
 		return size, false
 	}
 	handle.Cursor(ui.CursorResizeEW).KeepFocus()
+	if handle.DoubleClicked() {
+		*pos = initial
+	}
 	if held || handle.Hovered() {
 		line.Background(t.Accent)
 	}

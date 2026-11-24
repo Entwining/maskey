@@ -57,15 +57,15 @@ func TestUsageErrors(t *testing.T) {
 		{[]string{"completion", "zsh", "extra"}, "usage", "usage: mk completion zsh [--no-descriptions]"},
 		{[]string{"help", "bogus"}, "usage", "usage: mk help [<command> [<subcommand>]] or mk help exit-codes"},
 		{[]string{"exit-codes", "extra"}, "usage", "usage: mk help exit-codes"},
-		{[]string{"list", "a", "b"}, "usage", "usage: mk list [--json] [<namespace>]"},
-		{[]string{"set"}, "usage", "usage: mk set [--yes] [--json] <namespace>/<NAME>... or mk set --stdin [--json] <namespace>/<NAME>"},
-		{[]string{"set", "--stdin", "app/A", "app/B"}, "usage", "usage: mk set --stdin [--json] <namespace>/<NAME>"},
+		{[]string{"list", "a", "b"}, "usage", "usage: mk list [--store <name>] [--json] [<namespace>]"},
+		{[]string{"set"}, "usage", "usage: mk set [--store <name>] [--yes] [--json] <namespace>/<NAME>... or mk set --stdin [--store <name>] [--json] <namespace>/<NAME>"},
+		{[]string{"set", "--stdin", "app/A", "app/B"}, "usage", "usage: mk set --stdin [--store <name>] [--json] <namespace>/<NAME>"},
 		{[]string{"set", "--stdin", "app/A", "app/B", "app/A"}, "usage", "pass each entry once"},
 		{[]string{"set", "--stdin", "app", "TOKEN"}, "usage", "enter the value at the hidden prompt or pipe one value to mk set --stdin <namespace>/<NAME>"},
 		{[]string{"set", "--stdin", ".app/X"}, "invalid", ""},
-		{[]string{"get"}, "usage", "usage: mk get [--json] <namespace>/<NAME>"},
-		{[]string{"delete", "--yes"}, "usage", "usage: mk delete [--yes] [--json] <namespace>/<NAME>..."},
-		{[]string{"rename", "app/A"}, "usage", "usage: mk rename [--json] <namespace>/<NAME> <new-namespace>/<NEW_NAME>"},
+		{[]string{"get"}, "usage", "usage: mk get [--store <name>] [--json] <namespace>/<NAME>"},
+		{[]string{"delete", "--yes"}, "usage", "usage: mk delete [--store <name>] [--yes] [--json] <namespace>/<NAME>..."},
+		{[]string{"rename", "app/A"}, "usage", "usage: mk rename [--store <name>] [--json] <namespace>/<NAME> <new-namespace>/<NEW_NAME>"},
 		{[]string{"doctor", "extra"}, "usage", "usage: mk doctor [--json]"},
 	} {
 		outcome, stdout, stderr := h.run(t, "synthetic", test.args...)
@@ -157,5 +157,24 @@ func TestErrorKindsAndExitCodes(t *testing.T) {
 	h.backend.Before = func(string, string) error { return errors.New("synthetic untyped failure") }
 	if outcome, _, stderr := h.run(t, "", "list"); outcome.Code != 1 || stderr != "mk: error[internal_error]: an internal error prevented completion\n" {
 		t.Errorf("untyped: %+v %q", outcome, stderr)
+	}
+	// Every kind the stores fail with has a status, and a kind without one
+	// still fails the command.
+	source, err := os.ReadFile(filepath.Join("..", "store", "errors.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := regexp.MustCompile(`Kind\w+ +Kind = "(\w+)"`).FindAllStringSubmatch(string(source), -1)
+	if len(kinds) == 0 {
+		t.Fatal("no kinds found in the store's errors")
+	}
+	for _, match := range kinds {
+		if _, ok := exitCodes[store.Kind(match[1])]; !ok {
+			t.Errorf("the kind %s has no exit status", match[1])
+		}
+	}
+	h.backend.Before = func(string, string) error { return &store.Error{Kind: "synthetic_kind", Message: "injected"} }
+	if outcome, _, _ := h.run(t, "", "list"); outcome.Code != 1 {
+		t.Errorf("a kind without a status: %+v", outcome)
 	}
 }

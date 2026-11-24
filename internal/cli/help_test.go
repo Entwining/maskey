@@ -16,7 +16,8 @@ import (
 const rootHelp = `Usage:
   mk <command> [flags]
 
-Maskey stores credentials in iCloud Keychain. Each entry is <namespace>/<NAME>.
+Maskey keeps credentials in iCloud Keychain, or in another store added with
+mk store. Each entry is <namespace>/<NAME>.
 With mk run, github/GITHUB_TOKEN sets GITHUB_TOKEN in the child's environment.
 
 Core commands:
@@ -25,14 +26,15 @@ Core commands:
   set         Create entries or replace their values
   get         Write a granted entry's raw value to non-terminal stdout
   rename      Rename an entry or move it to another namespace
-  delete      Delete entries from this Mac and Macs syncing its Keychain
+  delete      Delete entries from their store, wherever it is used
   grant       Give entries program access for mk get
   revoke      Take program access away from entries
   activity    Show which programs used entries on this Mac
 
 Setup commands:
-  doctor      Check Keychain access, interpreter, service, and agent skill
-  setup       Install the Keychain service for sandboxes and program access
+  store       List, add, and remove this Mac's stores
+  doctor      Check Keychain access, interpreter, service, stores, and agent skill
+  setup       Install the Maskey service for sandboxes and program access
   skill       Show or install the agent skill
   uninstall   Remove what Maskey installed on this Mac outside its app
 
@@ -70,8 +72,8 @@ func TestHelp(t *testing.T) {
 	}
 	_, set, _ := h.run(t, "", "set", "--help")
 	if _, viaHelp, _ := h.run(t, "", "help", "set"); viaHelp != set ||
-		!strings.HasPrefix(set, "Usage:\n  mk set [--yes] [--json] <namespace>/<NAME>...\n  mk set --stdin [--json] <namespace>/<NAME>\n\nCreate entries") ||
-		!strings.HasSuffix(set, "\n\nFlags:\n  -h, --help   Show help\n      --stdin  Read one value from standard input\n  -y, --yes    Replace existing entries without asking\n      --json   Write results or errors as JSON\n") {
+		!strings.HasPrefix(set, "Usage:\n  mk set [--store <name>] [--yes] [--json] <namespace>/<NAME>...\n  mk set --stdin [--store <name>] [--json] <namespace>/<NAME>\n\nCreate entries") ||
+		!strings.HasSuffix(set, "\n\nFlags:\n  -h, --help          Show help\n      --stdin         Read one value from standard input\n  -y, --yes           Replace existing entries without asking\n      --json          Write results or errors as JSON\n      --store <name>  Use the store with this <name> instead of the default\n") {
 		t.Errorf("set help %q, help set %q", set, viaHelp)
 	}
 	if _, skill, _ := h.run(t, "", "help", "skill"); !strings.Contains(skill, "\n\nCommands:\n  show     Print the skill\n  install  Link ") {
@@ -188,9 +190,9 @@ func TestHelpStyling(t *testing.T) {
 			t.Errorf("%q is not bold:\n%q", field, styled)
 		}
 	}
-	// 6 headings, 15 commands and 2 flags; nothing else is styled.
-	if n := strings.Count(styled, "\x1b[1m"); n != 23 {
-		t.Errorf("%d bold spans, want 23", n)
+	// 6 headings, 16 commands and 2 flags; nothing else is styled.
+	if n := strings.Count(styled, "\x1b[1m"); n != 24 {
+		t.Errorf("%d bold spans, want 24", n)
 	}
 	if plain := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(styled, ""); plain != rootHelp {
 		t.Errorf("styled help without its styling:\n%s", plain)

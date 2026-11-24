@@ -68,16 +68,21 @@ func TestActivity(t *testing.T) {
 		return rows
 	}
 
+	// Completion offers what the record names, whichever store holds it.
+	if _, stdout, _ := h.run(t, "", "__complete", "activity", "app", ""); !strings.HasPrefix(stdout, "app/A\ngithub\ngithub/OLD\ngithub/TOKEN\nother\nother/B\n:4\n") {
+		t.Errorf("completion: %q", stdout)
+	}
+
 	// Groups, newest first, split by any difference in the caller's chain.
 	outcome, stdout, stderr := h.run(t, "", "activity")
 	want := [][]string{
 		{"LATEST", "COUNT", "ENTRY", "OP", "RESULT", "CALLER"},
-		{at(0), "1", "app/A -> other/B", "edit", "ok", "zsh < claude < Rex"},
-		{at(1), "1", "app/A", "read (run)", "ok", "zsh < claude < Rex"},
-		{at(2), "1", "github/TOKEN", "get", "ok", "zsh < login < Terminal"},
-		{at(3), "2", "github/TOKEN", "get", "ok", "zsh < claude < Rex"},
-		{at(5), "1", "github/TOKEN", "grant", "ok", "zsh < login < Terminal"},
-		{at(6), "1", "app/A", "read (reveal)", "ok", "Maskey"},
+		{at(0), "1", "icloud:app/A -> other/B", "edit", "ok", "zsh < claude < Rex"},
+		{at(1), "1", "icloud:app/A", "read (run)", "ok", "zsh < claude < Rex"},
+		{at(2), "1", "icloud:github/TOKEN", "get", "ok", "zsh < login < Terminal"},
+		{at(3), "2", "icloud:github/TOKEN", "get", "ok", "zsh < claude < Rex"},
+		{at(5), "1", "icloud:github/TOKEN", "grant", "ok", "zsh < login < Terminal"},
+		{at(6), "1", "icloud:app/A", "read (reveal)", "ok", "Maskey"},
 	}
 	if outcome.Code != 0 || !slices.EqualFunc(cells(stdout), want, slices.Equal) || stderr != "mk: warning: skipped 1 unreadable line\n" {
 		t.Fatalf("activity: %+v %q\n%s", outcome, stderr, stdout)
@@ -87,10 +92,10 @@ func TestActivity(t *testing.T) {
 	_, stdout, _ = h.run(t, "", "activity", "--full", "github")
 	want = [][]string{
 		{"TIME", "OP", "ENTRY", "RESULT", "CALLER"},
-		{times[2].Local().Format(time.DateTime), "get", "github/TOKEN", "ok", "/bin/zsh < /usr/bin/login < /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal on ttys003"},
-		{times[3].Local().Format(time.DateTime), "get", "github/TOKEN", "ok", "/bin/zsh < /usr/local/bin/claude < /Applications/Rex.app/Contents/MacOS/Rex"},
-		{times[4].Local().Format(time.DateTime), "get", "github/TOKEN", "ok", "/bin/zsh < /usr/local/bin/claude < /Applications/Rex.app/Contents/MacOS/Rex"},
-		{times[5].Local().Format(time.DateTime), "grant (dialog)", "github/TOKEN", "ok", "/bin/zsh < /usr/bin/login < /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal on ttys003"},
+		{times[2].Local().Format(time.DateTime), "get", "icloud:github/TOKEN", "ok", "/bin/zsh < /usr/bin/login < /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal on ttys003"},
+		{times[3].Local().Format(time.DateTime), "get", "icloud:github/TOKEN", "ok", "/bin/zsh < /usr/local/bin/claude < /Applications/Rex.app/Contents/MacOS/Rex"},
+		{times[4].Local().Format(time.DateTime), "get", "icloud:github/TOKEN", "ok", "/bin/zsh < /usr/local/bin/claude < /Applications/Rex.app/Contents/MacOS/Rex"},
+		{times[5].Local().Format(time.DateTime), "grant (dialog)", "icloud:github/TOKEN", "ok", "/bin/zsh < /usr/bin/login < /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal on ttys003"},
 	}
 	if got := cells(stdout); !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("activity --full github:\n%s", stdout)
@@ -156,7 +161,7 @@ func TestRecordFailureWarns(t *testing.T) {
 	h.set(t, "app/TOKEN")
 	h.backend.SetProgramAccess(context.Background(), "app/TOKEN", true)
 	diskFull := errors.New("an operation was not recorded: synthetic disk failure")
-	unreachable := fmt.Errorf("%w (%w)", diskFull, &store.Error{Kind: store.KindUnavailable, Message: "the Keychain service is not reachable"})
+	unreachable := fmt.Errorf("%w (%w)", diskFull, &store.Error{Kind: store.KindUnavailable, Message: "the Maskey service is not reachable"})
 	hint := recoveries[store.KindUnavailable]
 	for _, test := range []struct {
 		failure error

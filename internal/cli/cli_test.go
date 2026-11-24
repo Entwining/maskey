@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/Entwining/maskey/internal/agent"
 	"github.com/Entwining/maskey/internal/store"
 	"github.com/Entwining/maskey/internal/store/storetest"
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 type harness struct {
@@ -35,6 +37,42 @@ type harness struct {
 	// terminalOpens counts the attempts to open it.
 	terminal      *os.File
 	terminalOpens int
+	// config is this Mac's stores, and work the store named "work" when
+	// config lists it. storeChanges are the changes asked of the Maskey
+	// service, which fail with storeErr, and added the last store added.
+	// configErr is why config cannot be read. With failingStore, only
+	// changes to that store fail.
+	config       stores.Config
+	configErr    error
+	work         *storetest.Backend
+	storeChanges []string
+	storeErr     error
+	failingStore string
+	added        stores.Addition
+}
+
+// connect adds the store named work to this Mac's stores.
+func (h *harness) connect() {
+	h.config.Stores = append(h.config.Stores, stores.Connection{ID: "work", Type: stores.Bitwarden, Region: "eu", Project: "p-1", ProjectName: "Deploy"})
+}
+
+// access is the store named id as main opens it.
+func (h *harness) access(id string) (StoreAccess, error) {
+	connection, err := h.config.Resolve(id)
+	if err != nil {
+		return StoreAccess{}, err
+	}
+	opened := h.store
+	if connection.ID != stores.ICloud {
+		opened = store.New(h.work, new(storetest.Recorder))
+	}
+	return StoreAccess{Connection: connection, Store: opened, ChangeAccess: func(ctx context.Context, refs []store.Ref, granted bool) ([]store.AccessChange, string, error) {
+		approve := h.approve
+		if approve == nil {
+			approve = func(context.Context, string) (string, error) { return "dialog", nil }
+		}
+		return opened.ChangeAccess(ctx, refs, granted, approve)
+	}}, nil
 }
 
 func newHarness(t *testing.T) *harness {
@@ -57,18 +95,30 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	logs := filepath.Join(t.TempDir(), "Logs")
-	return &harness{backend: backend, store: store.New(backend, new(storetest.Recorder)), activity: activity.New(logs, nil), logs: logs, home: t.TempDir(), executable: executable, source: source}
+	return &harness{backend: backend, store: store.New(backend, new(storetest.Recorder)), activity: activity.New(logs, nil), logs: logs, config: stores.Config{Default: stores.ICloud}, work: storetest.New(), home: t.TempDir(), executable: executable, source: source}
 }
 
 func (h *harness) env(stdin *os.File, stdout, stderr io.Writer) Env {
 	return Env{
-		Store: h.store,
-		ChangeAccess: func(ctx context.Context, refs []store.Ref, granted bool) ([]store.AccessChange, string, error) {
-			approve := h.approve
-			if approve == nil {
-				approve = func(context.Context, string) (string, error) { return "dialog", nil }
+		OpenStore: func(_ context.Context, id string) (StoreAccess, error) { return h.access(id) },
+		Stores:    func(context.Context) (stores.Config, error) { return h.config, h.configErr },
+		AddStore: func(_ context.Context, addition stores.Addition) (stores.Connection, error) {
+			h.added = addition
+			return stores.Connection{ID: cmp.Or(addition.ID, stores.Bitwarden), Type: addition.Type, ProjectName: "Deploy"}, h.storeErr
+		},
+		SetToken: func(_ context.Context, id string, token []byte) error {
+			h.storeChanges = append(h.storeChanges, "token "+id+" "+string(token))
+			return h.storeErr
+		},
+		ChangeStore: func(_ context.Context, op, id string) error {
+			h.storeChanges = append(h.storeChanges, op+" "+id)
+			if _, ok := h.config.Find(id); !ok {
+				return &store.Error{Kind: store.KindNotFound, Message: "this Mac has no store with that name"}
 			}
-			return h.store.ChangeAccess(ctx, refs, granted, approve)
+			if h.failingStore != "" && h.failingStore != id {
+				return nil
+			}
+			return h.storeErr
 		},
 		Activity:      h.activity,
 		Check:         func(context.Context) error { return h.check },
@@ -93,10 +143,10 @@ func (h *harness) env(stdin *os.File, stdout, stderr io.Writer) Env {
 	}
 }
 
-// noService lists and removes the Keychain service where it is not loaded
+// noService lists and removes the Maskey service where it is not loaded
 // and none of its files exist.
 func noService(context.Context, string) []agent.ServiceItem {
-	return []agent.ServiceItem{{Item: "Keychain service", Status: "absent"}}
+	return []agent.ServiceItem{{Item: "Maskey service", Status: "absent"}}
 }
 
 // run executes a command line with stdin holding input.

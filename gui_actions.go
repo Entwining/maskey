@@ -1,12 +1,12 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -17,25 +17,26 @@ import (
 	"github.com/Entwining/maskey/internal/store"
 )
 
-// read loads ref's value and passes it to use unless another entry was
-// chosen meanwhile. A listing that shows ref replaced while it loaded can
-// mean the value read is the one replaced, so ref is read again.
-func (g *gui) read(ref store.Ref, action string, use func(value []byte)) {
-	token, modified := g.selToken, g.attributes[ref].Modified
+// read loads id's value and passes it to use unless another entry was
+// chosen meanwhile. A listing that shows id replaced while it loaded can
+// mean the value read is the one replaced, so id is read again.
+func (g *gui) read(id entryID, action string, use func(value []byte)) {
+	token, modified := g.selToken, g.attributes(id).Modified
 	g.readAction = action
+	opened := g.open(id.store).store
 	g.start(func() func() {
-		value, err := g.store.Value(activity.WithVia(g.ctx, action), ref)
+		value, err := opened.Value(activity.WithVia(g.ctx, action), id.ref)
 		return func() {
 			if token != g.selToken {
 				return
 			}
 			g.readAction = ""
 			if err != nil {
-				g.showAlert(fmt.Sprintf("Couldn’t Read “%s”", ref.Name), err)
+				g.showAlert(fmt.Sprintf("Couldn’t Read “%s”", id.ref.Name), err)
 				return
 			}
-			if !g.attributes[ref].Modified.Equal(modified) {
-				g.read(ref, action, use)
+			if !g.attributes(id).Modified.Equal(modified) {
+				g.read(id, action, use)
 				return
 			}
 			use(value)
@@ -64,15 +65,15 @@ type valueClipboard interface {
 	clearIf(change int)
 }
 
-// copy puts ref's value on the clipboard; only the chosen entry's card
+// copy puts id's value on the clipboard; only the chosen entry's card
 // confirms it.
-func (g *gui) copy(ref store.Ref) {
-	chosen := ref == g.entry
+func (g *gui) copy(id entryID) {
+	chosen := id == g.entry
 	g.copied = false
-	g.read(ref, "copy", func(value []byte) {
+	g.read(id, "copy", func(value []byte) {
 		change, err := g.clipboard.write(value)
 		if err != nil {
-			g.showAlert(fmt.Sprintf("Couldn’t Copy “%s”", ref.Name), err)
+			g.showAlert(fmt.Sprintf("Couldn’t Copy “%s”", id.ref.Name), err)
 			return
 		}
 		clipboard := g.clipboard
@@ -84,47 +85,54 @@ func (g *gui) copy(ref store.Ref) {
 	})
 }
 
-// openNew opens the form for a new entry in the namespace chosen, once the
-// open form is left.
+// openNew opens the form for a new entry in the store and namespace chosen,
+// or without one chosen in the store shown alone or else this Mac's default,
+// once the open form is left.
 func (g *gui) openNew() {
+	// Until this Mac's stores are read, the default one is not known, so a
+	// new entry has no store to go to.
+	if !g.storesRead {
+		return
+	}
 	g.leave(func() {
-		namespace := g.namespace
-		if namespace == allNamespaces {
-			namespace = ""
+		to, namespace := g.scope.store, g.scope.namespace
+		if g.scope == (scope{}) {
+			to = cmp.Or(g.filter, g.stores.Default)
 		}
 		chosenBefore := g.entry
-		g.choose(store.Ref{})
+		g.choose(entryID{})
 		g.selectionChanged()
-		g.pick = store.Ref{}
-		g.form = form{open: true, id: g.form.id + 1, chosenBefore: chosenBefore, namespaceFrom: namespace, namespace: namespace, kind: kindLabel(store.InferValueKind("")), inferredFrom: new(string)}
+		g.pick = entryID{}
+		g.form = form{open: true, id: g.form.id + 1, store: to, chosenBefore: chosenBefore, namespaceFrom: namespace, namespace: namespace, kind: kindLabel(store.InferValueKind("")), inferredFrom: new(string)}
 	})
 }
 
-// openEdit chooses ref and opens the form for it, once the open form is
+// openEdit chooses id and opens the form for it, once the open form is
 // left, and loads the value it starts from.
-func (g *gui) openEdit(ref store.Ref) {
-	if g.canEdit(ref) {
-		g.leave(func() { g.edit(ref) })
+func (g *gui) openEdit(id entryID) {
+	if g.canEdit(id) {
+		g.leave(func() { g.edit(id) })
 	}
 }
 
-func (g *gui) canEdit(ref store.Ref) bool {
-	return ref != (store.Ref{}) && !g.writing(ref) && (!g.form.open || g.form.from != ref)
+func (g *gui) canEdit(id entryID) bool {
+	return id != (entryID{}) && !g.writing(id) && (!g.form.open || g.form.from != id)
 }
 
-func (g *gui) edit(ref store.Ref) {
-	g.choose(ref)
+func (g *gui) edit(id entryID) {
+	g.choose(id)
 	g.selectionChanged()
-	g.pick = store.Ref{}
-	details := g.attributes[ref].Details
+	g.pick = entryID{}
+	ref, details := id.ref, g.attributes(id).Details
 	kind := kindLabel(store.ValueKindOf(ref.Name, details.Kind))
-	g.form = form{open: true, id: g.form.id + 1, from: ref, namespace: ref.Namespace, name: ref.Name,
+	g.form = form{open: true, id: g.form.id + 1, from: id, store: id.store, namespace: ref.Namespace, name: ref.Name,
 		kind: kind, kindFrom: kind, notes: details.Notes, notesFrom: details.Notes, loading: true}
-	id := g.form.id
+	formID := g.form.id
+	opened := g.open(id.store).store
 	g.start(func() func() {
-		value, err := g.store.Value(activity.WithVia(g.ctx, "edit"), ref)
+		value, err := opened.Value(activity.WithVia(g.ctx, "edit"), ref)
 		return func() {
-			if !g.form.open || id != g.form.id {
+			if !g.form.open || formID != g.form.id {
 				return
 			}
 			g.form.loading = false
@@ -144,16 +152,16 @@ func (g *gui) edit(ref store.Ref) {
 // closeForm drops the form; a new entry's form gives the list back the entry
 // chosen before it opened, unless the listing no longer has it.
 func (g *gui) closeForm() {
-	if g.form.open && g.form.from == (store.Ref{}) && slices.Contains(g.refs, g.form.chosenBefore) {
+	if g.form.open && g.form.from == (entryID{}) && g.has(g.form.chosenBefore) {
 		g.entry = g.form.chosenBefore
 	}
 	g.form = form{id: g.form.id}
 }
 
-// write is a Keychain write the window runs; one runs at a time.
+// write is a store write the window runs; one runs at a time.
 type write struct {
 	action   writeAction
-	ref      store.Ref
+	entry    entryID
 	form     int  // the form a submit writes
 	accessTo bool // the program access an access write sets
 }
@@ -310,6 +318,7 @@ func (g *gui) ask(then func(), offerSave bool) bool {
 func (g *gui) submit(then func()) {
 	f := &g.form
 	to := store.Ref{Namespace: f.namespace, Name: f.name}
+	written := entryID{f.store, to}
 	if err := store.ValidateNamespace(to.Namespace); err != nil {
 		f.err = formError{"namespace", sentence(err)}
 		g.namespaceField.Focus()
@@ -322,7 +331,7 @@ func (g *gui) submit(then func()) {
 	}
 	from := f.from
 	var value []byte // nil keeps the stored value
-	if from == (store.Ref{}) || !f.keepValue && f.value != f.original {
+	if from == (entryID{}) || !f.keepValue && f.value != f.original {
 		value = []byte(f.value)
 		if err := store.ValidateValue(value); err != nil {
 			f.err = formError{"value", sentence(err)}
@@ -369,16 +378,16 @@ func (g *gui) submit(then func()) {
 	f.err = formError{}
 	id := f.id
 	verb, done, target := "Save", "Saved", from
-	if from == (store.Ref{}) {
-		verb, done, target = "Add", "Added", to
+	if from == (entryID{}) {
+		verb, done, target = "Add", "Added", written
 	}
-	moves := g.moves
-	g.startWrite(&write{action: submitWrite, ref: target, form: id}, func() func() {
+	moves, opened := g.moves, g.open(f.store).store
+	g.startWrite(&write{action: submitWrite, entry: target, form: id}, func() func() {
 		var err error
-		if from == (store.Ref{}) {
-			err = g.store.Create(g.ctx, to, value, details)
+		if from == (entryID{}) {
+			err = opened.Create(g.ctx, to, value, details)
 		} else {
-			err = g.store.Edit(g.ctx, from, to, value, editedDetails)
+			err = opened.Edit(g.ctx, from.ref, to, value, editedDetails)
 		}
 		return func() {
 			sameForm := g.form.open && id == g.form.id
@@ -405,42 +414,45 @@ func (g *gui) submit(then func()) {
 				then()
 				g.refresh()
 			default:
-				g.follow(to)
+				g.follow(written)
 			}
 		}
 	})
 }
 
-// askDelete deletes ref once the user confirms. Nothing undoes a delete,
-// so no button is the default: Return deletes nothing.
-func (g *gui) askDelete(ref store.Ref) {
+// askDelete deletes id once the user confirms. Nothing undoes a delete, so
+// no button is the default: Return deletes nothing.
+func (g *gui) askDelete(id entryID) {
 	// The window shows the entry asked about, but for another row's Delete…
 	// beside a form, which names it.
 	message := "Delete this entry?"
-	if g.form.open && g.form.from != ref {
-		message = fmt.Sprintf("Delete “%s” from %s?", ref.Name, ref.Namespace)
+	if g.form.open && g.form.from != id {
+		message = fmt.Sprintf("Delete “%s” from %s?", id.ref.Name, id.ref.Namespace)
 	}
 	g.message(alert{message: message, detail: "You can’t undo this action.",
 		buttons: []alertButton{{title: "Delete", destructive: true}, {title: "Cancel", isCancel: true}}}, func(button int) {
-		if button == 0 {
-			g.delete(ref)
+		// A store that left this Mac while the question stood takes no
+		// delete.
+		if button == 0 && g.listed[id.store] != nil {
+			g.delete(id)
 		}
 	})
 }
 
-func (g *gui) delete(ref store.Ref) {
-	g.startWrite(&write{action: deleteWrite, ref: ref}, func() func() {
-		err := g.store.Delete(g.ctx, ref)
+func (g *gui) delete(id entryID) {
+	opened := g.open(id.store).store
+	g.startWrite(&write{action: deleteWrite, entry: id}, func() func() {
+		err := opened.Delete(g.ctx, id.ref)
 		return func() {
 			if err != nil {
-				g.writeFailed(false, "Delete", "Deleted", ref, err)
+				g.writeFailed(false, "Delete", "Deleted", id, err)
 				return
 			}
-			if g.form.open && g.form.from == ref {
+			if g.form.open && g.form.from == id {
 				g.closeForm()
 			}
-			if g.entry == ref {
-				g.entry = store.Ref{}
+			if g.entry == id {
+				g.entry = entryID{}
 				g.selectionChanged()
 			}
 			g.refresh()
@@ -448,36 +460,39 @@ func (g *gui) delete(ref store.Ref) {
 	})
 }
 
-// changeAccess grants or revokes ref's program access once the owner
+// changeAccess grants or revokes id's program access once the owner
 // approves. The switch shows the change while it runs and the stored state
 // again if the owner declines or the write fails.
-func (g *gui) changeAccess(ref store.Ref, granted bool) {
-	g.startWrite(&write{action: accessWrite, ref: ref, accessTo: granted}, func() func() {
-		_, _, err := g.store.ChangeAccess(g.ctx, []store.Ref{ref}, granted, g.approve)
+func (g *gui) changeAccess(id entryID, granted bool) {
+	setAccess := g.open(id.store).setAccess
+	g.startWrite(&write{action: accessWrite, entry: id, accessTo: granted}, func() func() {
+		err := setAccess(g.ctx, id.ref, granted)
 		return func() {
 			switch {
 			case err == nil:
-				attributes := g.attributes[ref]
-				attributes.ProgramAccess = granted
-				g.attributes[ref] = attributes
+				if s := g.listed[id.store]; s != nil {
+					attributes := s.attributes[id.ref]
+					attributes.ProgramAccess = granted
+					s.attributes[id.ref] = attributes
+				}
 				g.refresh()
 			case store.IsKind(err, store.KindCancelled):
 			default:
-				g.writeFailed(false, "Change Program Access for", "Changed", ref, err)
+				g.writeFailed(false, "Change Program Access for", "Changed", id, err)
 			}
 		}
 	})
 }
 
 // writeFailed reports a write's failure in an alert when its form is no
-// longer open. A failed write may have changed the Keychain, so the lists
+// longer open. A failed write may have changed the store, so the lists
 // reload either way.
-func (g *gui) writeFailed(formOpen bool, verb, done string, ref store.Ref, err error) {
+func (g *gui) writeFailed(formOpen bool, verb, done string, id entryID, err error) {
 	g.exit = noExit
 	if !formOpen {
-		title := fmt.Sprintf("Couldn’t %s “%s”", verb, ref.Name)
+		title := fmt.Sprintf("Couldn’t %s “%s”", verb, id.ref.Name)
 		if store.IsKind(err, store.KindUncertain) {
-			title = fmt.Sprintf("Couldn’t Confirm That “%s” Was %s", ref.Name, done)
+			title = fmt.Sprintf("Couldn’t Confirm That “%s” Was %s", id.ref.Name, done)
 		}
 		g.showAlert(title, err)
 	}

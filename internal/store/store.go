@@ -144,7 +144,7 @@ type Backend interface {
 type Store struct {
 	backend Backend
 	// recorder receives the records of refused approvals, which reach no
-	// backend operation; the backend records its own operations.
+	// backend operation.
 	recorder activity.Recorder
 }
 
@@ -263,7 +263,7 @@ func (s *Store) Set(ctx context.Context, ref Ref, value []byte) (created bool, e
 	if err := validateEntry(ref, value); err != nil {
 		return false, err
 	}
-	err = s.backend.Add(ctx, ref.account(), value, Details{Kind: InferValueKind(ref.Name)})
+	err = s.backend.Add(WithReplacing(ctx), ref.account(), value, Details{Kind: InferValueKind(ref.Name)})
 	if !IsKind(err, KindExists) {
 		return err == nil, err
 	}
@@ -332,8 +332,9 @@ type AccessChange struct {
 // ChangeAccess validates all refs before requesting one approval for the
 // changes needed. A batch already in the requested state asks nothing.
 // Results follow input order and include unchanged entries. A write failure
-// returns the completed prefix; validation or approval failure returns none,
-// and a refused approval is recorded for each change it concerned.
+// returns the completed prefix; validation or approval failure returns none.
+// A store that cannot be listed and a refused approval are recorded for
+// each change they concerned.
 func (s *Store) ChangeAccess(ctx context.Context, refs []Ref, granted bool, approve Approve) ([]AccessChange, string, error) {
 	for _, ref := range refs {
 		if err := ValidateRef(ref); err != nil {
@@ -342,6 +343,7 @@ func (s *Store) ChangeAccess(ctx context.Context, refs []Ref, granted bool, appr
 	}
 	_, attributes, err := s.list(ctx)
 	if err != nil {
+		s.recordUnchanged(ctx, refs, granted, err)
 		return nil, "", err
 	}
 	var pending []Ref
@@ -356,7 +358,7 @@ func (s *Store) ChangeAccess(ctx context.Context, refs []Ref, granted bool, appr
 	var auth string
 	if len(pending) > 0 {
 		if auth, err = approve(ctx, accessReason(pending, granted)); err != nil {
-			s.recordRefusal(ctx, pending, granted, err)
+			s.recordUnchanged(ctx, pending, granted, err)
 			return nil, "", err
 		}
 		ctx = activity.WithAuth(ctx, auth)
@@ -377,9 +379,9 @@ func (s *Store) ChangeAccess(ctx context.Context, refs []Ref, granted bool, appr
 	return changes, auth, nil
 }
 
-// recordRefusal records each change the owner did not approve, with how
-// the approval ended.
-func (s *Store) recordRefusal(ctx context.Context, refs []Ref, granted bool, err error) {
+// recordUnchanged records each change that ended with err before any was
+// made: the entries could not be listed, or the owner did not approve.
+func (s *Store) recordUnchanged(ctx context.Context, refs []Ref, granted bool, err error) {
 	op := "revoke"
 	if granted {
 		op = "grant"

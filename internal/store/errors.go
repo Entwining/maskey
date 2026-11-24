@@ -29,6 +29,20 @@ const (
 	KindCancelled Kind = "cancelled"
 	// KindNotGranted means the entry lacks program access required by mk get.
 	KindNotGranted Kind = "not_granted"
+	// KindNetwork means a remote store could not be reached, and nothing
+	// was written.
+	KindNetwork Kind = "network"
+	// KindUnauthenticated means a remote store refused this Mac's
+	// credential, also after signing in again.
+	KindUnauthenticated Kind = "unauthenticated"
+	// KindPermissionDenied means a remote store said the credential may not
+	// do this. A store that hides what the credential cannot see answers
+	// KindNotFound instead.
+	KindPermissionDenied Kind = "permission_denied"
+	KindRateLimited      Kind = "rate_limited" // a remote store asked for fewer requests
+	// KindRemote means a remote store failed or answered with something
+	// this Maskey cannot use.
+	KindRemote Kind = "remote_error"
 )
 
 // Error is a failure of a store operation. It never carries a value. Ref

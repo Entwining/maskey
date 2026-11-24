@@ -5,18 +5,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"regexp"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/store"
 )
 
@@ -28,12 +24,8 @@ func fakeInterpreter(t *testing.T, script string) *Keychain {
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return &Keychain{service: "test.service", interpreter: path, timeout: Timeout, recorder: new(records)}
+	return &Keychain{service: "test.service", interpreter: path, timeout: Timeout}
 }
-
-type records []activity.Record
-
-func (r *records) Record(_ context.Context, records ...activity.Record) { *r = append(*r, records...) }
 
 func TestHelperRunsIsolatedUnderAppleInterpreter(t *testing.T) {
 	if _, err := os.Stat(Interpreter); err != nil {
@@ -50,7 +42,7 @@ func TestHelperRunsIsolatedUnderAppleInterpreter(t *testing.T) {
 	t.Setenv("PYTHONPATH", dir)
 	t.Setenv("PYTHONSTARTUP", filepath.Join(dir, "json.py"))
 	t.Setenv("DEVELOPER_DIR", dir)
-	if err := New("test.service", new(records)).Check(context.Background()); err != nil {
+	if err := New("test.service").Check(context.Background()); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
 }
@@ -271,68 +263,6 @@ func TestHelperFailures(t *testing.T) {
 	}
 }
 
-// Every helper operation enters the activity record, except those that touch
-// no value and no program access, so that a new operation cannot skip it
-// unnoticed.
-func TestRecordsEveryOperation(t *testing.T) {
-	ctx := context.Background()
-	calls := map[string]func(*Keychain) error{
-		"check":  func(k *Keychain) error { return k.Check(ctx) },
-		"items":  func(k *Keychain) error { _, err := k.Items(ctx); return err },
-		"read":   func(k *Keychain) error { _, err := k.Read(ctx, []string{"ns/A", "ns/B"}); return err },
-		"get":    func(k *Keychain) error { _, err := k.Get(ctx, "ns/A"); return err },
-		"add":    func(k *Keychain) error { return k.Add(ctx, "ns/A", []byte("v"), store.Details{}) },
-		"update": func(k *Keychain) error { return k.Update(ctx, "ns/A", []byte("v")) },
-		"edit":   func(k *Keychain) error { return k.Edit(ctx, "ns/A", "ns/C", nil, nil) },
-		"grant":  func(k *Keychain) error { return k.SetProgramAccess(ctx, "ns/A", true) },
-		"revoke": func(k *Keychain) error { return k.SetProgramAccess(ctx, "ns/A", false) },
-		"delete": func(k *Keychain) error { return k.Delete(ctx, "ns/A") },
-	}
-	notRecorded := []string{"check", "items"}
-	extra := map[string][]activity.Record{
-		"read": {{Op: "read", Entry: "ns/A", Result: "ok"}, {Op: "read", Entry: "ns/B", Result: "not_found"}},
-		"edit": {{Op: "edit", Entry: "ns/A", To: "ns/C", Result: "ok"}},
-	}
-	for _, match := range regexp.MustCompile(`operation == "(\w+)"`).FindAllStringSubmatch(helperSource, -1) {
-		op := match[1]
-		call, ok := calls[op]
-		if !ok {
-			t.Errorf("helper operation %s is not exercised here", op)
-			continue
-		}
-		k := fakeInterpreter(t, `cat >/dev/null; echo '{"ready": true}'; echo '{"values": {"ns/A": {"value": "dg=="}}, "value": "dg=="}'`)
-		if err := call(k); err != nil {
-			t.Fatalf("%s: %v", op, err)
-		}
-		var want []activity.Record
-		switch {
-		case extra[op] != nil:
-			want = extra[op]
-		case !slices.Contains(notRecorded, op):
-			want = []activity.Record{{Op: op, Entry: "ns/A", Result: "ok"}}
-		}
-		if got := []activity.Record(*k.recorder.(*records)); !reflect.DeepEqual(got, want) {
-			t.Errorf("%s recorded %+v, want %+v", op, got, want)
-		}
-	}
-	// A failure is recorded with its kind, except unavailable and an add that
-	// found the entry.
-	for _, test := range []struct {
-		status int
-		want   []activity.Record
-	}{
-		{-25291, nil},
-		{-25299, nil},
-		{-25308, []activity.Record{{Op: "add", Entry: "ns/A", Result: "locked"}}},
-	} {
-		k := fakeInterpreter(t, fmt.Sprintf(`cat >/dev/null; echo '{"ready": true}'; echo '{"error": {"stage": "keychain", "os_status": %d}}'`, test.status))
-		calls["add"](k)
-		if got := []activity.Record(*k.recorder.(*records)); !reflect.DeepEqual(got, test.want) {
-			t.Errorf("add failing with %d recorded %+v, want %+v", test.status, got, test.want)
-		}
-	}
-}
-
 // A helper that does not finish in time ends its operation as a failure,
 // not a cancellation: a write may have happened, and a read did not.
 func TestHelperTimeout(t *testing.T) {
@@ -398,5 +328,85 @@ touch `+started+`; exec sleep 10`)
 				t.Fatalf("cancellation took %v", elapsed)
 			}
 		})
+	}
+}
+
+// An item that stays on this Mac is selected in the data protection
+// Keychain and never syncs; a set replaces it or, when there is none,
+// creates it readable only on this Mac. The value travels as the entries' do.
+func TestHelperLocalItems(t *testing.T) {
+	if _, err := os.Stat(Interpreter); err != nil {
+		t.Skip("no Apple interpreter")
+	}
+	script := `import sys, types, ctypes
+helper = {"__name__": "helper"}
+exec(sys.stdin.read(), helper)
+calls = []
+
+class Fake(helper["Keychain"]):
+    def __init__(self, existing):
+        self.owned = []
+        self.existing = existing
+        self.cf = types.SimpleNamespace()
+        self.sec = types.SimpleNamespace(SecItemUpdate=self.update, SecItemAdd=self.add, SecItemDelete=self.delete, SecItemCopyMatching=self.match)
+    def update(self, query, changes):
+        calls.append(("update", query, changes))
+        return 0 if self.existing else helper["ERR_SEC_ITEM_NOT_FOUND"]
+    def add(self, attributes, result):
+        calls.append(("add", attributes))
+        return 0
+    def delete(self, query):
+        calls.append(("delete", query))
+        return 0
+    def match(self, query, result):
+        calls.append(("match", query))
+        result._obj.value = 1
+        return 0
+    def constant(self, name, library=None): return name
+    def string(self, text): return text
+    def data(self, cf_data): return b"v"
+    def value_data(self, value): return bytes(value)
+    def dictionary(self, pairs): return dict(pairs)
+
+def show(call):
+    return call[0] + " " + " | ".join(",".join(k + "=" + str(d[k]) for k in sorted(d)) for d in call[1:])
+
+for existing in (True, False):
+    helper["handle"](Fake(existing), dict(op="local_set", service="s.local", account="token/bitwarden", value="dg=="))
+print(helper["handle"](Fake(True), dict(op="local_get", service="s.local", account="token/bitwarden")))
+helper["handle"](Fake(True), dict(op="local_delete", service="s.local", account="token/bitwarden"))
+for call in calls:
+    print(show(call))`
+	cmd := exec.Command(Interpreter, "-I", "-S", "-c", script)
+	cmd.Stdin = strings.NewReader(helperSource)
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const item = "kSecAttrAccount=token/bitwarden,kSecAttrService=s.local,kSecAttrSynchronizable=kCFBooleanFalse,kSecClass=kSecClassGenericPassword,kSecUseDataProtectionKeychain=kCFBooleanTrue"
+	want := strings.Join([]string{
+		"(0, {'value': 'dg=='})",
+		"update " + item + " | kSecValueData=b'v'",
+		"update " + item + " | kSecValueData=b'v'",
+		"add kSecAttrAccessible=kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly," + strings.Replace(item, ",kSecAttrService", ",kSecAttrLabel=Maskey: token/bitwarden,kSecAttrService", 1) + ",kSecValueData=b'v'",
+		"match " + strings.Replace(item, ",kSecUse", ",kSecMatchLimit=kSecMatchLimitOne,kSecReturnData=kCFBooleanTrue,kSecUse", 1),
+		"delete " + item,
+	}, "\n") + "\n"
+	if string(output) != want {
+		t.Fatalf("local items ran\n%s\nwant\n%s", output, want)
+	}
+}
+
+func TestLocalItemsUseTheirOwnService(t *testing.T) {
+	dir := t.TempDir()
+	k := fakeInterpreter(t, `cat > `+dir+`/stdin
+echo '{"ready": true}'
+echo '{"value": "dg=="}'`)
+	if value, err := k.LocalGet(context.Background(), "token/bitwarden"); err != nil || string(value) != "v" {
+		t.Fatalf("LocalGet: %q, %v", value, err)
+	}
+	stdin, _ := os.ReadFile(filepath.Join(dir, "stdin"))
+	if !bytes.Contains(stdin, []byte(`"service":"test.service.local"`)) {
+		t.Errorf("the request %s names another service", stdin)
 	}
 }

@@ -3,7 +3,7 @@
 </p>
 <h1 align="center">Maskey</h1>
 
-Maskey stores API keys, tokens, passwords, and SSH keys in iCloud Keychain for scripts and coding agents. It has a macOS window and the `mk` command line. Entries sync across your Macs without another account or hosted service.
+Maskey stores API keys, tokens, passwords, and SSH keys in iCloud Keychain for scripts and coding agents. It has a macOS window and the `mk` command line. Entries sync across your Macs without another account or hosted service. To share entries between Macs on different Apple Accounts, it can also keep them in a [Bitwarden Secrets Manager project](docs/usage.md#stores).
 
 ## What it does
 
@@ -40,7 +40,7 @@ mk setup
 
 Maskey is signed ad hoc and is not notarized. The `xattr` command removes Gatekeeper's quarantine. You can also [install with a script or build from source](docs/install.md).
 
-For coding agents, run `mk skill install` to install the [shipped skill](resources/skills/maskey/SKILL.md). Sandboxes need permission to connect to the [Keychain service's socket](docs/security.md#sandboxed-agents).
+For coding agents, run `mk skill install` to install the [shipped skill](resources/skills/maskey/SKILL.md). Sandboxes need permission to connect to the [Maskey service's socket](docs/security.md#sandboxed-agents).
 
 ## Know the limits
 

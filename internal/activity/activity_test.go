@@ -135,7 +135,7 @@ func TestPrune(t *testing.T) {
 }
 
 // A failure to record is reported once per process, whether it happened
-// here or in the Keychain service for this process, and goes instead to a
+// here or in the Maskey service for this process, and goes instead to a
 // context's own report, as the service's for its client.
 func TestRecordFailureWarnsOnce(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "file")

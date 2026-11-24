@@ -31,6 +31,8 @@ var (
 	infoIcon      = icon("info")
 	checkIcon     = icon("check")
 	plusIcon      = icon("plus")
+	chevronsIcon  = icon("chevrons-up-down")
+	ellipsisIcon  = icon("ellipsis")
 	folderKeyIcon = icon("folder-key")
 	keyIcon       = icon("key-round")
 	layersIcon    = icon("layers")
@@ -103,6 +105,9 @@ func theme(base *ui.Theme) *ui.Theme {
 		t.SurfaceHover, t.SurfacePressed = ui.Hex("#2e2e2e"), ui.Hex("#393939")
 		t.Border = ui.Hex("#363636")
 		t.Text, t.TextMuted = ui.Hex("#f5f5f7"), ui.Hex("#98989d")
+		// A tooltip stays dark, as macOS's own are in dark mode, where
+		// MyGo's would be filled with the text's near white.
+		t.Inverse, t.InverseText = ui.Hex("#3a3a3c"), t.Text
 	}
 	return &t
 }

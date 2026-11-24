@@ -45,7 +45,7 @@ func TestApprovalLifetime(t *testing.T) {
 			t.Fatalf("at %v: %q, %v after %d dialogs; want %q after %d", step.at, got, err, len(reasons), step.want, step.dialogs)
 		}
 	}
-	if want := "grant program access to ns/A. It will not ask again for changes from mk in the next 5 minutes"; reasons[0] != want {
+	if want := "grant program access to ns/A. This approval covers changes from mk for 5 minutes"; reasons[0] != want {
 		t.Fatalf("reason %q, want %q", reasons[0], want)
 	}
 	// While the clock fails, no approval is given or reused.

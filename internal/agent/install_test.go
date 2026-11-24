@@ -61,7 +61,7 @@ func TestInstallCanonicalJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(plist.Args, []string{canonical, "--keychain-service"}) {
+	if !reflect.DeepEqual(plist.Args, []string{canonical, "--service"}) {
 		t.Fatalf("program arguments=%v", plist.Args)
 	}
 	for _, property := range []string{
@@ -233,7 +233,7 @@ func TestInstallRejectsForeignConfiguration(t *testing.T) {
 			case "label":
 				data = bytes.Replace(data, []byte(serviceLabel), []byte("another.job"), 1)
 			case "arguments":
-				data = bytes.Replace(data, []byte("--keychain-service"), []byte("--another-service"), 1)
+				data = bytes.Replace(data, []byte("--service"), []byte("--another-service"), 1)
 			}
 			if kind == "symlink" {
 				if err := os.Symlink(executable, path); err != nil {
@@ -282,7 +282,7 @@ func TestStopJobQueryFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		if err := stopJob(ctx, control); !errors.Is(err, failure) {
+		if err := stopJob(ctx, serviceTarget, control); !errors.Is(err, failure) {
 			t.Fatal(err)
 		}
 	})

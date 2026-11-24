@@ -16,6 +16,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/Entwining/maskey/internal/store"
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 func TestAddEntry(t *testing.T) {
@@ -31,8 +32,8 @@ func TestAddEntry(t *testing.T) {
 	if h.g.form.open || h.g.form.value != "" {
 		t.Fatalf("the form stayed open (%v) or kept its value", h.g.form.open)
 	}
-	if h.g.entry != (store.Ref{Namespace: "svc", Name: "NEW_KEY"}) {
-		t.Fatalf("selection %s after creating svc/NEW_KEY", h.g.entry)
+	if h.g.entry != icloud("svc", "NEW_KEY") {
+		t.Fatalf("selection %v after creating svc/NEW_KEY", h.g.entry)
 	}
 }
 
@@ -61,8 +62,8 @@ func TestAddFailureKeepsForm(t *testing.T) {
 				t.Fatalf("the failed create stored %q", v)
 			}
 			// The list shows an entry that blocked the create.
-			if tc.stored != "" && !slices.Contains(h.g.rows(), store.Ref{Namespace: "app", Name: tc.name}) {
-				t.Fatalf("entries %q after the failed create", h.g.rows())
+			if tc.stored != "" && !slices.Contains(h.g.rows(), icloud("app", tc.name)) {
+				t.Fatalf("entries %v after the failed create", h.g.rows())
 			}
 			message := h.g.form.err.message
 			h.typeName("OTHER_NAME")
@@ -98,9 +99,9 @@ func TestAddEntryChosenOverTheListChoice(t *testing.T) {
 	h.clickWithoutSettling("URL")
 	release()
 	h.settle()
-	created := store.Ref{Namespace: "app", Name: "NEW_KEY"}
+	created := icloud("app", "NEW_KEY")
 	if h.g.entry != created || h.g.row != slices.Index(h.g.rows(), created) {
-		t.Fatalf("selection %s, row %d, after creating app/NEW_KEY", h.g.entry, h.g.row)
+		t.Fatalf("selection %v, row %d, after creating app/NEW_KEY", h.g.entry, h.g.row)
 	}
 }
 
@@ -118,8 +119,8 @@ func TestSearchEndsPendingChoice(t *testing.T) {
 	h.click("Search entries")
 	h.tt.Key(0, ui.KeyEscape)
 	h.settle()
-	if token := (store.Ref{Namespace: "app", Name: "API_TOKEN"}); h.g.query != "" || h.g.entry != token {
-		t.Fatalf("query %q, selection %s", h.g.query, h.g.entry)
+	if token := icloud("app", "API_TOKEN"); h.g.query != "" || h.g.entry != token {
+		t.Fatalf("query %q, selection %v", h.g.query, h.g.entry)
 	}
 }
 
@@ -183,8 +184,8 @@ func TestEditMovesEntry(t *testing.T) {
 	if _, ok := h.value("app/URL"); ok {
 		t.Fatal("app/URL remains")
 	}
-	if h.g.form.open || h.g.namespace != "db" || h.g.entry != (store.Ref{Namespace: "db", Name: "ENDPOINT"}) {
-		t.Fatalf("after the move: form open %v, namespace %q, entry %s", h.g.form.open, h.g.namespace, h.g.entry)
+	if h.g.form.open || h.g.scope != (scope{stores.ICloud, "db"}) || h.g.entry != icloud("db", "ENDPOINT") {
+		t.Fatalf("after the move: form open %v, scope %v, entry %v", h.g.form.open, h.g.scope, h.g.entry)
 	}
 }
 
@@ -487,7 +488,7 @@ func TestDeleteNeedsConfirmation(t *testing.T) {
 	if _, ok := h.value("app/API_TOKEN"); !ok {
 		t.Fatal("another entry was deleted")
 	}
-	if h.g.entry != (store.Ref{}) || slices.Contains(h.tt.Texts(), "URL") {
+	if h.g.entry != (entryID{}) || slices.Contains(h.tt.Texts(), "URL") {
 		t.Fatalf("the deleted entry still shows: %q", h.tt.Texts())
 	}
 }
@@ -516,8 +517,8 @@ func TestDeletingLastEntryLeavesNamespace(t *testing.T) {
 	h.click("db")
 	h.choose("PASSWORD", "Delete…")
 	h.answer("Delete")
-	if slices.Contains(h.tt.Texts(), "db") || h.g.namespace != allNamespaces || !h.tt.HasText("API_TOKEN") {
-		t.Fatalf("namespace %q, texts %q", h.g.namespace, h.tt.Texts())
+	if slices.Contains(h.tt.Texts(), "db") || h.g.scope != (scope{}) || !h.tt.HasText("API_TOKEN") {
+		t.Fatalf("scope %v, texts %q", h.g.scope, h.tt.Texts())
 	}
 }
 
@@ -551,7 +552,7 @@ func TestEditKeepsItsEntry(t *testing.T) {
 	release()
 	h.settle()
 	if h.g.entry != urlRef {
-		t.Fatalf("beside the form for URL, %s is chosen", h.g.entry)
+		t.Fatalf("beside the form for URL, %v is chosen", h.g.entry)
 	}
 	h.typeValue("synthetic-url-new")
 	h.click("Save")
@@ -564,8 +565,8 @@ func TestEditKeepsItsEntry(t *testing.T) {
 	h.clickWithoutSettling("New Entry")
 	release()
 	h.settle()
-	if !h.g.form.open || h.g.form.from != (store.Ref{}) || h.g.entry != (store.Ref{}) {
-		t.Fatalf("form open %v for %s, entry %s", h.g.form.open, h.g.form.from, h.g.entry)
+	if !h.g.form.open || h.g.form.from != (entryID{}) || h.g.entry != (entryID{}) {
+		t.Fatalf("form open %v for %v, entry %v", h.g.form.open, h.g.form.from, h.g.entry)
 	}
 }
 
@@ -578,7 +579,7 @@ func TestNamespaceSwitchDropsPendingChoice(t *testing.T) {
 	release()
 	h.settle()
 	h.click("app")
-	if h.g.namespace != "app" || h.g.entry != (store.Ref{}) {
-		t.Fatalf("selection %s in %s after switching away and back", h.g.entry, h.g.namespace)
+	if h.g.scope != (scope{stores.ICloud, "app"}) || h.g.entry != (entryID{}) {
+		t.Fatalf("selection %v in %v after switching away and back", h.g.entry, h.g.scope)
 	}
 }

@@ -71,7 +71,7 @@ func TestEntryItems(t *testing.T) {
 	h.focusList()
 	click(m.edit)
 	if f := h.g.form; !f.open || f.from != urlRef {
-		t.Fatalf("Edit Entry: form open %v for %s", f.open, f.from)
+		t.Fatalf("Edit Entry: form open %v for %v", f.open, f.from)
 	}
 	h.focusList()
 	// No value shows behind the form, and the form already edits the entry.

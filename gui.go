@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -17,9 +16,11 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/Entwining/maskey/internal/activity"
+	"github.com/Entwining/maskey/internal/agent"
 	"github.com/Entwining/maskey/internal/keychain"
 	"github.com/Entwining/maskey/internal/owner"
 	"github.com/Entwining/maskey/internal/store"
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 const (
@@ -49,8 +50,9 @@ const (
 	searchMinWidth = 124
 	monospace      = "monospace"
 	hiddenValue    = "••••••••••••"
-	// allNamespaces is the sidebar's item for every entry. It cannot name a
-	// namespace, so it never stands for one.
+	// allNamespaces is the sidebar's item for every entry of the stores shown. A
+	// namespace's item has a ":" after its store, so this never stands for
+	// one.
 	allNamespaces = "*"
 )
 
@@ -63,7 +65,19 @@ func runGUI() {
 	} else {
 		layoutPath = filepath.Join(dir, layoutFile)
 	}
-	g := newGUI(ctx, store.New(keychain.New(store.Service, record), record), owner.NewApproval(owner.NativeAuthenticate, owner.Clock, "program access changes in this window").Approve, layoutPath)
+	g := newGUI(ctx, store.New(store.Recorded(keychain.New(store.Service), record), record), owner.NewApproval(owner.NativeAuthenticate, owner.Clock, "program access changes in this window").Approve, layoutPath)
+	warn := func(err error) { log.Print(err) }
+	g.loadStores = storesConfig
+	// The service holds a remote store's access token and the owner's
+	// approval of its program access, so the window reaches one through it.
+	g.remoteStore = func(id string) storeAccess {
+		client := agent.NewWindowRemote(id, record, warn, true)
+		return storeAccess{store.New(client, record), func(ctx context.Context, ref store.Ref, granted bool) error {
+			_, _, err := client.ChangeProgramAccess(ctx, []store.Ref{ref}, granted)
+			return err
+		}}
+	}
+	g.service = agent.NewRemote(stores.ICloud, record, warn, true)
 	mygo.Use(native.Plugin)
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
@@ -94,6 +108,7 @@ func runGUI() {
 				{Role: mygo.RoleAbout},
 				g.updateItem,
 				mygo.Separator(),
+				{Label: "Settings…", Accelerator: "CmdOrCtrl+,", Click: g.onMenu(func() { showSettingsWindow(g) })},
 				{Label: "Install Command Line Tool…", Click: g.onMenu(g.installCLI)},
 				mygo.Separator(),
 				{Role: mygo.RoleServices},
@@ -165,14 +180,27 @@ func runGUI() {
 	}
 }
 
-// gui is the window's state. Keychain calls run on goroutines and publish
+// gui is the window's state. Store calls run on goroutines and publish
 // their results through post, which runs a function on the UI thread.
 type gui struct {
 	// ctx is every operation's context, which names the window's caller.
-	ctx     context.Context
-	store   *store.Store
-	approve store.Approve
-	post    func(func())
+	ctx context.Context
+	// stores are this Mac's stores as last read, which storesRead says has
+	// happened, and storesErr is why the latest reading failed, "" if it
+	// did not. listed holds what the window shows of each store, by ID.
+	// loadStores reads them; icloud is the built-in store and remoteStore
+	// opens another.
+	stores      stores.Config
+	storesRead  bool
+	storesErr   string
+	listed      map[string]*listedStore
+	loadStores  func() (stores.Config, error)
+	icloud      storeAccess
+	remoteStore func(id string) storeAccess
+	// service changes this Mac's stores for the Settings window.
+	service  storeService
+	settings settings
+	post     func(func())
 	// clipboard takes the values the window copies; clearLater runs a
 	// function after a delay, on a goroutine of its own.
 	clipboard  valueClipboard
@@ -206,15 +234,12 @@ type gui struct {
 	// keeps none.
 	layoutPath string
 
-	namespaces []store.Namespace
-	refs       []store.Ref // every entry, sorted by namespace and name
-	attributes map[store.Ref]store.Attributes
-	namespace  string // the sidebar's choice: a namespace or allNamespaces
-	listToken  int
-	loaded     bool // a listing has finished
-	listErr    string
+	filter    string // the store shown alone, "" for every store
+	scope     scope  // the sidebar's choice within the stores shown
+	listToken int
 
-	// A query searches every namespace, not the one chosen.
+	// A query searches every namespace of the stores shown, not the one
+	// chosen.
 	query  string
 	search ui.Handle
 	// The form fields an error can send the focus back to.
@@ -227,8 +252,8 @@ type gui struct {
 	namespaceText  ui.Handle
 	// entry is the entry chosen, zero for none; while a form is open, the
 	// form's entry while the listing has it, zero for a new one.
-	entry store.Ref
-	pick  store.Ref // the entry to choose once the list includes it
+	entry entryID
+	pick  entryID // the entry to choose once the list includes it
 	// moves counts the user's choices of entry, namespace, form, and
 	// search, so that a write landing later can tell whether the user has
 	// moved on.
@@ -260,7 +285,14 @@ type gui struct {
 // newGUI makes the window's state, with the layout saved at layoutPath.
 func newGUI(ctx context.Context, s *store.Store, approve store.Approve, layoutPath string) *gui {
 	l := loadLayout(layoutPath)
-	g := &gui{ctx: ctx, store: s, approve: approve, namespace: allNamespaces, layoutPath: layoutPath,
+	icloud := storeAccess{s, func(ctx context.Context, ref store.Ref, granted bool) error {
+		_, _, err := s.ChangeAccess(ctx, []store.Ref{ref}, granted, approve)
+		return err
+	}}
+	onlyICloud := stores.Config{Default: stores.ICloud}
+	g := &gui{ctx: ctx, icloud: icloud, stores: onlyICloud, listed: map[string]*listedStore{stores.ICloud: {}},
+		loadStores: func() (stores.Config, error) { return onlyICloud, nil },
+		layoutPath: layoutPath,
 		clearLater: func(delay time.Duration, fn func()) { time.AfterFunc(delay, fn) }, clearCopy: func() {},
 		sidebarHidden: l.SidebarHidden, sidebarWidth: l.SidebarWidth, listWidth: l.ListWidth}
 	g.entryItems = newEntryItems(g)
@@ -274,17 +306,17 @@ func (g *gui) onMenu(fn func()) func(*mygo.MenuItem, *mygo.Window) {
 	return func(*mygo.MenuItem, *mygo.Window) { g.post(fn) }
 }
 
-func (g *gui) showing(ref store.Ref) bool { return ref == g.entry && g.revealed != "" }
+func (g *gui) showing(id entryID) bool { return id == g.entry && g.revealed != "" }
 
 // The value's buttons, the row's menu, and the list's keys share these
 // rules: no value is shown or copied while one is read, and none while it
 // is written, when it cannot be edited either; none is shown while a form
 // has its place; a shown value can always be hidden.
-func (g *gui) writing(ref store.Ref) bool { return g.write != nil && g.write.ref == ref }
+func (g *gui) writing(id entryID) bool { return g.write != nil && g.write.entry == id }
 
-func (g *gui) canCopy(ref store.Ref) bool { return g.readAction == "" && !g.writing(ref) }
+func (g *gui) canCopy(id entryID) bool { return g.readAction == "" && !g.writing(id) }
 
-func (g *gui) canReveal(ref store.Ref) bool { return g.showing(ref) || !g.form.open && g.canCopy(ref) }
+func (g *gui) canReveal(id entryID) bool { return g.showing(id) || !g.form.open && g.canCopy(id) }
 
 // selectionChanged invalidates the work started for the old selection.
 func (g *gui) selectionChanged() {
@@ -294,32 +326,34 @@ func (g *gui) selectionChanged() {
 	g.copied, g.copiedUntil = false, time.Time{}
 }
 
-// choose makes ref the chosen entry, for an action on its row.
-func (g *gui) choose(ref store.Ref) {
+// choose makes id the chosen entry, for an action on its row.
+func (g *gui) choose(id entryID) {
 	g.moves++
-	if ref != g.entry {
-		g.entry = ref
+	if id != g.entry {
+		g.entry = id
 		g.selectionChanged()
 	}
 }
 
-// showNamespace shows a namespace's entries, or every entry, ending a
-// search.
-func (g *gui) showNamespace(namespace string) {
+// showScope shows a namespace's entries, or every entry, ending a search.
+func (g *gui) showScope(s scope) {
 	g.moves++
-	g.namespace, g.query = namespace, ""
-	g.entry, g.pick = store.Ref{}, store.Ref{}
+	g.scope, g.query = s, ""
+	g.entry, g.pick = entryID{}, entryID{}
 	g.selectionChanged()
 }
 
-// follow shows ref, just written, in the list and chooses it once a
-// listing includes it.
-func (g *gui) follow(ref store.Ref) {
-	if g.namespace != allNamespaces {
-		g.namespace = ref.Namespace
+// follow shows id, just written, in the list and chooses it once a listing
+// includes it.
+func (g *gui) follow(id entryID) {
+	if !g.shown(id.store) {
+		g.filter = id.store
+	}
+	if g.scope != (scope{}) {
+		g.scope = scope{id.store, id.ref.Namespace}
 	}
 	g.query = ""
-	g.pick = ref
+	g.pick = id
 	g.refresh()
 }
 
@@ -328,6 +362,10 @@ func (g *gui) close() {
 	g.closed = true
 	g.selectionChanged()
 	g.form.value, g.form.original = "", ""
+	g.settings.token = ""
+	if g.settings.close != nil {
+		g.settings.close()
+	}
 	if g.layoutPath == "" {
 		return
 	}
@@ -343,43 +381,6 @@ func (g *gui) close() {
 func (g *gui) quit() {
 	g.closeWindow()
 	g.quitApp()
-}
-
-// refresh reloads the namespaces and the names of every entry; it never
-// loads values.
-func (g *gui) refresh() {
-	g.listToken++
-	token := g.listToken
-	g.start(func() func() {
-		namespaces, refs, attributes, err := g.store.Listing(g.ctx)
-		return func() {
-			if token != g.listToken {
-				return
-			}
-			g.loaded = true
-			if err != nil {
-				g.listErr = sentence(err)
-				return
-			}
-			g.listErr = ""
-			// A value shown before another writer replaced it is no longer
-			// the entry's; a read still running for the entry reads again.
-			if g.revealed != "" && !attributes[g.entry].Modified.Equal(g.attributes[g.entry].Modified) {
-				g.revealed = ""
-			}
-			g.namespaces, g.refs, g.attributes = namespaces, refs, attributes
-			if !slices.ContainsFunc(namespaces, func(n store.Namespace) bool { return n.Name == g.namespace }) {
-				g.namespace = allNamespaces
-			}
-			if !slices.Contains(refs, g.pick) {
-				g.pick = store.Ref{}
-			}
-			if g.entry != (store.Ref{}) && !slices.Contains(refs, g.entry) {
-				g.entry = store.Ref{}
-				g.selectionChanged()
-			}
-		}
-	})
 }
 
 // start runs work off the UI thread and applies its result. Once the window
@@ -442,26 +443,6 @@ func sentence(err error) string {
 	return message
 }
 
-// rows lists the entries the list shows: the chosen namespace's, or every
-// entry, or while searching, every entry whose name or namespace contains
-// the query, ignoring case.
-func (g *gui) rows() []store.Ref {
-	if g.query == "" && g.namespace == allNamespaces {
-		// Shared with g.refs, which refresh replaces whole: callers must not
-		// sort or filter the rows in place.
-		return g.refs
-	}
-	query := strings.ToLower(g.query)
-	var refs []store.Ref
-	for _, ref := range g.refs {
-		if query == "" && (g.namespace == allNamespaces || ref.Namespace == g.namespace) ||
-			query != "" && (strings.Contains(strings.ToLower(ref.Name), query) || strings.Contains(strings.ToLower(ref.Namespace), query)) {
-			refs = append(refs, ref)
-		}
-	}
-	return refs
-}
-
 func (g *gui) view(c *ui.Context) {
 	c.SetTheme(theme(c.Theme()))
 	if g.copied {
@@ -486,8 +467,8 @@ func (g *gui) view(c *ui.Context) {
 }
 
 // kind is the kind of value the entry holds.
-func (g *gui) kind(ref store.Ref) store.ValueKind {
-	return store.ValueKindOf(ref.Name, g.attributes[ref].Kind)
+func (g *gui) kind(id entryID) store.ValueKind {
+	return store.ValueKindOf(id.ref.Name, g.attributes(id).Kind)
 }
 
 // leavePrompt is the question about a form's unsaved changes, and the
@@ -507,7 +488,7 @@ type leavePrompt struct {
 // left.
 func (g *gui) newLeavePrompt(offerSave bool) leavePrompt {
 	f := &g.form
-	edit := f.from != (store.Ref{})
+	edit := f.from != (entryID{})
 	continueEditing := alertButton{title: "Continue Editing", isCancel: true}
 	discard := alertButton{title: "Discard", destructive: true}
 	switch {

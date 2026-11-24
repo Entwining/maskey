@@ -14,6 +14,7 @@ import (
 	"testing/synctest"
 
 	"github.com/Entwining/maskey/internal/store"
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 // launchd stands in for launchctl: its job is loaded from bootstrap until
@@ -81,11 +82,15 @@ func TestRemoveServiceUndoesInstall(t *testing.T) {
 	if err := privateDir(filepath.Dir(socket)); err != nil {
 		t.Fatal(err)
 	}
-	lock, err := lockFile(filepath.Join(filepath.Dir(socket), "keychain.lock"))
+	lock, err := lockFile(filepath.Join(filepath.Dir(socket), "service.lock"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	lock.Close()
+	// The stores' configuration and snapshots go with the socket's directory.
+	if dir, err := stores.Dir(); err != nil || dir != filepath.Dir(socket) {
+		t.Fatalf("the stores are kept in %s, outside the service's directory: %v", dir, err)
+	}
 
 	listed := serviceItems(context.Background(), home, job.control)
 	removed := removeService(context.Background(), home, job.control)
@@ -141,7 +146,7 @@ func TestRemoveServiceKeeps(t *testing.T) {
 			home := t.TempDir()
 			path := plistPath(home)
 			writeFile(t, path+".lock", nil)
-			writeFile(t, filepath.Join(home, "Library", "Application Support", store.Service, "keychain.lock"), nil)
+			writeFile(t, filepath.Join(home, "Library", "Application Support", store.Service, "service.lock"), nil)
 			switch {
 			case test.symlink:
 				target := filepath.Join(t.TempDir(), "job.plist")
@@ -208,7 +213,7 @@ func TestServiceChangeDuringAnother(t *testing.T) {
 	home := t.TempDir()
 	path := plistPath(home)
 	writeFile(t, path, jobPlist("/previous/Maskey"))
-	writeFile(t, filepath.Join(home, "Library", "Application Support", store.Service, "keychain.lock"), nil)
+	writeFile(t, filepath.Join(home, "Library", "Application Support", store.Service, "service.lock"), nil)
 	lock, err := lockFile(path + ".lock")
 	if err != nil {
 		t.Fatal(err)
@@ -255,5 +260,70 @@ func TestLockFileIdentity(t *testing.T) {
 	defer recreated.Close()
 	if err := lockOpened(opened, path); !errors.Is(err, errLocked) {
 		t.Fatalf("locking the unlinked file: %v", err)
+	}
+}
+
+// The Keychain service of an earlier Maskey goes with its files, its job
+// last; a configuration under its label that is not Maskey's stays.
+func TestRetireLegacy(t *testing.T) {
+	home := t.TempDir()
+	plist := legacyPlistPath(home)
+	dir := filepath.Join(home, "Library", "Application Support", store.Service)
+	legacy := bytes.ReplaceAll(bytes.ReplaceAll(jobPlist("/Applications/Maskey.app/Contents/MacOS/maskey"), []byte(serviceLabel), []byte(legacyLabel)), []byte(ServiceArg), []byte(LegacyArg))
+	files := []string{plist, plist + ".lock", filepath.Join(filepath.Dir(plist), "."+legacyLabel+".backup-1"), filepath.Join(dir, "keychain.sock"), filepath.Join(dir, "keychain.lock")}
+	for _, file := range files {
+		writeFile(t, file, legacy)
+	}
+	kept := filepath.Join(dir, "stores.json")
+	writeFile(t, kept, []byte("{}"))
+	loaded, refuse := true, true
+	var calls []string
+	control := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		if _, err := os.Stat(plist); err == nil {
+			t.Error("the job was asked about before its files were removed")
+		}
+		switch {
+		case args[0] == "print" && !loaded:
+			return errJobNotLoaded
+		case args[0] == "bootout" && refuse:
+			return errors.New("synthetic launchctl failure")
+		case args[0] == "bootout":
+			loaded = false
+		}
+		return nil
+	}
+	if item := legacyItem(home); item.Status != "" {
+		t.Fatalf("before: %+v", item)
+	}
+	target := serviceDomain + "/" + legacyLabel
+	// A job that could not be stopped keeps its configuration, by which
+	// the next attempt knows it and stops it.
+	if item := retireLegacy(context.Background(), home, control); item.Status != "failed" || !loaded || legacyItem(home).Status != "" {
+		t.Fatalf("a refused stop: %+v, loaded %v, then %+v", item, loaded, legacyItem(home))
+	}
+	refuse, calls = false, nil
+	item := retireLegacy(context.Background(), home, control)
+	if item.Status != "removed" || loaded || !slices.Equal(calls, []string{"print " + target, "bootout " + target, "print " + target}) {
+		t.Fatalf("%+v, loaded %v, calls %v", item, loaded, calls)
+	}
+	for _, file := range files {
+		if _, err := os.Stat(file); err == nil {
+			t.Errorf("%s stayed", file)
+		}
+	}
+	if _, err := os.Stat(kept); err != nil {
+		t.Error("the stores' configuration went with the earlier service")
+	}
+	if item := retireLegacy(context.Background(), home, control); item.Status != "absent" {
+		t.Errorf("a second time: %+v", item)
+	}
+
+	writeFile(t, plist, jobPlist("/Applications/Maskey.app/Contents/MacOS/maskey"))
+	if item := retireLegacy(context.Background(), home, control); item.Status != "kept" {
+		t.Errorf("another job's configuration: %+v", item)
+	}
+	if _, err := os.Stat(plist); err != nil {
+		t.Error("another job's configuration was removed")
 	}
 }

@@ -35,6 +35,9 @@ type Record struct {
 	// it, the reference before, and To the reference after.
 	Entry string `json:"entry"`
 	To    string `json:"to,omitempty"`
+	// Store is the name of the store that holds the entry; a record
+	// without one is about iCloud Keychain.
+	Store string `json:"store,omitempty"`
 	// Result is ok or the error kind the operation ended with.
 	Result string `json:"result"`
 	// Via is what a read was for: run, reveal, copy, or edit.
@@ -70,7 +73,13 @@ const (
 	authKey
 	callerKey
 	failureKey
+	storeKey
 )
+
+// WithStore attributes the records made with ctx to the store named id.
+func WithStore(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, storeKey, id)
+}
 
 // WithVia tags the reads made with ctx with what they are for.
 func WithVia(ctx context.Context, via string) context.Context {
@@ -194,6 +203,7 @@ func (l *Log) Record(ctx context.Context, records ...Record) {
 	}
 	for _, r := range records {
 		r.V, r.Time, r.Caller = Version, now.Format(timeLayout), caller
+		r.Store, _ = ctx.Value(storeKey).(string)
 		if r.Op == "read" {
 			r.Via = ViaOf(ctx)
 		}

@@ -184,6 +184,11 @@ func exitCodesTopic() *cobra.Command {
   10   unavailable             the Keychain and mk's service are unreachable
   11   not_granted             program access is not granted
   12   io                      reading input or writing output failed
+  13   network                 a remote store could not be reached; nothing was written
+  14   unauthenticated         a remote store refused this Mac's access token
+  15   permission_denied       the access token may not do this
+  16   rate_limited            a remote store asked for fewer requests
+  17   remote_error            a remote store failed or answered unusably
   130  cancelled               interrupted or confirmation declined
 
 mk run returns its child's status or ends by the same signal. For mk's own

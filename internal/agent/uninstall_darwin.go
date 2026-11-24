@@ -13,13 +13,13 @@ import (
 	"github.com/Entwining/maskey/internal/store"
 )
 
-// ServiceItems lists the Keychain service's job and its files under home,
+// ServiceItems lists the Maskey service's job and its files under home,
 // with what RemoveService would do with each now. It changes nothing.
 func ServiceItems(ctx context.Context, home string) []ServiceItem {
 	return serviceItems(ctx, home, launchctl)
 }
 
-// RemoveService stops the Keychain service and removes its files under home.
+// RemoveService stops the Maskey service and removes its files under home.
 // It decides what to remove only once it holds the lock install takes, so
 // neither acts on what the other has just changed.
 func RemoveService(ctx context.Context, home string) []ServiceItem {
@@ -29,7 +29,11 @@ func RemoveService(ctx context.Context, home string) []ServiceItem {
 func serviceItems(ctx context.Context, home string, control func(context.Context, ...string) error) []ServiceItem {
 	files := serviceFiles(home)
 	job := serviceJob(ctx, files[0], control)
-	return append(keepWhileLoaded(job, files), existing(plistPath(home)+".lock"))
+	items := append(keepWhileLoaded(job, files), existing(plistPath(home)+".lock"))
+	if legacy := legacyItem(home); legacy.Status != "absent" {
+		items = append(items, legacy)
+	}
+	return items
 }
 
 func removeService(ctx context.Context, home string, control func(context.Context, ...string) error) []ServiceItem {
@@ -45,7 +49,7 @@ func removeService(ctx context.Context, home string, control func(context.Contex
 		if errors.Is(err, errLocked) {
 			detail = "another mk setup, mk uninstall, or Install Command Line Tool… is changing it"
 		}
-		job := ServiceItem{Item: "Keychain service", Status: "failed", Detail: "cannot lock the Keychain service's configuration: " + detail}
+		job := ServiceItem{Item: "Maskey service", Status: "failed", Detail: "cannot lock the Maskey service's configuration: " + detail}
 		return keepWhileLoaded(job, append(serviceFiles(home), lockItem))
 	}
 	defer lock.Close()
@@ -56,8 +60,8 @@ func removeService(ctx context.Context, home string, control func(context.Contex
 		ctx, cancel := context.WithTimeout(ctx, requestTimeout+10*time.Second)
 		defer cancel()
 		job.Status = "removed"
-		if err := stopJob(ctx, control); err != nil {
-			job.Status, job.Detail = "failed", "cannot stop the Keychain service: "+err.Error()
+		if err := stopJob(ctx, serviceTarget, control); err != nil {
+			job.Status, job.Detail = "failed", "cannot stop the Maskey service: "+err.Error()
 		}
 	}
 	items := keepWhileLoaded(job, files)
@@ -75,18 +79,22 @@ func removeService(ctx context.Context, home string, control func(context.Contex
 	} else if lockItem.Status == "" {
 		lockItem.Status = "removed"
 	}
-	return append(items, lockItem)
+	items = append(items, lockItem)
+	if legacy := retireLegacy(ctx, home, control); legacy.Status != "absent" {
+		items = append(items, legacy)
+	}
+	return items
 }
 
 // serviceJob is what uninstall does with the job, given the row of its
 // configuration: it stops the job only when that configuration is this
 // Maskey's. A job loaded without one is, as install sees it, another's.
 func serviceJob(ctx context.Context, plist ServiceItem, control func(context.Context, ...string) error) ServiceItem {
-	job := ServiceItem{Item: "Keychain service"}
-	loaded, err := jobLoaded(ctx, control)
+	job := ServiceItem{Item: "Maskey service"}
+	loaded, err := jobLoaded(ctx, serviceTarget, control)
 	switch {
 	case err != nil:
-		job.Status, job.Detail = "failed", "cannot ask launchd about the Keychain service: "+err.Error()
+		job.Status, job.Detail = "failed", "cannot ask launchd about the Maskey service: "+err.Error()
 	case !loaded:
 		job.Status = "absent"
 	case plist.Status == "absent":
@@ -125,7 +133,7 @@ func keepWhileLoaded(job ServiceItem, files []ServiceItem) []ServiceItem {
 	if job.Status == "kept" || job.Status == "failed" {
 		for i := range files {
 			if files[i].Status == "" {
-				files[i].Status, files[i].Detail = "kept", "the Keychain service may still be loaded"
+				files[i].Status, files[i].Detail = "kept", "the Maskey service may still be loaded"
 			}
 		}
 	}

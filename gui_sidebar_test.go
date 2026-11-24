@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 // trafficLights is room the window controls might take; the window reads
@@ -45,8 +47,8 @@ func TestSidebarToggle(t *testing.T) {
 		if hidden {
 			label = "Show Sidebar"
 		}
-		if h.g.namespace != "db" || !h.tt.HasText("PASSWORD") || h.tt.HasText("API_TOKEN") {
-			t.Fatalf("%s: namespace %q, showing %q", when, h.g.namespace, h.tt.Texts())
+		if h.g.scope != (scope{stores.ICloud, "db"}) || !h.tt.HasText("PASSWORD") || h.tt.HasText("API_TOKEN") {
+			t.Fatalf("%s: scope %v, showing %q", when, h.g.scope, h.tt.Texts())
 		}
 		// The list's title is db, so All Entries is the sidebar's.
 		if _, shown := h.tt.Find("All Entries"); shown == hidden {
@@ -254,8 +256,8 @@ func TestHiddenSidebarTakesNoKeys(t *testing.T) {
 	h.toggleSidebarFromMenu()
 	h.tt.Key(0, ui.KeyUp)
 	h.tt.Frame()
-	if h.g.namespace != "db" {
-		t.Fatalf("Up chose %q in the hidden sidebar", h.g.namespace)
+	if h.g.scope != (scope{stores.ICloud, "db"}) {
+		t.Fatalf("Up chose %v in the hidden sidebar", h.g.scope)
 	}
 	for i := 0; i < 8; i++ {
 		h.tt.Key(0, ui.KeyTab)

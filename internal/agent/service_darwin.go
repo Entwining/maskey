@@ -25,7 +25,7 @@ import (
 	"github.com/Entwining/maskey/internal/store"
 )
 
-const serviceLabel = store.Service + ".keychain"
+const serviceLabel = store.Service + ".service"
 const servicePATH = "/usr/bin:/bin"
 
 // backupPattern names the configurations an install keeps beside the new
@@ -40,18 +40,18 @@ var (
 )
 
 var (
-	errServiceFiles     = errors.New("the Keychain service files could not be prepared safely")
-	errServiceRunning   = errors.New("the Keychain service is already running")
-	errServiceChanging  = errors.New("another mk setup, mk uninstall, or Install Command Line Tool… is changing the Keychain service; try again once it finishes")
+	errServiceFiles     = errors.New("the Maskey service files could not be prepared safely")
+	errServiceRunning   = errors.New("the Maskey service is already running")
+	errServiceChanging  = errors.New("another mk setup, mk uninstall, or Install Command Line Tool… is changing the Maskey service; try again once it finishes")
 	errLocked           = errors.New("locked by another process")
-	errServiceInstall   = errors.New("the Keychain service could not be installed; its previous configuration, if any, remains in ~/Library/LaunchAgents")
-	errServiceCollision = errors.New("the Keychain service configuration belongs to a different job; it was not replaced")
-	errJobNotLoaded     = errors.New("the Keychain service is not loaded")
+	errServiceInstall   = errors.New("the Maskey service could not be installed; its previous configuration, if any, remains in ~/Library/LaunchAgents")
+	errServiceCollision = errors.New("the Maskey service configuration belongs to a different job; it was not replaced")
+	errJobNotLoaded     = errors.New("the Maskey service is not loaded")
 )
 
-// Serve runs the Keychain service. recorder receives the records of
-// changes to program access the owner refused.
-func Serve(ctx context.Context, backend store.Backend, recorder activity.Recorder, check func(context.Context) error, approve store.Approve) error {
+// Serve runs the Maskey service. recorder receives the record of every
+// operation on an entry that the service performs or refuses.
+func Serve(ctx context.Context, registry Stores, recorder activity.Recorder, check func(context.Context) error, approve store.Approve) error {
 	path, err := socketPath()
 	if err != nil {
 		return errServiceFiles
@@ -67,7 +67,7 @@ func Serve(ctx context.Context, backend store.Backend, recorder activity.Recorde
 	// launchd's EnvironmentVariables adds to its environment rather than replacing it.
 	os.Clearenv()
 	os.Setenv("PATH", servicePATH)
-	return serve(ctx, path, backend, recorder, check, approve, func() bool {
+	return serve(ctx, path, registry, recorder, check, approve, func() bool {
 		installed, err := fileIdentity(executable)
 		return err == nil && !bytes.Equal(installed, self)
 	})
@@ -80,12 +80,12 @@ func Serve(ctx context.Context, backend store.Backend, recorder activity.Recorde
 // file, not a client, can end the service this way. A retiring service leaves
 // its socket so that clients wait for the new build instead of concluding that
 // no service is installed.
-func serve(ctx context.Context, path string, backend store.Backend, recorder activity.Recorder, check func(context.Context) error, approve store.Approve, replaced func() bool) error {
+func serve(ctx context.Context, path string, registry Stores, recorder activity.Recorder, check func(context.Context) error, approve store.Approve, replaced func() bool) error {
 	dir := filepath.Dir(path)
 	if err := privateDir(dir); err != nil {
 		return err
 	}
-	lock, err := lockFile(filepath.Join(dir, "keychain.lock"))
+	lock, err := lockFile(filepath.Join(dir, "service.lock"))
 	if errors.Is(err, errLocked) {
 		return errServiceRunning
 	}
@@ -155,7 +155,7 @@ accept:
 			if pid, err := authenticate(conn); err == nil {
 				// The client waits for the hello, so it and almost always
 				// the program that started it still run.
-				serveRequest(activity.WithCaller(workers, activity.Invoker(pid)), conn, backend, recorder, check, approve)
+				serveRequest(activity.WithCaller(workers, activity.Invoker(pid)), conn, func() activity.Caller { return activity.Process(pid) }, registry, recorder, check, approve)
 			} else if replaced() {
 				retiring.Store(true)
 				retire()
@@ -255,15 +255,21 @@ func Install(ctx context.Context, executable string) error {
 	if err != nil {
 		return errServiceInstall
 	}
-	return install(ctx, executable, plistPath(home), launchctl, func(ctx context.Context) error { return awaitService(ctx, socket) })
+	if err := install(ctx, executable, plistPath(home), launchctl, func(ctx context.Context) error { return awaitService(ctx, socket) }); err != nil {
+		return err
+	}
+	if legacy := retireLegacy(ctx, home, launchctl); legacy.Status == "failed" {
+		return errors.New("the Maskey service is installed, but the Keychain service of an earlier Maskey could not be removed: " + legacy.Detail)
+	}
+	return nil
 }
 
 func plistPath(home string) string {
 	return filepath.Join(home, "Library", "LaunchAgents", serviceLabel+".plist")
 }
 
-func jobLoaded(ctx context.Context, control func(context.Context, ...string) error) (bool, error) {
-	err := control(ctx, "print", serviceTarget)
+func jobLoaded(ctx context.Context, target string, control func(context.Context, ...string) error) (bool, error) {
+	err := control(ctx, "print", target)
 	if errors.Is(err, errJobNotLoaded) {
 		return false, nil
 	}
@@ -274,12 +280,12 @@ func jobLoaded(ctx context.Context, control func(context.Context, ...string) err
 // returns once launchd has signalled the job, which may still be finishing
 // accepted writes, and launchd refuses to bootstrap the label until the job
 // is gone.
-func stopJob(ctx context.Context, control func(context.Context, ...string) error) error {
-	if err := control(ctx, "bootout", serviceTarget); err != nil {
+func stopJob(ctx context.Context, target string, control func(context.Context, ...string) error) error {
+	if err := control(ctx, "bootout", target); err != nil {
 		return err
 	}
 	for {
-		loaded, err := jobLoaded(ctx, control)
+		loaded, err := jobLoaded(ctx, target, control)
 		if err != nil || !loaded {
 			return err
 		}
@@ -325,7 +331,7 @@ func install(ctx context.Context, executable, path string, control func(context.
 	if foreignConfiguration(old, oldInfo, err) {
 		return errServiceCollision
 	}
-	loaded, err := jobLoaded(ctx, control)
+	loaded, err := jobLoaded(ctx, serviceTarget, control)
 	if err != nil {
 		return errServiceInstall
 	}
@@ -370,7 +376,7 @@ func install(ctx context.Context, executable, path string, control func(context.
 		// stays beside the new one; an identical one has nothing to preserve.
 		keep = !bytes.Equal(old, plist)
 	}
-	if loaded && stopJob(ctx, control) != nil {
+	if loaded && stopJob(ctx, serviceTarget, control) != nil {
 		return errServiceInstall
 	}
 	if control(ctx, "bootstrap", serviceDomain, path) != nil {
@@ -399,10 +405,12 @@ func readPlist(path string) ([]byte, os.FileInfo, error) {
 // foreignConfiguration reports whether what readPlist returned is another
 // job's configuration, which install refuses to replace and uninstall keeps.
 func foreignConfiguration(data []byte, info os.FileInfo, err error) bool {
-	return err != nil || info != nil && !sameJob(data)
+	return err != nil || info != nil && !sameJob(data, serviceLabel, ServiceArg)
 }
 
-func sameJob(data []byte) bool {
+// sameJob reports whether data configures the job label to run an
+// executable with the one argument arg.
+func sameJob(data []byte, label, arg string) bool {
 	// The dictionary's key/value order matters; parallel slices lose that association.
 	var doc struct {
 		XMLName xml.Name `xml:"plist"`
@@ -417,7 +425,7 @@ func sameJob(data []byte) bool {
 	if xml.Unmarshal(data, &doc) != nil || len(doc.Dict.Items)%2 != 0 {
 		return false
 	}
-	label, args := false, false
+	hasLabel, hasArgs := false, false
 	for i := 0; i < len(doc.Dict.Items); i += 2 {
 		key, value := doc.Dict.Items[i], doc.Dict.Items[i+1]
 		if key.XMLName.Local != "key" {
@@ -425,18 +433,18 @@ func sameJob(data []byte) bool {
 		}
 		switch key.Text {
 		case "Label":
-			if label || value.XMLName.Local != "string" || value.Text != serviceLabel {
+			if hasLabel || value.XMLName.Local != "string" || value.Text != label {
 				return false
 			}
-			label = true
+			hasLabel = true
 		case "ProgramArguments":
-			if args || value.XMLName.Local != "array" || len(value.Strings) != 2 || !filepath.IsAbs(value.Strings[0]) || value.Strings[1] != "--keychain-service" {
+			if hasArgs || value.XMLName.Local != "array" || len(value.Strings) != 2 || !filepath.IsAbs(value.Strings[0]) || value.Strings[1] != arg {
 				return false
 			}
-			args = true
+			hasArgs = true
 		}
 	}
-	return label && args
+	return hasLabel && hasArgs
 }
 
 // jobPlist is the job's configuration. Umask 63 is 077, so what the service
@@ -451,7 +459,7 @@ func jobPlist(executable string) []byte {
 <plist version="1.0">
 <dict>
   <key>Label</key><string>` + serviceLabel + `</string>
-  <key>ProgramArguments</key><array><string>` + escaped.String() + `</string><string>--keychain-service</string></array>
+  <key>ProgramArguments</key><array><string>` + escaped.String() + `</string><string>` + ServiceArg + `</string></array>
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>` + servicePATH + `</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

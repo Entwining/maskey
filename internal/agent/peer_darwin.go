@@ -16,7 +16,10 @@ import (
 var loadPeerAPI = sync.OnceValues(openPeerAPI)
 
 // authenticate checks that the peer runs the same signed executable as this
-// process, and returns the peer's pid as the kernel reports it.
+// process, and returns the peer's pid as the kernel reports it. It asks the
+// kernel for the peer's cdhash by audit token: Security's guest lookup also
+// reads the peer's process information, which a command sandbox denies for
+// every process outside it.
 func authenticate(conn *net.UnixConn) (int, error) {
 	api, err := loadPeerAPI()
 	if err != nil {
@@ -26,7 +29,7 @@ func authenticate(conn *net.UnixConn) (int, error) {
 	if err != nil {
 		return 0, errPeerUnavailable
 	}
-	var token [8]uint32 // Opaque audit_token_t, copied unchanged into CFData.
+	var token [8]uint32 // Opaque audit_token_t.
 	var peerErr error
 	if err := raw.Control(func(fd uintptr) {
 		cred, err := unix.GetsockoptXucred(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
@@ -49,43 +52,32 @@ func authenticate(conn *net.UnixConn) (int, error) {
 		return 0, peerErr
 	}
 
-	data := api.dataCreate(0, unsafe.Pointer(&token), int64(unsafe.Sizeof(token)))
-	if data == 0 {
+	// An audit token's sixth word is the pid.
+	pid := int32(token[5])
+	var status uint32
+	var peerHash [cdhashSize]byte
+	if api.csops(pid, csOpsStatus, unsafe.Pointer(&status), unsafe.Sizeof(status), unsafe.Pointer(&token)) != 0 || status&csValid == 0 ||
+		api.csops(pid, csOpsCDHash, unsafe.Pointer(&peerHash), cdhashSize, unsafe.Pointer(&token)) != 0 {
 		return 0, errPeerUnavailable
 	}
-	defer api.release(data)
-	attributes := api.dictionaryCreate(0, &api.auditKey, &data, 1, api.keyCallbacks, api.valueCallbacks)
-	if attributes == 0 {
-		return 0, errPeerUnavailable
-	}
-	defer api.release(attributes)
-	var peer, self uintptr
-	if api.copyGuest(0, attributes, 0, &peer) != 0 {
-		return 0, errPeerUnavailable
-	}
-	defer api.release(peer)
-	if api.copySelf(0, &self) != 0 {
-		return 0, errPeerUnavailable
-	}
-	defer api.release(self)
-	peerInfo, err := api.verifiedSigningInfo(peer)
+	selfHash, err := selfIdentity()
 	if err != nil {
 		return 0, err
 	}
-	defer api.release(peerInfo)
-	selfInfo, err := api.verifiedSigningInfo(self)
-	if err != nil {
-		return 0, err
-	}
-	defer api.release(selfInfo)
-	peerHash := api.dictionaryGetValue(peerInfo, api.uniqueKey)
-	selfHash := api.dictionaryGetValue(selfInfo, api.uniqueKey)
-	if peerHash == 0 || selfHash == 0 || api.equal(peerHash, selfHash) == 0 {
+	if !bytes.Equal(peerHash[:], selfHash) {
 		return 0, errPeerMismatch
 	}
-	// An audit token's sixth word is the pid.
-	return int(token[5]), nil
+	return int(pid), nil
 }
+
+// The kernel's code signing queries, from XNU's sys/codesign.h and
+// kern/cs_blobs.h, which no SDK ships.
+const (
+	csOpsStatus = 0
+	csOpsCDHash = 5
+	csValid     = 0x1
+	cdhashSize  = 20
+)
 
 // selfIdentity is the running code's cdhash.
 func selfIdentity() ([]byte, error) {
@@ -144,12 +136,9 @@ func (api *peerAPI) uniqueBytes(info uintptr) ([]byte, error) {
 
 type peerAPI struct {
 	getsockopt          func(int32, int32, int32, unsafe.Pointer, *uint32) int32
-	dataCreate          func(uintptr, unsafe.Pointer, int64) uintptr
-	dictionaryCreate    func(uintptr, *uintptr, *uintptr, int64, uintptr, uintptr) uintptr
+	csops               func(int32, uint32, unsafe.Pointer, uintptr, unsafe.Pointer) int32
 	dictionaryGetValue  func(uintptr, uintptr) uintptr
-	equal               func(uintptr, uintptr) uint8
 	release             func(uintptr)
-	copyGuest           func(uintptr, uintptr, uint32, *uintptr) int32
 	copySelf            func(uint32, *uintptr) int32
 	checkValidity       func(uintptr, uint32, uintptr) int32
 	copySigningInfo     func(uintptr, uint32, *uintptr) int32
@@ -158,10 +147,7 @@ type peerAPI struct {
 	staticCheckValidity func(uintptr, uint32, uintptr) int32
 	dataBytes           func(uintptr) unsafe.Pointer
 	dataLength          func(uintptr) int64
-	auditKey            uintptr
 	uniqueKey           uintptr
-	keyCallbacks        uintptr
-	valueCallbacks      uintptr
 }
 
 // errSecCSStaticCodeChanged is Security's "the code on disk does not match
@@ -208,13 +194,10 @@ func openPeerAPI() (*peerAPI, error) {
 		name   string
 	}{
 		{&api.getsockopt, handles[0], "getsockopt"},
+		{&api.csops, handles[0], "csops_audittoken"},
 		{&copyMemory, handles[0], "memcpy"},
-		{&api.dataCreate, handles[1], "CFDataCreate"},
-		{&api.dictionaryCreate, handles[1], "CFDictionaryCreate"},
 		{&api.dictionaryGetValue, handles[1], "CFDictionaryGetValue"},
-		{&api.equal, handles[1], "CFEqual"},
 		{&api.release, handles[1], "CFRelease"},
-		{&api.copyGuest, handles[2], "SecCodeCopyGuestWithAttributes"},
 		{&api.copySelf, handles[2], "SecCodeCopySelf"},
 		{&api.checkValidity, handles[2], "SecCodeCheckValidity"},
 		{&api.copySigningInfo, handles[2], "SecCodeCopySigningInformation"},
@@ -230,24 +213,10 @@ func openPeerAPI() (*peerAPI, error) {
 		}
 		purego.RegisterFunc(binding.target, address)
 	}
-	var auditKeySymbol, uniqueKeySymbol uintptr
-	for _, binding := range []struct {
-		target *uintptr
-		handle uintptr
-		name   string
-	}{
-		{&auditKeySymbol, handles[2], "kSecGuestAttributeAudit"},
-		{&uniqueKeySymbol, handles[2], "kSecCodeInfoUnique"},
-		{&api.keyCallbacks, handles[1], "kCFTypeDictionaryKeyCallBacks"},
-		{&api.valueCallbacks, handles[1], "kCFTypeDictionaryValueCallBacks"},
-	} {
-		address, err := purego.Dlsym(binding.handle, binding.name)
-		if err != nil {
-			return nil, errPeerUnavailable
-		}
-		*binding.target = address
+	uniqueKeySymbol, err := purego.Dlsym(handles[2], "kSecCodeInfoUnique")
+	if err != nil {
+		return nil, errPeerUnavailable
 	}
-	copyMemory(&api.auditKey, auditKeySymbol, unsafe.Sizeof(api.auditKey))
 	copyMemory(&api.uniqueKey, uniqueKeySymbol, unsafe.Sizeof(api.uniqueKey))
 	return api, nil
 }

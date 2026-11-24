@@ -5,8 +5,6 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
-
-	"github.com/Entwining/maskey/internal/store"
 )
 
 // detail shows the chosen entry, or the form, as Passwords shows an item:
@@ -25,7 +23,7 @@ func (g *gui) detail(c *ui.Context) {
 		switch {
 		case f.open:
 			action := "Save"
-			if f.from == (store.Ref{}) {
+			if f.from == (entryID{}) {
 				action = "Add"
 			}
 			cancel, submit := formButtons(c, action, g.canSubmit(), submitting)
@@ -35,7 +33,7 @@ func (g *gui) detail(c *ui.Context) {
 			if submit {
 				g.submit(nil)
 			}
-		case g.entry != (store.Ref{}):
+		case g.entry != (entryID{}):
 			slot()
 			if ui.Button(c, "Edit").MinWidth(toolbarButtonWidth).Height(28).Disabled(g.writing(g.entry)).Clicked() {
 				g.openEdit(g.entry)
@@ -45,20 +43,20 @@ func (g *gui) detail(c *ui.Context) {
 			slot()
 		}
 		search := ui.SearchField(c.Key("search"), &g.query).Bind(&g.search).Label("Search entries").Width(searchWidth).MinWidth(searchMinWidth).Height(28).
-			Padding(0, t.Space(2)).Radius(7).Background(neutral.Alpha(0.12)).Border(1, ui.Transparent).Disabled(len(g.namespaces) == 0)
+			Padding(0, t.Space(2)).Radius(7).Background(neutral.Alpha(0.12)).Border(1, ui.Transparent).Disabled(g.count() == 0)
 		if search.Changed() {
 			// A search ends a pending choice, which would otherwise wait
 			// for as long as the search hides its entry.
 			g.moves++
-			g.pick = store.Ref{}
+			g.pick = entryID{}
 		}
 	})
 	// Escape in the search field is the field's, which clears the query.
 	if f.open && !g.search.FocusWithin(c) && c.Shortcut(0, ui.KeyEscape) {
 		g.cancelForm()
 	}
-	if !f.open && g.entry == (store.Ref{}) {
-		if g.loaded && len(g.namespaces) > 0 {
+	if !f.open && g.entry == (entryID{}) {
+		if g.count() > 0 {
 			ui.Column(c).Grow(1).Center().Children(func() {
 				ui.Text(c, "No Entry Selected").FontSize(t.FontSize + 2).TextColor(t.TextMuted)
 			})
@@ -76,9 +74,10 @@ func (g *gui) detail(c *ui.Context) {
 	})
 }
 
-func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
+func (g *gui) entryCard(c *ui.Context, id entryID) {
 	t := c.Theme()
-	kind := g.kind(ref)
+	ref := id.ref
+	kind := g.kind(id)
 	heading(c, ref.Name, monospace, ref.Namespace, kind)
 	v, h := inputPadding(t)
 	// A value stays on one line, as in Passwords, so that a name never
@@ -96,15 +95,19 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 			}
 		}
 	}
-	attributes := g.attributes[ref]
-	fields := []func(){
+	attributes := g.attributes(id)
+	var fields []func()
+	if g.severalStores() {
+		fields = append(fields, func() { cardField(c, "Store", func() { line(id.store, "") }) })
+	}
+	fields = append(fields,
 		func() { cardField(c, "Namespace", cuttable(ref.Namespace, "", &g.namespaceText)) },
 		func() { cardField(c, "Name", cuttable(ref.Name, monospace, &g.nameText)) },
 		func() { cardField(c, "Kind", func() { line(kindLabel(kind), "") }) },
 		func() {
 			cardField(c, "Value", func() {
 				ui.Row(c).Gap(4).AlignItems(ui.Start).PaddingY(v + 1).PaddingStart(h + 1).Children(func() {
-					if g.showing(ref) {
+					if g.showing(id) {
 						// The value's own lines stay whole, and scroll where they
 						// are wider than the card.
 						ui.ScrollHorizontal(c).Grow(1).MinWidth(0).Children(func() {
@@ -115,27 +118,27 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 					}
 					lineRow(c).Gap(4).MarginEnd(-iconInset(22)).Children(func() {
 						show, showIcon := "Show Value", eyeIcon
-						if g.showing(ref) {
+						if g.showing(id) {
 							show, showIcon = "Hide Value", eyeOffIcon
 						}
-						if iconButton(c.Key("reveal"), showIcon, show, 22, g.readAction == "reveal", !g.canReveal(ref)).Clicked() {
+						if iconButton(c.Key("reveal"), showIcon, show, 22, g.readAction == "reveal", !g.canReveal(id)).Clicked() {
 							g.toggleReveal()
 						}
 						copyLabel, copySVG := "Copy Value", copyIcon
 						if g.copied {
 							copyLabel, copySVG = "Copied", checkIcon
 						}
-						if iconButton(c.Key("copy"), copySVG, copyLabel, 22, g.readAction == "copy", !g.canCopy(ref)).Clicked() {
-							g.copy(ref)
+						if iconButton(c.Key("copy"), copySVG, copyLabel, 22, g.readAction == "copy", !g.canCopy(id)).Clicked() {
+							g.copy(id)
 						}
 					})
 				})
 			})
 		},
 		func() {
-			cardField(c, "Program access", func() { g.accessSwitch(c, ref, attributes.ProgramAccess) })
+			cardField(c, "Program access", func() { g.accessSwitch(c, id, attributes.ProgramAccess) })
 		},
-	}
+	)
 	if attributes.Notes != "" {
 		fields = append(fields, func() {
 			cardField(c, "Notes", func() { ui.Text(c, attributes.Notes).TextColor(t.Text).Selectable().Padding(v+1, h+1) })
@@ -148,10 +151,10 @@ func (g *gui) entryCard(c *ui.Context, ref store.Ref) {
 	card(c, fields...)
 }
 
-func (g *gui) accessSwitch(c *ui.Context, ref store.Ref, granted bool) {
+func (g *gui) accessSwitch(c *ui.Context, id entryID, granted bool) {
 	t := c.Theme()
 	v, h := inputPadding(t)
-	changing := g.writing(ref) && g.write.action == accessWrite
+	changing := g.writing(id) && g.write.action == accessWrite
 	on := granted
 	if changing {
 		on = g.write.accessTo
@@ -170,7 +173,7 @@ func (g *gui) accessSwitch(c *ui.Context, ref store.Ref, granted bool) {
 		// before it comes and goes.
 		lineRow(c).Key("access").Children(func() {
 			if ui.Switch(c.Key("access"), &on).Disabled(g.write != nil).Description(accessCaption).Changed() {
-				g.changeAccess(ref, on)
+				g.changeAccess(id, on)
 			}
 		})
 	})
@@ -188,10 +191,10 @@ func accessState(granted bool) string {
 func (g *gui) formCard(c *ui.Context, submitting bool) {
 	t := c.Theme()
 	f := &g.form
-	if f.from == (store.Ref{}) {
+	if f.from == (entryID{}) {
 		heading(c, "New Entry", "", f.namespace, kindOf(f.kind))
 	} else {
-		heading(c, f.from.Name, monospace, f.from.Namespace, kindOf(f.kind))
+		heading(c, f.from.ref.Name, monospace, f.from.ref.Namespace, kindOf(f.kind))
 	}
 	input := func(e ui.Element) ui.Element {
 		return e.Padding(inputPadding(t)).Background(t.Background).TextColor(t.Text)
@@ -206,11 +209,30 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 	// The fields follow the entry's reference, <namespace>/<NAME>. A new
 	// entry starts in the first of them still empty: the namespace chosen
 	// in the sidebar fills its field.
-	fields := []func(){
+	var fields []func()
+	if g.severalStores() {
+		// A new entry goes to the store chosen here; an entry stays in its
+		// store, since no write moves one to another.
+		fields = append(fields, func() {
+			cardField(c, "Store", func() {
+				if f.from != (entryID{}) {
+					v, h := inputPadding(t)
+					ui.Text(c, f.store).TextColor(t.Text).Padding(v+1, h+1)
+					return
+				}
+				ids := make([]string, 0, len(g.stores.Stores)+1)
+				for _, connection := range g.stores.All() {
+					ids = append(ids, connection.ID)
+				}
+				input(ui.Select(c.Key("store"), &f.store, ids))
+			})
+		})
+	}
+	fields = append(fields,
 		func() {
 			cardField(c, "Namespace", func() {
 				namespace := input(ui.TextInput(c.Key("namespace"), &f.namespace)).Bind(&g.namespaceField).Placeholder("github")
-				if f.from == (store.Ref{}) && f.namespace == "" {
+				if f.from == (entryID{}) && f.namespace == "" {
 					namespace.AutoFocus()
 				}
 				edited(namespace)
@@ -219,7 +241,7 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 		func() {
 			cardField(c, "Name", func() {
 				name := input(ui.TextInput(c.Key("name"), &f.name)).Bind(&g.nameField).Font(monospace).Placeholder("GITHUB_TOKEN")
-				if f.from == (store.Ref{}) && f.namespace != "" {
+				if f.from == (entryID{}) && f.namespace != "" {
 					name.AutoFocus()
 				}
 				edited(name)
@@ -244,19 +266,19 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 					ui.Spinner(c).Size(16, 16).Margin(4, 0).Label("Loading value")
 				case f.keepValue:
 					ui.Text(c, "This value contains carriage returns, which this editor would change, so it stays as it is. Replace it with mk set --stdin.").TextColor(t.TextMuted)
-				case f.from == (store.Ref{}) || f.original != "":
-					edited(valueEditor(c, input(ui.TextArea(c.Key("value"), &f.value)), &f.err, &g.valueField, f.from != (store.Ref{})))
+				case f.from == (entryID{}) || f.original != "":
+					edited(valueEditor(c, input(ui.TextArea(c.Key("value"), &f.value)), &f.err, &g.valueField, f.from != (entryID{})))
 				}
 			}).Error(f.err.on("value"))
 		},
-	}
-	if f.from != (store.Ref{}) {
+	)
+	if f.from != (entryID{}) {
 		// Keep program access read-only here: saving must not overwrite a
 		// concurrent grant or revoke. The row preserves the detail layout.
 		fields = append(fields, func() {
 			cardField(c, "Program access", func() {
 				v, h := inputPadding(t)
-				ui.Text(c, accessState(g.attributes[f.from].ProgramAccess)).TextColor(t.Text).Padding(v+1, h+1)
+				ui.Text(c, accessState(g.attributes(f.from).ProgramAccess)).TextColor(t.Text).Padding(v+1, h+1)
 			})
 		})
 	}
@@ -271,7 +293,7 @@ func (g *gui) formCard(c *ui.Context, submitting bool) {
 	if f.err.field == "" && f.err.message != "" {
 		ui.Text(c, f.err.message).TextColor(t.Danger)
 	}
-	if f.from != (store.Ref{}) {
+	if f.from != (entryID{}) {
 		if ui.Button(c, "Delete").AlignSelf(ui.End).TextColor(t.Danger).Disabled(g.write != nil).Clicked() {
 			g.askDelete(f.from)
 		}

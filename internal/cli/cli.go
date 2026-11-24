@@ -22,23 +22,37 @@ import (
 	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/agent"
 	"github.com/Entwining/maskey/internal/store"
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 // Env is what a command runs against.
 type Env struct {
-	Store *store.Store
-	// ChangeAccess grants or revokes program access to refs once the owner
-	// approves, as Store.ChangeAccess does.
-	ChangeAccess func(ctx context.Context, refs []store.Ref, granted bool) ([]store.AccessChange, string, error)
-	// Activity is this Mac's record of Keychain operations, which reports a
+	// OpenStore returns the store named id, or the default for "".
+	OpenStore func(ctx context.Context, id string) (StoreAccess, error)
+	// store and changeAccess are the store the running command works on,
+	// which useStore opens.
+	store        *store.Store
+	changeAccess func(ctx context.Context, refs []store.Ref, granted bool) ([]store.AccessChange, string, error)
+	connection   stores.Connection
+	// storeArg is the --store argument the command was given, with a
+	// leading space, for the commands its hints name.
+	storeArg string
+	// Stores lists this Mac's stores; AddStore and ChangeStore change them
+	// through the Maskey service, ChangeStore by one of agent's
+	// operations on a store.
+	Stores      func(ctx context.Context) (stores.Config, error)
+	AddStore    func(ctx context.Context, addition stores.Addition) (stores.Connection, error)
+	SetToken    func(ctx context.Context, id string, token []byte) error
+	ChangeStore func(ctx context.Context, op, id string) error
+	// Activity is this Mac's record of operations on entries, which reports a
 	// failure to record through the command.
 	Activity *activity.Log
 	// Check is the host check of the Keychain helper, and CheckService a
-	// request to the Keychain service.
+	// request to the Maskey service.
 	Check        func(context.Context) error
 	CheckService func(context.Context) error
 	Setup        func(context.Context) error
-	// ServiceItems lists the Keychain service's job and files under a home
+	// ServiceItems lists the Maskey service's job and files under a home
 	// directory with what RemoveService, which stops and removes them, would
 	// do with each.
 	ServiceItems  func(ctx context.Context, home string) []agent.ServiceItem
@@ -100,7 +114,8 @@ func (e *exitError) Error() string { return fmt.Sprintf("exit %d", e.outcome.Cod
 func newRoot(env *Env) *cobra.Command {
 	root := &cobra.Command{
 		Use: "mk <command> [flags]",
-		Long: `Maskey stores credentials in iCloud Keychain. Each entry is <namespace>/<NAME>.
+		Long: `Maskey keeps credentials in iCloud Keychain, or in another store added with
+mk store. Each entry is <namespace>/<NAME>.
 With mk run, github/GITHUB_TOKEN sets GITHUB_TOKEN in the child's environment.`,
 		Example: `  mk set github/GITHUB_TOKEN
   gh auth token | mk set --stdin github/GITHUB_TOKEN
@@ -122,7 +137,7 @@ See mk skill show for the agent workflow.`},
 	root.SetOut(env.Stdout)
 	root.SetErr(env.Stderr)
 	groupOfCommands(root)
-	root.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
 		env.Activity.OnFailure(func(err error) {
 			// A failure to record that carries an unavailable error is that of
 			// an operation mk performed itself because the service, which
@@ -133,6 +148,7 @@ See mk skill show for the agent workflow.`},
 			}
 			warn(cmd, env, err.Error(), recovery)
 		})
+		return useStore(cmd, env)
 	}
 	root.Flags().Bool("version", false, "Show the installed version")
 	root.SetFlagErrorFunc(flagError)
@@ -141,11 +157,15 @@ See mk skill show for the agent workflow.`},
 		&cobra.Group{ID: "core", Title: "Core commands:"},
 		&cobra.Group{ID: "setup", Title: "Setup commands:"},
 	)
-	for _, cmd := range []*cobra.Command{runCommand(env), listCommand(env), setCommand(env), getCommand(env), renameCommand(env), deleteCommand(env), grantCommand(env), revokeCommand(env), activityCommand(env)} {
+	for _, cmd := range []*cobra.Command{runCommand(env), listCommand(env), setCommand(env), getCommand(env), renameCommand(env), deleteCommand(env), grantCommand(env), revokeCommand(env)} {
+		addStoreFlag(cmd, env)
 		cmd.GroupID = "core"
 		root.AddCommand(cmd)
 	}
-	for _, cmd := range []*cobra.Command{doctorCommand(env), setupCommand(env), skillCommand(env), uninstallCommand(env)} {
+	history := activityCommand(env)
+	history.GroupID = "core"
+	root.AddCommand(history)
+	for _, cmd := range []*cobra.Command{storeCommand(env), doctorCommand(env), setupCommand(env), skillCommand(env), uninstallCommand(env)} {
 		cmd.GroupID = "setup"
 		root.AddCommand(cmd)
 	}
@@ -205,6 +225,7 @@ func writeJSON(w io.Writer, document any) error {
 // warn reports on stderr a problem that leaves the command's result alone,
 // with a recovery as errors give one, as JSON with --json.
 func warn(cmd *cobra.Command, env *Env, message, recovery string) {
+	recovery = inStore(env, recovery)
 	if jsonOutput(cmd) {
 		warning := map[string]string{"message": message}
 		if recovery != "" {
@@ -302,14 +323,18 @@ func completeEntries(env *Env, limit int) cobra.CompletionFunc {
 		if limit >= 0 && len(args) >= limit {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
-		return completeNames(cmd.Context(), env, args, false)
+		return completeNames(cmd, env, args, false)
 	}
 }
 
 // completeNames lists the entry references, and the namespaces with
 // withNamespaces, that given does not hold.
-func completeNames(ctx context.Context, env *Env, given []string, withNamespaces bool) ([]cobra.Completion, cobra.ShellCompDirective) {
-	namespaces, refs, _, err := env.Store.Listing(ctx)
+func completeNames(cmd *cobra.Command, env *Env, given []string, withNamespaces bool) ([]cobra.Completion, cobra.ShellCompDirective) {
+	// Completion runs no command, so the store is not open yet.
+	if useStore(cmd, env) != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	namespaces, refs, _, err := env.store.Listing(cmd.Context())
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}

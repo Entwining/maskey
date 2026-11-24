@@ -40,6 +40,21 @@ var exitCodes = map[store.Kind]int{
 	kindRunFailed:          runner.ExitFailure,
 	kindNotExecutable:      runner.ExitNotExecutable,
 	kindNotFound:           runner.ExitNotFound,
+
+	store.KindNetwork:          13,
+	store.KindUnauthenticated:  14,
+	store.KindPermissionDenied: 15,
+	store.KindRateLimited:      16,
+	store.KindRemote:           17,
+}
+
+// exitCode is the exit status of a failure of kind. A kind without a status
+// of its own is mk's fault, and never a success.
+func exitCode(kind store.Kind) int {
+	if code, ok := exitCodes[kind]; ok {
+		return code
+	}
+	return exitCodes[kindInternal]
 }
 
 var recoveries = map[store.Kind]string{
@@ -54,9 +69,15 @@ var recoveries = map[store.Kind]string{
 	kindIO:                 "check the output destination before continuing",
 	kindNotExecutable:      "check the file's permissions",
 	kindNotFound:           "check the command, the first word after --; mk runs it without a shell, so an alias or shell function needs sh -c",
+
+	store.KindNetwork:          "check the network connection, then retry",
+	store.KindUnauthenticated:  "create a new access token in Bitwarden, then give it to mk store token <name>",
+	store.KindPermissionDenied: "give the machine account access to the project in Bitwarden",
+	store.KindRateLimited:      "wait before retrying",
+	store.KindRemote:           "retry later; run mk doctor if it persists",
 }
 
-const sandboxRecovery = "run mk outside the sandbox, or let the sandbox connect to the Unix socket ~/Library/Application Support/" + store.Service + "/keychain.sock"
+const sandboxRecovery = "run mk outside the sandbox, or let the sandbox connect to the Unix socket ~/Library/Application Support/" + store.Service + "/service.sock"
 
 // doctorRecoveries replace, in mk doctor's rows, the recoveries that send
 // the user to mk doctor. A failed prerequisite's message says what is
@@ -65,6 +86,14 @@ var doctorRecoveries = map[store.Kind]string{
 	store.KindPrerequisite: "",
 	store.KindKeychain:     "retry",
 	store.KindUnavailable:  sandboxRecovery,
+	store.KindRemote:       "retry later",
+}
+
+func doctorRecovery(kind store.Kind) string {
+	if recovery, ok := doctorRecoveries[kind]; ok {
+		return recovery
+	}
+	return recoveries[kind]
 }
 
 func usageError(message string) error { return &store.Error{Kind: kindUsage, Message: message} }
@@ -148,13 +177,13 @@ func report(env *Env, cmd *cobra.Command, err error) Outcome {
 		// commands' argument checks, so anything else is mk's fault.
 		e = &store.Error{Kind: kindInternal, Message: "an internal error prevented completion"}
 	}
-	code := exitCodes[e.Kind]
+	code := exitCode(e.Kind)
 	if cmd.Name() == "run" && code != runner.ExitNotExecutable && code != runner.ExitNotFound {
 		// Use the run-specific failure status; children can return it too,
 		// so the status alone does not identify the source.
 		code = runner.ExitFailure
 	}
-	body := &errorBody{Error: e, ExitCode: code, Recovery: recovery(env, cmd, err, e)}
+	body := &errorBody{Error: e, ExitCode: code, Recovery: inStore(env, recovery(env, cmd, err, e))}
 	var batch *partial
 	if errors.As(err, &batch) {
 		body.progress = &batch.progress
@@ -212,6 +241,11 @@ func recovery(env *Env, cmd *cobra.Command, err error, e *store.Error) string {
 		if similar := similarName(env, cmd, e.Argument); similar != "" {
 			return "did you mean " + similar + "?"
 		}
+	// Neither changes what mk store list prints.
+	case e.Kind == store.KindUncertain && cmd.HasParent() && cmd.Parent().Name() == "store" && (cmd.Name() == "token" || cmd.Name() == "sync"):
+		return "repeat the command, which is safe to run again"
+	case e.Kind == store.KindUncertain && cmd.HasParent() && cmd.Parent().Name() == "store":
+		return "run mk store list to see whether the change was made, then repeat the command if it was not"
 	case e.Kind == store.KindUncertain && (cmd.Name() == "grant" || cmd.Name() == "revoke"):
 		return "check program_access in mk list --json before repeating the change"
 	case e.Kind == store.KindNotGranted && e.Ref != nil:
@@ -254,7 +288,7 @@ func similarName(env *Env, cmd *cobra.Command, position int) string {
 		return ""
 	}
 	operand := operands[position-1]
-	namespaces, refs, _, err := env.Store.Listing(cmd.Context())
+	namespaces, refs, _, err := env.store.Listing(cmd.Context())
 	if err != nil {
 		return ""
 	}

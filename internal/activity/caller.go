@@ -32,12 +32,16 @@ func Invoker(pid int) Caller {
 	return c
 }
 
-// Self describes this process, which acts for the person using its window.
-func Self() Caller {
-	c := lineage(os.Getpid(), math.MaxInt64, lookup)
-	c.TTY = terminal(os.Getpid())
+// Process describes process pid itself, which acts for the person using it,
+// as Maskey's window does.
+func Process(pid int) Caller {
+	c := lineage(pid, math.MaxInt64, lookup)
+	c.TTY = terminal(pid)
 	return c
 }
+
+// Self describes this process.
+func Self() Caller { return Process(os.Getpid()) }
 
 func invoker(pid int, lookup func(int) (process, bool)) Caller {
 	p, ok := lookup(pid)

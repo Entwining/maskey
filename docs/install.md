@@ -39,16 +39,16 @@ Like an installed copy, a source build offers to replace itself with each publis
 
 ## Set up the command line
 
-Open Maskey and choose Maskey > Install Command Line Tool. This links `~/.local/bin/mk` to the app and installs a per-user Keychain service that starts at login without opening a window. Add `~/.local/bin` to your `PATH` if your shell cannot find `mk`. For a Homebrew install, run `mk setup` in a normal terminal to install the service; Homebrew already supplies the `mk` link.
+Open Maskey and choose Maskey > Install Command Line Tool. This links `~/.local/bin/mk` to the app and installs a per-user Maskey service that starts at login without opening a window. Add `~/.local/bin` to your `PATH` if your shell cannot find `mk`. For a Homebrew install, run `mk setup` in a normal terminal to install the service; Homebrew already supplies the `mk` link.
 
 For coding agents, `mk skill install` links the [shipped skill](../resources/skills/maskey/SKILL.md), which teaches agents to use credentials without putting their values in the conversation, into `~/.claude/skills` and `~/.agents/skills`. The links point into the app, so the skill matches the installed `mk`; `mk skill show` prints it for an agent that reads skills from elsewhere. Agents whose sandbox blocks Keychain access also need the socket permission described under [Sandboxed agents](security.md#sandboxed-agents).
 
 ## Upgrade
 
-Maskey checks for a new version shortly after it opens and then once a day, and Maskey > Check for Updates checks at once. It installs a version only after checking its signature, and the new version runs once you restart Maskey. Entries stay in the Keychain, `mk` and the skill links point into the app, and the Keychain service restarts from the new version the first time the new `mk` reaches it.
+Maskey checks for a new version shortly after it opens and then once a day, and Maskey > Check for Updates checks at once. It installs a version only after checking its signature, and the new version runs once you restart Maskey. Entries stay in the Keychain, `mk` and the skill links point into the app, and the Maskey service restarts from the new version the first time the new `mk` reaches it.
 
 Because each version's ad hoc signature differs, macOS can refuse that restart once, write a crash report for Maskey that names a Launch Constraint Violation, and start the new version about 10 seconds later; `mk` waits for it.
 
 ## Uninstall
 
-Entries stay in iCloud Keychain, on every Mac, when Maskey is gone; delete them in the window or with `mk delete` first if you no longer want them. Quit Maskey, then run `mk uninstall`: it lists what Maskey installed on this Mac, asks once, stops the Keychain service, and removes its configuration, the activity record, the window's saved state, and the `mk` and skill links. Then move Maskey.app to the Trash, or run `brew uninstall --cask maskey` if Homebrew installed it.
+Entries stay in iCloud Keychain, on every Mac, and in Bitwarden when Maskey is gone; delete them in the window or with `mk delete` first if you no longer want them. Quit Maskey, then run `mk uninstall`: it lists what Maskey installed on this Mac, asks once, removes this Mac's Bitwarden stores with their access tokens, stops the Maskey service, and removes its configuration, the activity record, the window's saved state, and the `mk` and skill links. Then move Maskey.app to the Trash, or run `brew uninstall --cask maskey` if Homebrew installed it.

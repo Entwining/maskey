@@ -13,11 +13,12 @@ import (
 
 	"github.com/Entwining/maskey/internal/sshagent"
 	"github.com/Entwining/maskey/internal/store"
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 func listCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:        "list [--json] [<namespace>]",
+		Use:        "list [--store <name>] [--json] [<namespace>]",
 		SuggestFor: []string{"ls"},
 		Short:      "List entry references",
 		Long: `List entries without values, sorted by namespace and name.
@@ -40,7 +41,10 @@ no stderr message.`,
 			if len(args) > 0 {
 				return nil, cobra.ShellCompDirectiveNoFileComp
 			}
-			namespaces, err := env.Store.Namespaces(cmd.Context())
+			if useStore(cmd, env) != nil {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			namespaces, err := env.store.Namespaces(cmd.Context())
 			if err != nil {
 				return nil, cobra.ShellCompDirectiveNoFileComp
 			}
@@ -56,7 +60,7 @@ no stderr message.`,
 					return atArgument(err, 1)
 				}
 			}
-			_, refs, attributes, err := env.Store.Listing(cmd.Context())
+			_, refs, attributes, err := env.store.Listing(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -92,8 +96,8 @@ no stderr message.`,
 func setCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "set",
-		Annotations: map[string]string{usageAnnotation: `mk set [--yes] [--json] <namespace>/<NAME>...
-mk set --stdin [--json] <namespace>/<NAME>`},
+		Annotations: map[string]string{usageAnnotation: `mk set [--store <name>] [--yes] [--json] <namespace>/<NAME>...
+mk set --stdin [--store <name>] [--json] <namespace>/<NAME>`},
 		SuggestFor: []string{"add", "put", "create"},
 		Short:      "Create entries or replace their values",
 		Long: `Create entries or replace their values. By default, type one value per
@@ -154,12 +158,12 @@ access. New entries start without program access.`,
 			yes, _ := cmd.Flags().GetBool("yes")
 			switch {
 			case fromStdin && len(refs) > 1:
-				return withHint(usageError("set --stdin takes exactly one entry"), "usage: mk set --stdin [--json] <namespace>/<NAME>")
+				return withHint(usageError("set --stdin takes exactly one entry"), "usage: mk set --stdin [--store <name>] [--json] <namespace>/<NAME>")
 			case !fromStdin && !term.IsTerminal(int(env.Stdin.Fd())):
 				return withHint(usageError("standard input is not a terminal and set needs --stdin"),
 					"pipe one value to mk set --stdin <namespace>/<NAME>, or have the owner run mk set <namespace>/<NAME> in their terminal")
 			}
-			_, existing, attributes, err := env.Store.Listing(cmd.Context())
+			_, existing, attributes, err := env.store.Listing(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -189,7 +193,11 @@ access. New entries start without program access.`,
 					noun, consequence = "values", "Their current values are not kept."
 				}
 				var prompt strings.Builder
-				fmt.Fprintf(&prompt, "Replace the %s of %s:\n", noun, count(len(replacing), "entry", "entries"))
+				place := ""
+				if env.connection.Type != stores.ICloud {
+					place = " in " + remotePlace(env.connection)
+				}
+				fmt.Fprintf(&prompt, "Replace the %s of %s%s:\n", noun, count(len(replacing), "entry", "entries"), place)
 				for _, ref := range replacing {
 					fmt.Fprintf(&prompt, "  %s\n", ref)
 				}
@@ -242,9 +250,9 @@ access. New entries start without program access.`,
 				if ask && !slices.Contains(replacing, ref) {
 					// Unconfirmed, so an entry created since the listing
 					// fails rather than being replaced.
-					return "created", env.Store.Create(cmd.Context(), ref, values[i], store.Details{Kind: store.InferValueKind(ref.Name)})
+					return "created", env.store.Create(cmd.Context(), ref, values[i], store.Details{Kind: store.InferValueKind(ref.Name)})
 				}
-				created, err := env.Store.Set(cmd.Context(), ref, values[i])
+				created, err := env.store.Set(cmd.Context(), ref, values[i])
 				if created {
 					return "created", err
 				}
@@ -260,7 +268,7 @@ access. New entries start without program access.`,
 
 func getCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:        "get [--json] <namespace>/<NAME>",
+		Use:        "get [--store <name>] [--json] <namespace>/<NAME>",
 		SuggestFor: []string{"read", "print"},
 		Short:      "Write a granted entry's raw value to non-terminal stdout",
 		Long: `Use mk run <namespace>/<NAME> -- <command> when the command accepts an
@@ -288,7 +296,7 @@ newline, label, or JSON wrapper.`,
 				return withHint(usageError("get cannot write a raw value to terminal stdout"),
 					"use mk run <namespace>/<NAME> -- <command>, or have the helper capture mk get itself; to see the value yourself, use Reveal in Maskey")
 			}
-			value, err := env.Store.GrantedValue(cmd.Context(), ref)
+			value, err := env.store.GrantedValue(cmd.Context(), ref)
 			if err != nil {
 				return atArgument(err, 1)
 			}
@@ -304,7 +312,7 @@ newline, label, or JSON wrapper.`,
 
 func renameCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:        "rename [--json] <namespace>/<NAME> <new-namespace>/<NEW_NAME>",
+		Use:        "rename [--store <name>] [--json] <namespace>/<NAME> <new-namespace>/<NEW_NAME>",
 		SuggestFor: []string{"mv", "move"},
 		Short:      "Rename an entry or move it to another namespace",
 		Long: `Rename an entry or move it to another namespace.
@@ -330,7 +338,7 @@ letters, digits, '.', '_' or '-'. NAME starts with an ASCII letter or
 				// Edit takes an unchanged entry as done without looking for it.
 				return withHint(usageError("the new reference is the entry's own"), "choose a different namespace or name")
 			}
-			if err := env.Store.Edit(cmd.Context(), from, to, nil, nil); err != nil {
+			if err := env.store.Edit(cmd.Context(), from, to, nil, nil); err != nil {
 				if store.IsKind(err, store.KindExists) {
 					return atArgument(err, 2)
 				}
@@ -348,11 +356,12 @@ letters, digits, '.', '_' or '-'. NAME starts with an ASCII letter or
 
 func deleteCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:        "delete [--yes] [--json] <namespace>/<NAME>...",
+		Use:        "delete [--store <name>] [--yes] [--json] <namespace>/<NAME>...",
 		SuggestFor: []string{"rm", "remove"},
-		Short:      "Delete entries from this Mac and Macs syncing its Keychain",
-		Long: `Delete entries from this Mac and, through iCloud Keychain, other Macs
-syncing this Keychain. Deletion cannot be undone.
+		Short:      "Delete entries from their store, wherever it is used",
+		Long: `Delete entries from their store: in iCloud Keychain from this Mac and
+other Macs syncing this Keychain, in a Bitwarden store from its project, for
+everyone who uses it. Deletion cannot be undone.
 
 mk checks that every entry exists, lists the entries, and asks once.
 Type y or yes and press Return to confirm, ignoring case. Without terminal
@@ -379,7 +388,7 @@ the initial check.`,
 				return withHint(usageError("standard input is not a terminal and delete needs --yes"),
 					"use --yes only for the entries the owner asked to delete")
 			}
-			_, existing, _, err := env.Store.Listing(cmd.Context())
+			_, existing, _, err := env.store.Listing(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -390,7 +399,11 @@ the initial check.`,
 			}
 			if !yes {
 				var prompt strings.Builder
-				fmt.Fprintf(&prompt, "Delete %s from this Mac and Macs syncing this Keychain:\n", count(len(refs), "entry", "entries"))
+				place := "this Mac and Macs syncing this Keychain"
+				if env.connection.Type != stores.ICloud {
+					place = remotePlace(env.connection) + ", for everyone who uses it"
+				}
+				fmt.Fprintf(&prompt, "Delete %s from %s:\n", count(len(refs), "entry", "entries"), place)
 				for _, ref := range refs {
 					fmt.Fprintf(&prompt, "  %s\n", ref)
 				}
@@ -400,7 +413,7 @@ the initial check.`,
 				}
 			}
 			return writeEach(cmd, env, refs, func(_ int, ref store.Ref) (string, error) {
-				return "deleted", env.Store.Delete(cmd.Context(), ref)
+				return "deleted", env.store.Delete(cmd.Context(), ref)
 			})
 		},
 	}

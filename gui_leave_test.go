@@ -8,11 +8,12 @@ import (
 
 	"github.com/Entwining/maskey/internal/store"
 	"github.com/Entwining/maskey/internal/store/storetest"
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 var (
-	urlRef      = store.Ref{Namespace: "app", Name: "URL"}
-	passwordRef = store.Ref{Namespace: "db", Name: "PASSWORD"}
+	urlRef      = icloud("app", "URL")
+	passwordRef = icloud("db", "PASSWORD")
 )
 
 // The actions that replace an open form, and how to tell each happened.
@@ -24,9 +25,9 @@ var leavings = []struct {
 	{"another row", func(h *harness) { h.clickWithoutSettling("PASSWORD") },
 		func(g *gui) bool { return !g.form.open && g.entry == passwordRef }},
 	{"a namespace", func(h *harness) { h.clickWithoutSettling("db") },
-		func(g *gui) bool { return !g.form.open && g.namespace == "db" }},
+		func(g *gui) bool { return !g.form.open && g.scope == (scope{stores.ICloud, "db"}) }},
 	{"New Entry", func(h *harness) { h.clickWithoutSettling("New Entry") },
-		func(g *gui) bool { return g.form.open && g.form.from == (store.Ref{}) && g.form.value == "" }},
+		func(g *gui) bool { return g.form.open && g.form.from == (entryID{}) && g.form.value == "" }},
 	{"Edit on another row", func(h *harness) { h.chooseWithoutSettling("PASSWORD", "Edit") },
 		func(g *gui) bool { return g.form.open && g.form.from == passwordRef && g.entry == passwordRef }},
 }
@@ -63,15 +64,15 @@ func TestLeavingForm(t *testing.T) {
 					t.Fatalf("leaving a changed form asks %+v", a.alert)
 				}
 				stay()
-				if f := h.g.form; h.g.confirmLeave || !f.open || f.from != urlRef || f.value != "synthetic-draft" || h.g.entry != urlRef || h.g.row != row || h.g.namespace != allNamespaces {
-					t.Fatalf("staying: asking %v, form open %v for %s, entry %s, row %d", h.g.confirmLeave, f.open, f.from, h.g.entry, h.g.row)
+				if f := h.g.form; h.g.confirmLeave || !f.open || f.from != urlRef || f.value != "synthetic-draft" || h.g.entry != urlRef || h.g.row != row || h.g.scope != (scope{}) {
+					t.Fatalf("staying: asking %v, form open %v for %v, entry %v, row %d", h.g.confirmLeave, f.open, f.from, h.g.entry, h.g.row)
 				}
 			}
 			l.act(h)
 			h.settle()
 			h.answer("Don’t Save")
 			if !l.happened(h.g) || h.g.form.value == "synthetic-draft" {
-				t.Fatalf("Don’t Save: entry %s, form open %v for %s", h.g.entry, h.g.form.open, h.g.form.from)
+				t.Fatalf("Don’t Save: entry %v, form open %v for %v", h.g.entry, h.g.form.open, h.g.form.from)
 			}
 			if v, _ := h.value("app/URL"); v != urlValue {
 				t.Fatalf("Don’t Save stored %q", v)
@@ -84,7 +85,7 @@ func TestLeavingForm(t *testing.T) {
 			h.settle()
 			h.enter() // Save
 			if v, _ := h.value("app/URL"); v != "synthetic-saved" || !l.happened(h.g) {
-				t.Fatalf("Save stored %q; entry %s, form open %v for %s", v, h.g.entry, h.g.form.open, h.g.form.from)
+				t.Fatalf("Save stored %q; entry %v, form open %v for %v", v, h.g.entry, h.g.form.open, h.g.form.from)
 			}
 		})
 	}
@@ -103,9 +104,9 @@ func TestLeavingNewEntry(t *testing.T) {
 		t.Fatalf("leaving a new entry without a value asks %+v", a.alert)
 	}
 	h.answer("Discard")
-	chosen := store.Ref{Namespace: "app", Name: "API_TOKEN"}
+	chosen := icloud("app", "API_TOKEN")
 	if h.g.form.open || h.g.entry != chosen {
-		t.Fatalf("Discard: form open %v, entry %s", h.g.form.open, h.g.entry)
+		t.Fatalf("Discard: form open %v, entry %v", h.g.form.open, h.g.entry)
 	}
 
 	h.click("New Entry")
@@ -120,7 +121,7 @@ func TestLeavingNewEntry(t *testing.T) {
 	}
 	h.enter()
 	if v, _ := h.value("app/NEW_KEY"); v != "synthetic-new-31d2" || h.g.form.open || h.g.entry != chosen {
-		t.Fatalf("Add stored %q; form open %v, entry %s", v, h.g.form.open, h.g.entry)
+		t.Fatalf("Add stored %q; form open %v, entry %v", v, h.g.form.open, h.g.entry)
 	}
 }
 
@@ -152,7 +153,7 @@ func TestLeavingSaveFails(t *testing.T) {
 				t.Fatalf("form open %v, error %+v, texts %q", f.open, f.err, h.tt.Texts())
 			}
 			if h.g.entry != urlRef || h.g.confirmLeave || len(h.openAlerts()) != 0 {
-				t.Fatalf("entry %s, asking %v, alerts %d", h.g.entry, h.g.confirmLeave, len(h.openAlerts()))
+				t.Fatalf("entry %v, asking %v, alerts %d", h.g.entry, h.g.confirmLeave, len(h.openAlerts()))
 			}
 		})
 	}
@@ -172,14 +173,14 @@ func TestLeavingDuringSave(t *testing.T) {
 			l.act(h)
 			h.tt.Frame()
 			if h.g.confirmLeave || !l.happened(h.g) {
-				t.Fatalf("asking %v, form open %v, entry %s", h.g.confirmLeave, h.g.form.open, h.g.entry)
+				t.Fatalf("asking %v, form open %v, entry %v", h.g.confirmLeave, h.g.form.open, h.g.entry)
 			}
 			release()
 			h.settle()
 			if v, _ := h.value("app/URL"); v != "synthetic-url-new" || !l.happened(h.g) {
-				t.Fatalf("stored %q; after the save landed: entry %s, namespace %q", v, h.g.entry, h.g.namespace)
+				t.Fatalf("stored %q; after the save landed: entry %v, scope %v", v, h.g.entry, h.g.scope)
 			}
-			if h.g.namespace == allNamespaces && !h.tt.HasText("URL") {
+			if h.g.scope == (scope{}) && !h.tt.HasText("URL") {
 				t.Fatalf("the list lacks the saved entry: %q", h.tt.Texts())
 			}
 		})
@@ -203,7 +204,7 @@ func TestChoosingBackDuringAdd(t *testing.T) {
 	release()
 	h.settle()
 	if v, _ := h.value("app/NEW_KEY"); v != "synthetic-new-31d2" || h.g.form.open || h.g.entry != urlRef || !h.tt.HasText("NEW_KEY") {
-		t.Fatalf("added %q; form open %v, entry %s, texts %q", v, h.g.form.open, h.g.entry, h.tt.Texts())
+		t.Fatalf("added %q; form open %v, entry %v, texts %q", v, h.g.form.open, h.g.entry, h.tt.Texts())
 	}
 }
 
@@ -249,8 +250,8 @@ func TestNewEntryDuringSave(t *testing.T) {
 			h.tt.Frame()
 			release()
 			h.settle()
-			if v, _ := h.value("app/URL"); v != "synthetic-url-new" || !h.g.form.open || h.g.form.from != (store.Ref{}) || h.g.entry != (store.Ref{}) {
-				t.Fatalf("stored %q; form open %v for %s, entry %s", v, h.g.form.open, h.g.form.from, h.g.entry)
+			if v, _ := h.value("app/URL"); v != "synthetic-url-new" || !h.g.form.open || h.g.form.from != (entryID{}) || h.g.entry != (entryID{}) {
+				t.Fatalf("stored %q; form open %v for %v, entry %v", v, h.g.form.open, h.g.form.from, h.g.entry)
 			}
 		})
 	}
@@ -280,7 +281,7 @@ func TestClosingDuringPromptSave(t *testing.T) {
 			release()
 			h.settle()
 			if v, _ := h.value("app/URL"); v != "synthetic-url-new" || h.g.form.open || h.g.entry != passwordRef {
-				t.Fatalf("stored %q; form open %v, entry %s", v, h.g.form.open, h.g.entry)
+				t.Fatalf("stored %q; form open %v, entry %v", v, h.g.form.open, h.g.entry)
 			}
 		})
 	}
@@ -395,11 +396,11 @@ func TestFormsOwnEntry(t *testing.T) {
 	}
 	h.typeInto("Search entries", "pass")
 	if h.g.entry != urlRef {
-		t.Fatalf("a search hiding the form's entry chose %s", h.g.entry)
+		t.Fatalf("a search hiding the form's entry chose %v", h.g.entry)
 	}
 	h.replaceText("Search entries", "")
 	if h.g.entry != urlRef || h.g.row != slices.Index(h.g.rows(), urlRef) {
-		t.Fatalf("after the search, entry %s, row %d", h.g.entry, h.g.row)
+		t.Fatalf("after the search, entry %v, row %d", h.g.entry, h.g.row)
 	}
 	h.click("URL")
 	h.choose("URL", "Edit")
@@ -423,7 +424,7 @@ func TestRowMenuBesideForm(t *testing.T) {
 	}
 	// The card of the form's entry, back once the form closes, did not copy.
 	if f := h.g.form; h.g.confirmLeave || !f.open || f.from != urlRef || f.value != "synthetic-draft" || h.g.entry != urlRef || h.g.row != row || h.g.copied {
-		t.Fatalf("asking %v, form open %v for %s, entry %s, row %d, copied %v", h.g.confirmLeave, f.open, f.from, h.g.entry, h.g.row, h.g.copied)
+		t.Fatalf("asking %v, form open %v for %v, entry %v, row %d, copied %v", h.g.confirmLeave, f.open, f.from, h.g.entry, h.g.row, h.g.copied)
 	}
 	h.focusList()
 	h.tt.Key(ui.Cmd, ui.KeyC)
@@ -439,7 +440,7 @@ func TestRowMenuBesideForm(t *testing.T) {
 	h.escape()
 	h.choose("PASSWORD", "Delete…")
 	if f := h.g.form; h.alert().message != "Delete “PASSWORD” from db?" || !f.open || f.value != "synthetic-draft" || h.g.entry != urlRef {
-		t.Fatalf("Delete…: asking %q, form open %v, entry %s", h.alert().message, f.open, h.g.entry)
+		t.Fatalf("Delete…: asking %q, form open %v, entry %v", h.alert().message, f.open, h.g.entry)
 	}
 }
 
@@ -453,12 +454,12 @@ func TestNewEntryChoosesNone(t *testing.T) {
 	h.tt.Key(ui.Cmd, ui.KeyC)
 	h.tt.Key(ui.Cmd, ui.KeyBackspace)
 	h.settle()
-	if h.g.entry != (store.Ref{}) || h.g.row != -1 || len(h.backend.Reads) != 0 || len(h.openAlerts()) != 0 {
-		t.Fatalf("beside a new entry: entry %s, row %d, reads %q, alerts %d", h.g.entry, h.g.row, h.backend.Reads, len(h.openAlerts()))
+	if h.g.entry != (entryID{}) || h.g.row != -1 || len(h.backend.Reads) != 0 || len(h.openAlerts()) != 0 {
+		t.Fatalf("beside a new entry: entry %v, row %d, reads %q, alerts %d", h.g.entry, h.g.row, h.backend.Reads, len(h.openAlerts()))
 	}
 	h.click("Cancel")
 	if h.g.form.open || h.g.entry != urlRef || h.g.row != slices.Index(h.g.rows(), urlRef) {
-		t.Fatalf("Cancel: form open %v, entry %s, row %d", h.g.form.open, h.g.entry, h.g.row)
+		t.Fatalf("Cancel: form open %v, entry %v, row %d", h.g.form.open, h.g.entry, h.g.row)
 	}
 }
 
@@ -474,8 +475,8 @@ func TestNewEntryAfterDeletingTheChosen(t *testing.T) {
 	h.choose("URL", "Delete…")
 	h.answer("Delete")
 	h.click("Cancel")
-	if _, kept := h.value("app/URL"); kept || h.g.form.open || h.g.entry != (store.Ref{}) || h.tt.HasText("URL") {
-		t.Fatalf("kept %v; form open %v, entry %s, texts %q", kept, h.g.form.open, h.g.entry, h.tt.Texts())
+	if _, kept := h.value("app/URL"); kept || h.g.form.open || h.g.entry != (entryID{}) || h.tt.HasText("URL") {
+		t.Fatalf("kept %v; form open %v, entry %v, texts %q", kept, h.g.form.open, h.g.entry, h.tt.Texts())
 	}
 }
 

@@ -10,12 +10,12 @@ import (
 	"github.com/Entwining/maskey/internal/store"
 )
 
-func Serve(context.Context, store.Backend, activity.Recorder, func(context.Context) error, store.Approve) error {
-	return errors.New("the Keychain service requires macOS on Apple Silicon")
+func Serve(context.Context, Stores, activity.Recorder, func(context.Context) error, store.Approve) error {
+	return errors.New("the Maskey service requires macOS on Apple Silicon")
 }
 
 func Install(context.Context, string) error {
-	return errors.New("the Keychain service requires macOS on Apple Silicon")
+	return errors.New("the Maskey service requires macOS on Apple Silicon")
 }
 
 func ServiceItems(context.Context, string) []ServiceItem { return nil }

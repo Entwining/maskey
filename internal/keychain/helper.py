@@ -261,6 +261,44 @@ class Keychain:
     def delete(self, service, account):
         return self.sec.SecItemDelete(self.query(service, account))
 
+    def local_query(self, service, account, extra=()):
+        # An item that stays on this Mac. Without the data protection flag,
+        # a query for an item that does not sync selects the file-based
+        # Keychain, which has other access rules.
+        return self.dictionary([
+            ("kSecClass", self.constant("kSecClassGenericPassword")),
+            ("kSecAttrService", self.string(service)),
+            ("kSecAttrAccount", self.string(account)),
+            ("kSecUseDataProtectionKeychain", self.constant("kCFBooleanTrue", self.cf)),
+            ("kSecAttrSynchronizable", self.constant("kCFBooleanFalse", self.cf)),
+        ] + list(extra))
+
+    def local_get(self, service, account):
+        query = self.local_query(service, account, [
+            ("kSecReturnData", self.constant("kCFBooleanTrue", self.cf)),
+            ("kSecMatchLimit", self.constant("kSecMatchLimitOne")),
+        ])
+        result = ctypes.c_void_p()
+        status = self.sec.SecItemCopyMatching(query, ctypes.byref(result))
+        if status != 0:
+            return status, None
+        self.own(result.value)
+        return 0, {"value": base64.b64encode(self.data(result)).decode("ascii")}
+
+    def local_set(self, service, account, value):
+        data = self.value_data(value)
+        status = self.sec.SecItemUpdate(self.local_query(service, account), self.dictionary([("kSecValueData", data)]))
+        if status != ERR_SEC_ITEM_NOT_FOUND:
+            return status
+        return self.sec.SecItemAdd(self.local_query(service, account, [
+            ("kSecValueData", data),
+            ("kSecAttrLabel", self.string("Maskey: " + account)),
+            ("kSecAttrAccessible", self.constant("kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly")),
+        ]), None)
+
+    def local_delete(self, service, account):
+        return self.sec.SecItemDelete(self.local_query(service, account))
+
 
 def granted(marks):
     try:
@@ -297,6 +335,12 @@ def handle(keychain, request):
         return keychain.set_program_access(service, account, operation == "grant"), {}
     if operation == "delete":
         return keychain.delete(service, account), {}
+    if operation == "local_get":
+        return keychain.local_get(service, account)
+    if operation == "local_set":
+        return keychain.local_set(service, account, base64.b64decode(request["value"], validate=True)), {}
+    if operation == "local_delete":
+        return keychain.local_delete(service, account), {}
     raise ValueError("unknown operation")
 
 

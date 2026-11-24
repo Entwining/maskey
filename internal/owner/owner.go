@@ -52,8 +52,8 @@ type Approval struct {
 }
 
 // NewApproval returns an approval for the changes scope names, which
-// completes the dialog's sentence "It will not ask again for <scope> in the
-// next 5 minutes."
+// completes the dialog's sentence "This approval covers <scope> for 5
+// minutes."
 func NewApproval(authenticate Authenticate, clock func() (time.Duration, bool), scope string) *Approval {
 	return &Approval{authenticate: authenticate, clock: clock, scope: scope, gate: make(chan struct{}, 1)}
 }
@@ -78,7 +78,7 @@ func (a *Approval) Approve(ctx context.Context, reason string) (string, error) {
 	if a.holds() {
 		return Reused, nil
 	}
-	if err := a.authenticate(ctx, reason+". It will not ask again for "+a.scope+" in the next 5 minutes"); err != nil {
+	if err := a.authenticate(ctx, reason+". This approval covers "+a.scope+" for 5 minutes"); err != nil {
 		return "", err
 	}
 	if now, ok := a.clock(); ok {
