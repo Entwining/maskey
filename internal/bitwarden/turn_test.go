@@ -168,6 +168,38 @@ func TestBackendReadQueuedBehindAWriteAnswersFromItsRead(t *testing.T) {
 	}
 }
 
+// Close ends a read waiting behind a refresh with conflict at once, without
+// waiting for the refresh.
+func TestBackendCloseEndsAQueuedRead(t *testing.T) {
+	s := newStack(t)
+	ctx := context.Background()
+	s.add("a/B", "value", store.Details{})
+	s.now = s.now.Add(snapshotFresh)
+	backend, entered, release := s.holding(indexPath)
+	refreshed := s.start(func() error { return backend.Refresh(ctx) })
+	await(t, entered)
+	queued := &watched{Context: ctx, waiting: make(chan struct{})}
+	read := make(chan error, 1)
+	s.running.Go(func() {
+		_, err := backend.Read(queued, []string{"a/B"})
+		read <- err
+	})
+	await(t, queued.waiting)
+	backend.Close()
+	select {
+	case err := <-read:
+		if !store.IsKind(err, store.KindConflict) {
+			t.Errorf("the queued read: %v, want conflict", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the queued read waited for the refresh after Close")
+	}
+	release()
+	if err := <-refreshed; !store.IsKind(err, store.KindConflict) {
+		t.Errorf("the refresh: %v, want conflict", err)
+	}
+}
+
 // timelyGrants are grants that, like the Keychain item that holds them, are
 // read once a request has time and from memory after.
 type timelyGrants struct {

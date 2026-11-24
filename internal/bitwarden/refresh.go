@@ -121,7 +121,7 @@ func (b *Backend) refreshed(have, fresh *snapshot, err error, current bool, now 
 	return nil, err
 }
 
-// signalRefreshed wakes the reads waiting for the turn to check the snapshot
+// signalRefreshed wakes the reads waiting for the turn to check the state
 // again.
 func (b *Backend) signalRefreshed() {
 	close(b.refreshedSignal)

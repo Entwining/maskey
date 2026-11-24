@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.13
+
+- Removing a Bitwarden store or replacing its token now ends a read that was already waiting behind another request to that store. It fails with `conflict` at once instead of waiting for that request or its own time limit.
+
 ## 0.0.12
 
 - After upgrading, each Mac needs one successful refresh of each Bitwarden store, such as `mk store sync <name>`, before it can read that store offline. Maskey now selects its entries from the project's key index before fetching values and notes, saves only those entries, and does not read the copy an earlier version saved.

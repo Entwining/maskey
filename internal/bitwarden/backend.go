@@ -47,7 +47,8 @@ type Grants interface {
 // turn, then mu to read the state, which the request before it may have
 // changed; it exchanges without mu and takes mu again to install the result.
 // A read waiting for the turn also ends its wait when a refresh installs its
-// outcome, which may answer it while the turn's holder goes on to write.
+// outcome, which may answer it while the turn's holder goes on to write, and
+// when Close ends the backend's use.
 type Backend struct {
 	client  *Client
 	project string
@@ -64,7 +65,7 @@ type Backend struct {
 	// closed holds once this Mac removed the store or replaced its token.
 	closed bool
 	// refreshedSignal is closed, and replaced, when a refresh installs its
-	// outcome.
+	// outcome or the backend closes.
 	refreshedSignal chan struct{}
 }
 
@@ -117,6 +118,7 @@ func (b *Backend) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.closed = true
+	b.signalRefreshed()
 }
 
 // entries returns the project's entries by account. Bitwarden does not keep
