@@ -28,10 +28,10 @@ func TestRecordedBackend(t *testing.T) {
 	_, _ = backend.Items(ctx)
 	_, _ = backend.Read(ctx, []string{"a/B", "a/MISSING"})
 	_, _ = backend.Get(ctx, "a/B")
-	_ = backend.SetProgramAccess(ctx, "a/B", true)
+	_ = backend.SetProgramAccess(ctx, "a/B", "", true)
 	_ = backend.Update(ctx, "a/B", []byte("w"))
 	_ = backend.Edit(ctx, "a/B", "a/C", nil, nil)
-	_ = backend.SetProgramAccess(ctx, "a/C", false)
+	_ = backend.SetProgramAccess(ctx, "a/C", "", false)
 	_ = backend.Delete(ctx, "a/C")
 	want := []string{
 		"add a/B  ok", "add a/B  exists", "read a/B  ok", "read a/MISSING  not_found", "get a/B  not_granted",

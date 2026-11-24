@@ -7,6 +7,7 @@ import (
 
 	"github.com/Entwining/maskey/internal/store"
 	"github.com/Entwining/maskey/internal/store/storetest"
+	"github.com/Entwining/maskey/internal/stores"
 )
 
 // savedCopy is a remote store's backend that keeps a copy of its listing on
@@ -43,7 +44,7 @@ func TestRemoteStoreShowsItsSavedCopyFirst(t *testing.T) {
 		if copied {
 			b.copy = []store.Item{{Account: "deploy/SAVED_KEY"}}
 		}
-		h.g.remoteStore = func(string) storeAccess { return storeAccess{store: store.New(b, new(storetest.Recorder))} }
+		h.g.remoteStore = func(stores.Connection) storeAccess { return storeAccess{store: store.New(b, new(storetest.Recorder))} }
 		h.g.refresh()
 		h.applyPostedUntil(b.asked)
 		h.tt.Frame()

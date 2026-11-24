@@ -135,7 +135,9 @@ func (k *Keychain) Edit(ctx context.Context, account, to string, value []byte, d
 	return err
 }
 
-func (k *Keychain) SetProgramAccess(ctx context.Context, account string, granted bool) error {
+// SetProgramAccess takes no ID: an item's account is its identity, and the
+// grant is an attribute of the item itself.
+func (k *Keychain) SetProgramAccess(ctx context.Context, account, _ string, granted bool) error {
 	op := "revoke"
 	if granted {
 		op = "grant"

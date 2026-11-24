@@ -108,7 +108,7 @@ func TestUninstallServiceFailure(t *testing.T) {
 	env := h.env(nil, &stdout, &stderr)
 	env.RemoveService = func(context.Context, string) []agent.ServiceItem {
 		return []agent.ServiceItem{
-			{Item: "Maskey service", Status: "failed", Detail: "synthetic launchctl failure"},
+			{Item: "Maskey service", Status: "failed", Detail: "synthetic launchctl failure", MayRun: true},
 			{Item: "service.plist", Status: "kept", Detail: "the Maskey service may still be loaded"},
 		}
 	}
@@ -121,6 +121,32 @@ func TestUninstallServiceFailure(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(h.home, ".claude", "skills", "maskey")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("the skill link stayed")
+	}
+	if _, err := os.Stat(h.logs); err != nil {
+		t.Fatalf("the activity record went: %v", err)
+	}
+}
+
+// The Keychain service of an earlier Maskey wrote the activity record too,
+// so the record stays while that job may still run, though the present
+// service is gone.
+func TestUninstallKeepsTheRecordOfAnEarlierJob(t *testing.T) {
+	h := newHarness(t)
+	t.Cleanup(func() { h.activity.Remove() })
+	h.activity.Record(context.Background(), activity.Record{Op: "get", Entry: "app/TOKEN", Result: "ok"})
+	var stdout, stderr bytes.Buffer
+	env := h.env(nil, &stdout, &stderr)
+	env.RemoveService = func(context.Context, string) []agent.ServiceItem {
+		return []agent.ServiceItem{
+			{Item: "Maskey service", Status: "removed"},
+			{Item: "service.plist", Status: "removed"},
+			{Item: "keychain.plist", Status: "failed", Detail: "synthetic launchctl failure", MayRun: true},
+		}
+	}
+	outcome := Run(context.Background(), []string{"uninstall", "--yes"}, env)
+	row := "kept     " + h.logs + "\n         the Keychain service of an earlier Maskey may still be loaded\n"
+	if outcome.Code != 6 || !strings.Contains(stdout.String(), row) {
+		t.Fatalf("%+v\n%s%s", outcome, &stdout, &stderr)
 	}
 	if _, err := os.Stat(h.logs); err != nil {
 		t.Fatalf("the activity record went: %v", err)
@@ -168,7 +194,7 @@ func TestUninstallConfirmationKeepsActivity(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	env := h.env(terminal(t, "no\n"), &stdout, &stderr)
 	env.ServiceItems = func(context.Context, string) []agent.ServiceItem {
-		return []agent.ServiceItem{{Item: "Maskey service", Status: "failed", Detail: "synthetic launchctl failure"}}
+		return []agent.ServiceItem{{Item: "Maskey service", Status: "failed", Detail: "synthetic launchctl failure", MayRun: true}}
 	}
 	outcome := Run(context.Background(), []string{"uninstall"}, env)
 	if outcome.Code != 130 || !strings.HasPrefix(stderr.String(), "Remove what Maskey installed") || strings.Contains(stderr.String(), h.logs) {

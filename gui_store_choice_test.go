@@ -17,8 +17,8 @@ func TestStoreShownAlone(t *testing.T) {
 	r := h.addRemote()
 	r.config.Stores = append(r.config.Stores, stores.Connection{ID: "vault", Type: stores.Bitwarden})
 	empty := storetest.New()
-	h.g.remoteStore = func(id string) storeAccess {
-		if id == "vault" {
+	h.g.remoteStore = func(connection stores.Connection) storeAccess {
+		if connection.ID == "vault" {
 			return storeAccess{store: store.New(empty, new(storetest.Recorder))}
 		}
 		return storeAccess{store: store.New(r.backend, new(storetest.Recorder))}

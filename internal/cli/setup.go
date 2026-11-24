@@ -106,8 +106,14 @@ func doctor(cmd *cobra.Command, env *Env) error {
 	config, err := env.Stores(ctx)
 	if err != nil {
 		e := &store.Error{Kind: store.KindPrerequisite, Message: errorMessage(err)}
+		recovery := "repair ~/Library/Application Support/" + store.Service + "/stores.json"
+		// Where mk may not read the file, the service reads it, so a
+		// service that is not reached leaves no file to repair.
+		if store.IsKind(err, store.KindUnavailable) {
+			e.Kind, recovery = store.KindUnavailable, sandboxRecovery
+		}
 		checks = append(checks, check{Check: "stores", Status: "error", Error: &errorBody{Error: e, ExitCode: exitCode(e.Kind),
-			Recovery: "repair ~/Library/Application Support/" + store.Service + "/stores.json; until then commands need --store icloud"}})
+			Recovery: recovery + "; until then commands need --store icloud"}})
 		if failure == nil {
 			failure = e
 		}

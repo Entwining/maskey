@@ -52,7 +52,7 @@ func TestClientRecordsWhereTheOperationEnds(t *testing.T) {
 	// A service that answers unavailable has recorded the operation.
 	inService, inClient = new(storetest.Recorder), new(storetest.Recorder)
 	path, _, _ = startTestService(t, unreachable(), inService, func(context.Context) error { return nil }, nil, notReplaced)
-	for _, client := range []*Client{New(unreachable(), inClient, nil, true), NewRemote("work", inClient, nil, true)} {
+	for _, client := range []*Client{New(unreachable(), inClient, nil, true), NewRemote(workStore, inClient, nil, true)} {
 		client.path = path
 		if err := client.Delete(ctx, "test/NAME"); !store.IsKind(err, store.KindUnavailable) {
 			t.Fatal(err)
@@ -78,7 +78,7 @@ func TestClientRecordsWhereTheOperationEnds(t *testing.T) {
 	// A remote store has only the service, and the record names the store.
 	record := activity.New(t.TempDir(), func(err error) { t.Error(err) })
 	t.Cleanup(func() { record.Remove() })
-	work := NewRemote("work", record, nil, true)
+	work := NewRemote(workStore, record, nil, true)
 	work.path = client.path
 	_, _ = work.Get(ctx, "test/NAME")
 	_, _, _ = work.ChangeProgramAccess(ctx, []store.Ref{{Namespace: "test", Name: "A"}, {Namespace: "test", Name: "B"}}, true)
@@ -117,7 +117,7 @@ func TestReplacingReachesTheService(t *testing.T) {
 	remote := storetest.New()
 	remote.Put("test/NAME", []byte("synthetic-value"))
 	path, _, _ := startTestService(t, remote, recorder, func(context.Context) error { return nil }, nil, notReplaced)
-	client := NewRemote("work", new(storetest.Recorder), nil, true)
+	client := NewRemote(workStore, new(storetest.Recorder), nil, true)
 	client.path = path
 	if _, err := store.New(client, recorder).Set(ctx, store.Ref{Namespace: "test", Name: "NAME"}, []byte("next")); err != nil {
 		t.Fatal(err)
@@ -166,7 +166,7 @@ func (b *savedBackend) Items(ctx context.Context) ([]store.Item, error) {
 func TestSavedListingReachesTheService(t *testing.T) {
 	remote := &savedBackend{Backend: storetest.New()}
 	path, _, _ := startTestService(t, remote, new(storetest.Recorder), func(context.Context) error { return nil }, nil, notReplaced)
-	client := NewRemote("work", new(storetest.Recorder), nil, true)
+	client := NewRemote(workStore, new(storetest.Recorder), nil, true)
 	client.path = path
 	for _, ctx := range []context.Context{store.WithSaved(context.Background()), context.Background()} {
 		if _, err := client.Items(ctx); err != nil {

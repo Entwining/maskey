@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.0.12
+
+- In a sandbox that keeps `mk` from reading `stores.json`, `mk` gets this Mac's stores from the Maskey service, so commands use the default store and `--store <name>` there without a read permission for that file. Such commands failed with `prerequisite` unless they passed `--store icloud`.
+- A Bitwarden store that is slow to answer no longer holds back the other stores: commands and the window keep working on them, and on Settings, while it syncs, signs in, or is added.
+- A command or a window that began before a store's name was removed and connected to another project fails with `conflict` instead of reading, writing, or deleting in that project. The window drops what it showed of the earlier project, and an answer to its Delete or Remove… question applies only to the connection it asked about.
+- Granting or revoking program access to a Bitwarden entry fails with `conflict` when the secret was deleted and created again under the same name while the owner was asked, instead of applying to the new secret.
+- `mk activity` records a command cancelled before its request reached the Maskey service, which no record showed.
+- Quitting or updating Maskey while Settings adds, removes, or changes a store waits for the change to end, and stays open to show the error when it fails.
+- `mk store remove` and the window's Remove… report a removal that stopped after the access token was gone, and keep the store listed so that removing it again finishes. `mk uninstall` says which store may be partly removed instead of "nothing was removed".
+- `mk uninstall` keeps the configuration directory and the activity record while the Keychain service of a Maskey before 0.0.11 could not be stopped, instead of removing files that service still writes.
+
 ## 0.0.11
 
 - Entries can live in a Bitwarden Secrets Manager project as well as in iCloud Keychain, so that Macs on different Apple Accounts can share them. Connect a project in Maskey > Settings… or with `mk store add bitwarden`; each Mac keeps its own access token in its Keychain. Commands work on this Mac's default store or the one `--store <name>` names, the window lists each store's namespaces under the store's name and can show one store alone, and `mk store` lists, syncs, removes, and sets the default. Reading keeps working from an encrypted copy while Bitwarden cannot be reached; changes need it.

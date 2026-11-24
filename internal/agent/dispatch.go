@@ -2,7 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net"
+	"time"
 
 	"github.com/Entwining/maskey/internal/activity"
 	"github.com/Entwining/maskey/internal/store"
@@ -32,6 +36,11 @@ func dispatch(ctx context.Context, registry Stores, recorder activity.Recorder, 
 	switch req.Op {
 	case "check":
 		err = check(ctx)
+	case "stores":
+		var config stores.Config
+		if config, err = registry.Config(ctx); err == nil {
+			result.Config = &config
+		}
 	case "store_add":
 		if req.Connection == nil {
 			err = &store.Error{Kind: store.KindInvalid, Message: "the request names no store to add"}
@@ -53,7 +62,7 @@ func dispatch(ctx context.Context, registry Stores, recorder activity.Recorder, 
 		err = registry.Sync(ctx, req.Store)
 	default:
 		var backend store.Backend
-		if backend, err = registry.Backend(ctx, req.Store); err == nil {
+		if backend, err = registry.Backend(ctx, req.Store, req.Target); err == nil {
 			return dispatchEntry(ctx, store.Recorded(backend, recorder), recorder, approve, req)
 		}
 		recordUnperformed(ctx, recorder, req, err)
@@ -172,6 +181,77 @@ func settle(result response, err error) response {
 	}
 	result.OK = true
 	return result
+}
+
+// windowKey marks the context of a request from Maskey's window.
+type windowKey struct{}
+
+// FromWindow reports whether ctx is that of a request from Maskey's window,
+// whose approvals the service keeps apart from mk's.
+func FromWindow(ctx context.Context) bool {
+	window, _ := ctx.Value(windowKey{}).(bool)
+	return window
+}
+
+// serveRequest answers one client. ctx describes the program that started
+// the client, which a request from mk acts for; window describes the client
+// itself, which a request from Maskey's window acts as.
+func serveRequest(ctx context.Context, conn net.Conn, window func() activity.Caller, registry Stores, recorder activity.Recorder, check func(context.Context) error, approve store.Approve) {
+	_ = conn.SetDeadline(time.Now().Add(requestTimeout))
+	if json.NewEncoder(conn).Encode(hello{}) != nil {
+		return
+	}
+	var req request
+	decoder := json.NewDecoder(conn)
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&req) != nil {
+		return
+	}
+	_ = conn.SetDeadline(time.Now().Add(req.timeout()))
+	if req.Window {
+		ctx = activity.WithCaller(context.WithValue(ctx, windowKey{}, true), window())
+	}
+	if req.changesAccess() {
+		// The client sends more, a withdrawal, or hangs up only when it gives
+		// up on the change. That ends the owner's approval if it is not yet
+		// given, before any dialog or reuse of an earlier approval, but never
+		// a write the owner approved: a batch stopped halfway leaves entries
+		// to check.
+		withdrawn := make(chan struct{})
+		rest := io.MultiReader(decoder.Buffered(), conn)
+		go func() {
+			var frame json.RawMessage
+			_ = json.NewDecoder(rest).Decode(&frame)
+			close(withdrawn)
+		}()
+		approveRequest := approve
+		approve = func(ctx context.Context, reason string) (string, error) {
+			select {
+			case <-withdrawn:
+				return "", &store.Error{Kind: store.KindCancelled, Message: "cancelled"}
+			default:
+			}
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			go func() {
+				select {
+				case <-withdrawn:
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
+			return approveRequest(ctx, reason)
+		}
+	}
+	var warning string
+	ctx = activity.WithFailureReport(ctx, func(err error) {
+		if warning == "" {
+			warning = err.Error()
+		}
+	})
+	result := dispatch(ctx, registry, recorder, check, approve, req)
+	result.Warning = warning
+	_ = json.NewEncoder(conn).Encode(result)
 }
 
 var _ store.Backend = (*Client)(nil)

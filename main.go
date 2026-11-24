@@ -7,6 +7,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -107,9 +108,9 @@ func main() {
 	// it surely runs.
 	ctx = activity.WithCaller(ctx, activity.Invoker(os.Getpid()))
 	outcome := cli.Run(ctx, args, cli.Env{
-		OpenStore: func(_ context.Context, id string) (cli.StoreAccess, error) {
+		OpenStore: func(ctx context.Context, id string) (cli.StoreAccess, error) {
 			// iCloud Keychain, named, needs no configuration to be found.
-			config, err := storesConfig()
+			config, err := storesConfig(ctx, backend)
 			if err != nil && id != stores.ICloud {
 				return cli.StoreAccess{}, err
 			}
@@ -119,11 +120,11 @@ func main() {
 			}
 			client := backend
 			if connection.Type != stores.ICloud {
-				client = agent.NewRemote(connection.ID, record, record.ReportFailure, recordable)
+				client = agent.NewRemote(connection, record, record.ReportFailure, recordable)
 			}
 			return cli.StoreAccess{Connection: connection, Store: store.New(client, record), ChangeAccess: client.ChangeProgramAccess}, nil
 		},
-		Stores:       func(context.Context) (stores.Config, error) { return storesConfig() },
+		Stores:       func(ctx context.Context) (stores.Config, error) { return storesConfig(ctx, backend) },
 		AddStore:     backend.AddStore,
 		SetToken:     backend.SetStoreToken,
 		ChangeStore:  backend.ChangeStore,
@@ -193,14 +194,22 @@ func remoteClient() *http.Client {
 	return &http.Client{Timeout: remoteTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
-// storesConfig is this Mac's stores, which the Maskey service writes.
-// Without a home directory there is only iCloud Keychain.
-func storesConfig() (stores.Config, error) {
+// storesConfig is this Mac's stores, which the Maskey service writes. A
+// process that may not read their file, as in a sandbox, has the service
+// read it, over the socket it reaches entries through. Without a home
+// directory there is only iCloud Keychain.
+func storesConfig(ctx context.Context, service interface {
+	Stores(context.Context) (stores.Config, error)
+}) (stores.Config, error) {
 	dir, err := stores.Dir()
 	if err != nil {
 		return stores.Config{Default: stores.ICloud}, nil
 	}
-	return stores.Load(dir)
+	config, err := stores.Load(dir)
+	if errors.Is(err, stores.ErrDenied) {
+		return service.Stores(ctx)
+	}
+	return config, err
 }
 
 // activityLog is this Mac's activity record, which reports a failure to

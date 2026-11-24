@@ -153,7 +153,7 @@ func TestAgentRoundTrip(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(result.Values, map[string]store.Stored{account: {Value: second, Kind: store.ValuePassword}}) {
 		t.Fatalf("read after the edit: %v", err)
 	}
-	backend.SetProgramAccess(context.Background(), account, true)
+	backend.SetProgramAccess(context.Background(), account, "", true)
 	result, err = agentRoundTrip(t, backend, request{Op: "get", Account: account})
 	if err != nil || !bytes.Equal(result.Value, second) {
 		t.Fatalf("get: %+v, %v", result, err)
@@ -264,7 +264,7 @@ func TestAgentChangesProgramAccess(t *testing.T) {
 		}
 		return nil
 	}
-	backend.SetProgramAccess(context.Background(), "test/B", true)
+	backend.SetProgramAccess(context.Background(), "test/B", "", true)
 	result, err = roundTrip(t, backend, new(storetest.Recorder), approve, request{Op: "revoke", Accounts: []string{"test/A", "test/B"}})
 	if want := []store.AccessChange{{Ref: store.Ref{Namespace: "test", Name: "A"}, Changed: true}}; !store.IsKind(err, store.KindUncertain) || !reflect.DeepEqual(result.Changes, want) || result.Auth != "dialog" || approvals != 2 {
 		t.Fatalf("failed revoke: %+v, %v after %d approvals", result, err, approvals)
@@ -277,9 +277,9 @@ type accessHook struct {
 	before func(ctx context.Context)
 }
 
-func (b accessHook) SetProgramAccess(ctx context.Context, account string, granted bool) error {
+func (b accessHook) SetProgramAccess(ctx context.Context, account, id string, granted bool) error {
 	b.before(ctx)
-	return b.Backend.SetProgramAccess(ctx, account, granted)
+	return b.Backend.SetProgramAccess(ctx, account, "", granted)
 }
 
 // startRequest serves one request over a pipe and returns the client's end

@@ -67,17 +67,18 @@ func runGUI() {
 	}
 	g := newGUI(ctx, store.New(store.Recorded(keychain.New(store.Service), record), record), owner.NewApproval(owner.NativeAuthenticate, owner.Clock, "program access changes in this window").Approve, layoutPath)
 	warn := func(err error) { log.Print(err) }
-	g.loadStores = storesConfig
+	service := agent.NewRemote(stores.Connection{ID: stores.ICloud}, record, warn, true)
+	g.service = service
+	g.loadStores = func() (stores.Config, error) { return storesConfig(ctx, service) }
 	// The service holds a remote store's access token and the owner's
 	// approval of its program access, so the window reaches one through it.
-	g.remoteStore = func(id string) storeAccess {
-		client := agent.NewWindowRemote(id, record, warn, true)
+	g.remoteStore = func(connection stores.Connection) storeAccess {
+		client := agent.NewWindowRemote(connection, record, warn, true)
 		return storeAccess{store.New(client, record), func(ctx context.Context, ref store.Ref, granted bool) error {
 			_, _, err := client.ChangeProgramAccess(ctx, []store.Ref{ref}, granted)
 			return err
 		}}
 	}
-	g.service = agent.NewRemote(stores.ICloud, record, warn, true)
 	mygo.Use(native.Plugin)
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
@@ -196,7 +197,7 @@ type gui struct {
 	listed      map[string]*listedStore
 	loadStores  func() (stores.Config, error)
 	icloud      storeAccess
-	remoteStore func(id string) storeAccess
+	remoteStore func(connection stores.Connection) storeAccess
 	// service changes this Mac's stores for the Settings window.
 	service  storeService
 	settings settings
@@ -270,8 +271,9 @@ type gui struct {
 	clearCopy func()
 
 	write *write // nil while none runs
-	// exit is the close or quit waiting for the write, or for the
-	// installation of the command line tool, to finish.
+	// exit is the close or quit waiting for the write, the installation of
+	// the command line tool, or the Settings window's change to this Mac's
+	// stores to finish.
 	exit exit
 
 	form form

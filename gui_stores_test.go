@@ -30,10 +30,10 @@ func (h *harness) addRemote() *remote {
 	r.backend.Put("app/API_TOKEN", []byte("synthetic-work-7d10"))
 	r.config = stores.Config{Default: stores.ICloud, Stores: []stores.Connection{{ID: "work", Type: stores.Bitwarden, Region: "eu", ProjectName: "Deploy"}}}
 	h.g.loadStores = func() (stores.Config, error) { return r.config, nil }
-	h.g.remoteStore = func(id string) storeAccess {
+	h.g.remoteStore = func(stores.Connection) storeAccess {
 		return storeAccess{store.New(r.backend, new(storetest.Recorder)), func(ctx context.Context, ref store.Ref, granted bool) error {
 			r.changes = append(r.changes, ref.String())
-			return r.backend.SetProgramAccess(ctx, ref.String(), granted)
+			return r.backend.SetProgramAccess(ctx, ref.String(), "", granted)
 		}}
 	}
 	return r

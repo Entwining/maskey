@@ -100,10 +100,14 @@ type Details struct {
 }
 
 // Attributes are what a listing returns about an item besides its value.
-// ProgramAccess permits programmatic retrieval.
+// ProgramAccess permits programmatic retrieval. ID is what the backend knows
+// the item by where an account can come to name another item, as a Bitwarden
+// secret's ID does, and "" where the account is the item's identity. It stays
+// in the process that listed the item, so that no client can supply one.
 type Attributes struct {
 	Modified      time.Time `json:"modified"`
 	ProgramAccess bool      `json:"program_access"`
+	ID            string    `json:"-"`
 	Details
 }
 
@@ -129,7 +133,9 @@ type Stored struct {
 // KindNotFound. Edit gives an item the account to, and the value and the
 // details unless they are nil, in one write; it fails with KindNotFound
 // when account does not exist and KindExists when to is another existing
-// account. No write but SetProgramAccess changes program access.
+// account. No write but SetProgramAccess changes program access, and only of
+// the item a listing gave the ID id: it fails with KindConflict once account
+// names another item, which the owner did not approve the change to.
 type Backend interface {
 	Items(ctx context.Context) ([]Item, error)
 	Read(ctx context.Context, accounts []string) (map[string]Stored, error)
@@ -137,7 +143,7 @@ type Backend interface {
 	Add(ctx context.Context, account string, value []byte, details Details) error
 	Update(ctx context.Context, account string, value []byte) error
 	Edit(ctx context.Context, account, to string, value []byte, details *Details) error
-	SetProgramAccess(ctx context.Context, account string, granted bool) error
+	SetProgramAccess(ctx context.Context, account, id string, granted bool) error
 	Delete(ctx context.Context, account string) error
 }
 
@@ -368,7 +374,7 @@ func (s *Store) ChangeAccess(ctx context.Context, refs []Ref, granted bool, appr
 		a := attributes[ref]
 		changed := a.ProgramAccess != granted
 		if changed {
-			if err := s.backend.SetProgramAccess(ctx, ref.account(), granted); err != nil {
+			if err := s.backend.SetProgramAccess(ctx, ref.account(), a.ID, granted); err != nil {
 				return changes, auth, existing(err, ref)
 			}
 			a.ProgramAccess = granted

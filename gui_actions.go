@@ -203,15 +203,19 @@ func (g *gui) startWrite(w *write, work func() func()) {
 }
 
 // busy reports whether the window is changing something outside it, which
-// ending the process would leave unrecorded and unreported. A closed window
-// starts and applies nothing, so it waits for nothing, whatever the menu
-// bar, which outlives it, asked for.
-func (g *gui) busy() bool { return !g.closed && (g.write != nil || g.cliInstalling) }
+// ending the process would leave unrecorded or unreported: an entry, the
+// command line tool, or, from the Settings window, this Mac's stores. A
+// closed window starts and applies nothing, so it waits for nothing,
+// whatever the menu bar, which outlives it, asked for.
+func (g *gui) busy() bool {
+	return !g.closed && (g.write != nil || g.cliInstalling || g.settings.busy != "")
+}
 
 // beforeExit answers a request to close the window or quit, and reports
 // whether to prevent it for now. While the window is busy, the exit waits
-// until resumeExit; a write or installation that fails cancels it, so that
-// its alert, or the form's error, shows. Otherwise the user is asked about
+// until resumeExit; a write, installation, or change to this Mac's stores
+// that fails cancels it, so that its alert, or the form's or the Settings
+// window's error, shows. Otherwise the user is asked about
 // unsaved changes. MyGo takes a prevented quit as cancelled and resumes it
 // as a plain quit: a logout or restart stops, and the updater's Relaunch
 // quits without starting Maskey again.
@@ -429,11 +433,13 @@ func (g *gui) askDelete(id entryID) {
 	if g.form.open && g.form.from != id {
 		message = fmt.Sprintf("Delete “%s” from %s?", id.ref.Name, id.ref.Namespace)
 	}
+	target := g.target(id.store)
 	g.message(alert{message: message, detail: "You can’t undo this action.",
 		buttons: []alertButton{{title: "Delete", destructive: true}, {title: "Cancel", isCancel: true}}}, func(button int) {
-		// A store that left this Mac while the question stood takes no
-		// delete.
-		if button == 0 && g.listed[id.store] != nil {
+		// A store that left this Mac while the question stood, or whose
+		// name came to mean another connection, takes no delete: the
+		// question was about the entry of the store it was then.
+		if button == 0 && g.target(id.store) == target {
 			g.delete(id)
 		}
 	})
@@ -464,13 +470,15 @@ func (g *gui) delete(id entryID) {
 // approves. The switch shows the change while it runs and the stored state
 // again if the owner declines or the write fails.
 func (g *gui) changeAccess(id entryID, granted bool) {
-	setAccess := g.open(id.store).setAccess
+	setAccess, shown := g.open(id.store).setAccess, g.listed[id.store]
 	g.startWrite(&write{action: accessWrite, entry: id, accessTo: granted}, func() func() {
 		err := setAccess(g.ctx, id.ref, granted)
 		return func() {
 			switch {
 			case err == nil:
-				if s := g.listed[id.store]; s != nil {
+				// What the window shows of the store since may be another
+				// connection's, which the change was not made to.
+				if s := g.listed[id.store]; s != nil && s == shown {
 					attributes := s.attributes[id.ref]
 					attributes.ProgramAccess = granted
 					s.attributes[id.ref] = attributes

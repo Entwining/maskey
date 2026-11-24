@@ -139,7 +139,7 @@ func (b *Backend) Edit(ctx context.Context, account, to string, value []byte, de
 	return nil
 }
 
-func (b *Backend) SetProgramAccess(ctx context.Context, account string, granted bool) error {
+func (b *Backend) SetProgramAccess(ctx context.Context, account, _ string, granted bool) error {
 	op := "revoke"
 	if granted {
 		op = "grant"
@@ -202,4 +202,18 @@ func (r *Recorder) Records() []activity.Record {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.records)
+}
+
+// SetAccess changes the program access of the item a listing of backend
+// shows under account, as Store.ChangeAccess does once the owner approves.
+func SetAccess(ctx context.Context, backend store.Backend, account string, granted bool) error {
+	items, err := backend.Items(ctx)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(items, func(item store.Item) bool { return item.Account == account })
+	if i < 0 {
+		return &store.Error{Kind: store.KindNotFound, Message: "the entry does not exist"}
+	}
+	return backend.SetProgramAccess(ctx, account, items[i].ID, granted)
 }

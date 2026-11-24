@@ -20,7 +20,7 @@ A sandbox that blocks direct Keychain access can use the per-user Maskey service
 ~/Library/Application Support/io.github.entwining.maskey/service.sock
 ```
 
-`mk` reads which stores this Mac has from `stores.json` beside the socket. A sandbox that also keeps it from reading that file must allow the read, or its commands on entries need `--store icloud`.
+`mk` reads which stores this Mac has from `stores.json` beside the socket. Where a sandbox keeps it from reading that file, the service reads it for `mk` over the socket, so the sandbox needs no read permission for it.
 
 `mk` uses the Keychain directly where allowed, except for recorded operations when the sandbox cannot write the activity record: those go to the service, which performs and records them outside the sandbox. Do not let a sandbox write `~/Library/Logs/io.github.entwining.maskey`, since a process that can write there can rewrite or delete the record. If the service cannot be reached, `mk` still uses the Keychain directly where it can, and warns when an operation was not recorded.
 

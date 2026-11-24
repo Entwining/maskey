@@ -246,7 +246,7 @@ func TestHelperFailures(t *testing.T) {
 			case "edit":
 				err = k.Edit(context.Background(), "ns/NAME", "ns/OTHER", nil, nil)
 			case "grant":
-				err = k.SetProgramAccess(context.Background(), "ns/NAME", true)
+				err = k.SetProgramAccess(context.Background(), "ns/NAME", "", true)
 			case "get":
 				_, err = k.Get(context.Background(), "ns/NAME")
 			default:

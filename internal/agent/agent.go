@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -52,7 +51,10 @@ type request struct {
 	Op string `json:"op"`
 	// Store names the store the operation is for, or is "" for iCloud
 	// Keychain.
-	Store    string         `json:"store,omitempty"`
+	Store string `json:"store,omitempty"`
+	// Target is what the client resolved a remote store's name to; see
+	// stores.Connection.Target. It can only make the service refuse.
+	Target   string         `json:"target,omitempty"`
 	Account  string         `json:"account,omitempty"`
 	To       string         `json:"to,omitempty"`
 	Accounts []string       `json:"accounts,omitempty"`
@@ -119,8 +121,10 @@ type response struct {
 	Values  map[string]store.Stored `json:"values,omitempty"`
 	Changes []store.AccessChange    `json:"changes,omitempty"`
 	Auth    string                  `json:"auth,omitempty"`
-	// Connection is the store that store_add added.
+	// Connection is the store that store_add added, and Config this Mac's
+	// stores.
 	Connection *stores.Connection `json:"connection,omitempty"`
+	Config     *stores.Config     `json:"config,omitempty"`
 	Error      *store.Error       `json:"error,omitempty"`
 	// Warning is the service's failure to record the request, which names
 	// files, never a value.
@@ -166,11 +170,15 @@ type ServiceItem struct {
 	Item   string
 	Status string
 	Detail string
+	// MayRun marks a job that uninstalling did not stop, or cannot tell it
+	// would: while one may run, what Maskey's jobs write stays.
+	MayRun bool
 }
 
 // Stores are this Mac's stores as the service holds them.
 type Stores interface {
-	Backend(ctx context.Context, id string) (store.Backend, error)
+	Backend(ctx context.Context, id, target string) (store.Backend, error)
+	Config(ctx context.Context) (stores.Config, error)
 	Add(ctx context.Context, addition stores.Addition) (stores.Connection, error)
 	SetToken(ctx context.Context, id string, token []byte) error
 	Remove(ctx context.Context, id string) error
@@ -180,11 +188,11 @@ type Stores interface {
 
 type Client struct {
 	// store names the store the client is for, or is "" for iCloud
-	// Keychain. direct is nil for a remote store, which only the service
-	// reaches: it holds the store's session and is the one writer of its
-	// snapshot.
-	store  string
-	direct store.Backend
+	// Keychain, and target is what the name meant when the client was made.
+	// direct is nil for a remote store, which only the service reaches: it
+	// holds the store's session and is the one writer of its snapshot.
+	store, target string
+	direct        store.Backend
 	// window marks the requests of Maskey's window.
 	window bool
 	// failed receives the failures to record this process's operations
@@ -213,18 +221,20 @@ func New(direct store.Backend, recorder activity.Recorder, failed func(error), r
 	return &Client{direct: store.Recorded(direct, recorder), failed: failed, path: path, pathErr: err, recorder: recorder, recordable: recordable}
 }
 
-// NewRemote returns the client of the remote store named id, for mk.
-func NewRemote(id string, recorder activity.Recorder, failed func(error), recordable bool) *Client {
+// NewRemote returns the client of the remote store connection, for mk. Its
+// requests reach that connection only: the service refuses them once the
+// store's name means another.
+func NewRemote(connection stores.Connection, recorder activity.Recorder, failed func(error), recordable bool) *Client {
 	path, err := socketPath()
-	return &Client{store: id, failed: failed, path: path, pathErr: err, recorder: recorder, recordable: recordable}
+	return &Client{store: connection.ID, target: connection.Target(), failed: failed, path: path, pathErr: err, recorder: recorder, recordable: recordable}
 }
 
-// NewWindowRemote returns the client of the remote store named id for
+// NewWindowRemote returns the client of the remote store connection for
 // Maskey's window: the service records its requests as the window's, asks
 // the owner to approve its changes to program access apart from mk's, and
 // reads values for it to reveal, copy, or edit.
-func NewWindowRemote(id string, recorder activity.Recorder, failed func(error), recordable bool) *Client {
-	c := NewRemote(id, recorder, failed, recordable)
+func NewWindowRemote(connection stores.Connection, recorder activity.Recorder, failed func(error), recordable bool) *Client {
+	c := NewRemote(connection, recorder, failed, recordable)
 	c.window = true
 	return c
 }
@@ -252,6 +262,9 @@ func (c *Client) perform(ctx context.Context, req request, direct func(context.C
 	if serviceErr == nil {
 		r, err := c.remote(ctx, req)
 		if !errors.As(err, &serviceErr) || serviceErr.Kind != store.KindUnavailable {
+			if store.IsKind(err, store.KindCancelled) && !r.reached {
+				c.unperformed(ctx, req, err)
+			}
 			return r, err
 		}
 		reached = r.reached
@@ -278,14 +291,15 @@ func (c *Client) perform(ctx context.Context, req request, direct func(context.C
 func (c *Client) served(ctx context.Context, req request) (response, error) {
 	r, err := c.remote(ctx, req)
 	// A request the service received is the service's to record.
-	if store.IsKind(err, store.KindUnavailable) && !r.reached {
+	if (store.IsKind(err, store.KindUnavailable) || store.IsKind(err, store.KindCancelled)) && !r.reached {
 		c.unperformed(ctx, req, err)
 	}
 	return r, err
 }
 
-// unperformed records req, which no process performed: nothing else knows
-// of it.
+// unperformed records req, which no process performed, as when the service
+// could not be reached or the request was cancelled before it was sent:
+// nothing else knows of it.
 func (c *Client) unperformed(ctx context.Context, req request, err error) {
 	if !c.recordable {
 		return
@@ -340,7 +354,7 @@ func (c *Client) Edit(ctx context.Context, account, to string, value []byte, det
 
 // SetProgramAccess refuses: program access changes only through
 // ChangeProgramAccess, after the owner approves them.
-func (c *Client) SetProgramAccess(context.Context, string, bool) error {
+func (c *Client) SetProgramAccess(context.Context, string, string, bool) error {
 	return &store.Error{Kind: store.KindInvalid, Message: "program access changes only with the owner's approval"}
 }
 
@@ -399,9 +413,19 @@ func (c *Client) ChangeStore(ctx context.Context, op, id string) error {
 	return err
 }
 
+// Stores asks the service for this Mac's stores, for a process that may not
+// read their configuration itself.
+func (c *Client) Stores(ctx context.Context) (stores.Config, error) {
+	r, err := c.remote(ctx, request{Op: "stores"})
+	if err != nil || r.Config == nil {
+		return stores.Config{Default: stores.ICloud}, cmp.Or(err, unavailable())
+	}
+	return *r.Config, nil
+}
+
 func (c *Client) remote(ctx context.Context, req request) (response, error) {
 	if req.Store == "" {
-		req.Store = c.store
+		req.Store, req.Target = c.store, c.target
 	}
 	req.Window = c.window
 	if c.pathErr != nil {
@@ -524,75 +548,4 @@ func exchange(ctx context.Context, conn net.Conn, req request) (response, error)
 		return response{reached: true}, connectionError(ctx, req, true)
 	}
 	return result, nil
-}
-
-// windowKey marks the context of a request from Maskey's window.
-type windowKey struct{}
-
-// FromWindow reports whether ctx is that of a request from Maskey's window,
-// whose approvals the service keeps apart from mk's.
-func FromWindow(ctx context.Context) bool {
-	window, _ := ctx.Value(windowKey{}).(bool)
-	return window
-}
-
-// serveRequest answers one client. ctx describes the program that started
-// the client, which a request from mk acts for; window describes the client
-// itself, which a request from Maskey's window acts as.
-func serveRequest(ctx context.Context, conn net.Conn, window func() activity.Caller, registry Stores, recorder activity.Recorder, check func(context.Context) error, approve store.Approve) {
-	_ = conn.SetDeadline(time.Now().Add(requestTimeout))
-	if json.NewEncoder(conn).Encode(hello{}) != nil {
-		return
-	}
-	var req request
-	decoder := json.NewDecoder(conn)
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&req) != nil {
-		return
-	}
-	_ = conn.SetDeadline(time.Now().Add(req.timeout()))
-	if req.Window {
-		ctx = activity.WithCaller(context.WithValue(ctx, windowKey{}, true), window())
-	}
-	if req.changesAccess() {
-		// The client sends more, a withdrawal, or hangs up only when it gives
-		// up on the change. That ends the owner's approval if it is not yet
-		// given, before any dialog or reuse of an earlier approval, but never
-		// a write the owner approved: a batch stopped halfway leaves entries
-		// to check.
-		withdrawn := make(chan struct{})
-		rest := io.MultiReader(decoder.Buffered(), conn)
-		go func() {
-			var frame json.RawMessage
-			_ = json.NewDecoder(rest).Decode(&frame)
-			close(withdrawn)
-		}()
-		approveRequest := approve
-		approve = func(ctx context.Context, reason string) (string, error) {
-			select {
-			case <-withdrawn:
-				return "", &store.Error{Kind: store.KindCancelled, Message: "cancelled"}
-			default:
-			}
-			ctx, cancel := context.WithCancel(ctx)
-			defer cancel()
-			go func() {
-				select {
-				case <-withdrawn:
-					cancel()
-				case <-ctx.Done():
-				}
-			}()
-			return approveRequest(ctx, reason)
-		}
-	}
-	var warning string
-	ctx = activity.WithFailureReport(ctx, func(err error) {
-		if warning == "" {
-			warning = err.Error()
-		}
-	})
-	result := dispatch(ctx, registry, recorder, check, approve, req)
-	result.Warning = warning
-	_ = json.NewEncoder(conn).Encode(result)
 }

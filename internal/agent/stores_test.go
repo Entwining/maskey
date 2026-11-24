@@ -22,7 +22,10 @@ type only struct{ backend store.Backend }
 
 var errNoStores = errors.New("this test service has no stores to change")
 
-func (o only) Backend(context.Context, string) (store.Backend, error) { return o.backend, nil }
+func (o only) Backend(context.Context, string, string) (store.Backend, error) {
+	return o.backend, nil
+}
+func (only) Config(context.Context) (stores.Config, error) { return stores.Config{}, errNoStores }
 func (only) Add(context.Context, stores.Addition) (stores.Connection, error) {
 	return stores.Connection{}, errNoStores
 }
@@ -38,12 +41,21 @@ type twoStores struct {
 	changes      []string
 }
 
-func (s *twoStores) Backend(_ context.Context, id string) (store.Backend, error) {
-	switch id {
-	case "", stores.ICloud:
+// workStore is the connection twoStores has under that name.
+var workStore = stores.Connection{ID: "work", Type: stores.Bitwarden, Region: "us", Organization: "org", Project: "project", ProjectName: "Work"}
+
+func (s *twoStores) Config(context.Context) (stores.Config, error) {
+	return stores.Config{Default: "work", Stores: []stores.Connection{workStore}}, nil
+}
+
+func (s *twoStores) Backend(_ context.Context, id, target string) (store.Backend, error) {
+	switch {
+	case id == "" || id == stores.ICloud:
 		return s.icloud, nil
-	case "work":
+	case id == "work" && target == workStore.Target():
 		return s.work, nil
+	case id == "work":
+		return nil, &store.Error{Kind: store.KindConflict, Message: "the store was connected to another project"}
 	}
 	return nil, &store.Error{Kind: store.KindNotFound, Message: "this Mac has no store with that name"}
 }
@@ -97,6 +109,9 @@ func TestDispatchRoutesByStore(t *testing.T) {
 	ctx := context.Background()
 	call := func(req request) response {
 		t.Helper()
+		if req.Store == "work" {
+			req.Target = workStore.Target()
+		}
 		return dispatch(ctx, registry, log, func(context.Context) error { return nil }, nil, req)
 	}
 
@@ -215,7 +230,7 @@ func TestWindowRequestsAreTheWindows(t *testing.T) {
 		if err := decoder.Decode(&hello{}); err != nil {
 			t.Fatal(err)
 		}
-		if err := json.NewEncoder(client).Encode(request{Op: "grant", Store: "work", Accounts: []string{"test/NAME"}, Window: fromWindow}); err != nil {
+		if err := json.NewEncoder(client).Encode(request{Op: "grant", Store: "work", Target: workStore.Target(), Accounts: []string{"test/NAME"}, Window: fromWindow}); err != nil {
 			t.Fatal(err)
 		}
 		var r response

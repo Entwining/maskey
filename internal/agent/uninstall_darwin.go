@@ -19,9 +19,11 @@ func ServiceItems(ctx context.Context, home string) []ServiceItem {
 	return serviceItems(ctx, home, launchctl)
 }
 
-// RemoveService stops the Maskey service and removes its files under home.
-// It decides what to remove only once it holds the lock install takes, so
-// neither acts on what the other has just changed.
+// RemoveService stops the Maskey service and the Keychain service of an
+// earlier Maskey, and removes their files under home; the directory they
+// share goes only once neither job may still run. It decides what to remove
+// only once it holds the lock install takes, so neither acts on what the
+// other has just changed.
 func RemoveService(ctx context.Context, home string) []ServiceItem {
 	return removeService(ctx, home, launchctl)
 }
@@ -64,7 +66,13 @@ func removeService(ctx context.Context, home string, control func(context.Contex
 			job.Status, job.Detail = "failed", "cannot stop the Maskey service: "+err.Error()
 		}
 	}
+	// The earlier service's job writes the shared directory and the activity
+	// record as well, so it stops before they go.
+	legacy := removeLegacy(ctx, home, control)
 	items := keepWhileLoaded(job, files)
+	if shared := &items[len(items)-1]; legacy.MayRun && shared.Status == "" {
+		shared.Status, shared.Detail = "kept", "the Keychain service of an earlier Maskey may still be loaded"
+	}
 	for i, item := range items {
 		if item.Status == "" {
 			items[i].Status = "removed"
@@ -80,7 +88,7 @@ func removeService(ctx context.Context, home string, control func(context.Contex
 		lockItem.Status = "removed"
 	}
 	items = append(items, lockItem)
-	if legacy := retireLegacy(ctx, home, control); legacy.Status != "absent" {
+	if legacy.Status != "absent" {
 		items = append(items, legacy)
 	}
 	return items
@@ -131,6 +139,7 @@ func serviceFiles(home string) []ServiceItem {
 // configuration would make the next install refuse it as another's.
 func keepWhileLoaded(job ServiceItem, files []ServiceItem) []ServiceItem {
 	if job.Status == "kept" || job.Status == "failed" {
+		job.MayRun = true
 		for i := range files {
 			if files[i].Status == "" {
 				files[i].Status, files[i].Detail = "kept", "the Maskey service may still be loaded"

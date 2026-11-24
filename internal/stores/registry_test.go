@@ -56,6 +56,9 @@ func (f *fixture) registry() *Registry {
 	return r
 }
 
+// target is what a store added with bitwardenToken connects to.
+var target = Connection{Type: Bitwarden, Region: "us", Organization: bitwardentest.Organization, Project: bitwardentest.Project}.Target()
+
 func bitwardenToken() Addition {
 	return Addition{Type: Bitwarden, Token: []byte(bitwardentest.Token)}
 }
@@ -164,21 +167,21 @@ func TestBackendOfAStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"", ICloud} {
-		if backend, err := r.Backend(ctx, id); err != nil || backend != store.Backend(f.icloud) {
+		if backend, err := r.Backend(ctx, id, ""); err != nil || backend != store.Backend(f.icloud) {
 			t.Errorf("the store %q is not iCloud Keychain: %v", id, err)
 		}
 	}
-	if _, err := r.Backend(ctx, "missing"); !store.IsKind(err, store.KindNotFound) {
+	if _, err := r.Backend(ctx, "missing", target); !store.IsKind(err, store.KindNotFound) {
 		t.Errorf("a store that is not there: %v, want not_found", err)
 	}
-	backend, err := r.Backend(ctx, "bitwarden")
+	backend, err := r.Backend(ctx, "bitwarden", target)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := backend.Add(ctx, "github/GITHUB_TOKEN", []byte("value"), store.Details{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := backend.SetProgramAccess(ctx, "github/GITHUB_TOKEN", true); err != nil {
+	if err := storetest.SetAccess(ctx, backend, "github/GITHUB_TOKEN", true); err != nil {
 		t.Fatal(err)
 	}
 	if items, _ := f.icloud.Items(ctx); len(items) != 0 || len(f.fake.Secrets) != 1 {
@@ -187,19 +190,19 @@ func TestBackendOfAStore(t *testing.T) {
 
 	// The grant and the snapshot outlast the process, and need no network.
 	f.fake.Close()
-	later, err := f.registry().Backend(ctx, "bitwarden")
+	later, err := f.registry().Backend(ctx, "bitwarden", target)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if value, err := later.Get(ctx, "github/GITHUB_TOKEN"); string(value) != "value" || err != nil {
 		t.Errorf("a later process, offline, got %q, %v", value, err)
 	}
-	if err := later.SetProgramAccess(ctx, "github/GITHUB_TOKEN", false); err != nil || string(f.local["grants/bitwarden"]) != "[]" {
+	if err := storetest.SetAccess(ctx, later, "github/GITHUB_TOKEN", false); err != nil || string(f.local["grants/bitwarden"]) != "[]" {
 		t.Errorf("revoke: %v, leaving the grants %s", err, f.local["grants/bitwarden"])
 	}
 
 	delete(f.local, "token/bitwarden")
-	if _, err := f.registry().Backend(ctx, "bitwarden"); !store.IsKind(err, store.KindUnauthenticated) {
+	if _, err := f.registry().Backend(ctx, "bitwarden", target); !store.IsKind(err, store.KindUnauthenticated) {
 		t.Errorf("a store whose token is gone: %v, want unauthenticated", err)
 	}
 }
@@ -211,11 +214,11 @@ func TestRemoveForgetsTheStoreOnThisMacOnly(t *testing.T) {
 	if _, err := r.Add(ctx, bitwardenToken()); err != nil {
 		t.Fatal(err)
 	}
-	backend, _ := r.Backend(ctx, "bitwarden")
+	backend, _ := r.Backend(ctx, "bitwarden", target)
 	if err := backend.Add(ctx, "a/B", []byte("value"), store.Details{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := backend.SetProgramAccess(ctx, "a/B", true); err != nil {
+	if err := storetest.SetAccess(ctx, backend, "a/B", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.SetDefault(ctx, "bitwarden"); err != nil {
@@ -248,7 +251,7 @@ func TestRemoveForgetsTheStoreOnThisMacOnly(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(f.dir, "stores", "bitwarden")); err == nil {
 		t.Error("the snapshot stayed")
 	}
-	if _, err := r.Backend(ctx, "bitwarden"); !store.IsKind(err, store.KindNotFound) {
+	if _, err := r.Backend(ctx, "bitwarden", target); !store.IsKind(err, store.KindNotFound) {
 		t.Errorf("the removed store still answers: %v", err)
 	}
 	if len(f.fake.Secrets) != 1 {
@@ -263,7 +266,7 @@ func TestSyncReadsBitwardenNow(t *testing.T) {
 	if _, err := r.Add(ctx, bitwardenToken()); err != nil {
 		t.Fatal(err)
 	}
-	backend, _ := r.Backend(ctx, "bitwarden")
+	backend, _ := r.Backend(ctx, "bitwarden", target)
 	if items, err := backend.Items(ctx); err != nil || len(items) != 0 {
 		t.Fatalf("items %v, %v", items, err)
 	}
@@ -327,11 +330,11 @@ func TestSetTokenKeepsTheStore(t *testing.T) {
 	if _, err := r.Add(ctx, bitwardenToken()); err != nil {
 		t.Fatal(err)
 	}
-	backend, _ := r.Backend(ctx, "bitwarden")
+	backend, _ := r.Backend(ctx, "bitwarden", target)
 	if err := backend.Add(ctx, "a/B", []byte("value"), store.Details{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := backend.SetProgramAccess(ctx, "a/B", true); err != nil {
+	if err := storetest.SetAccess(ctx, backend, "a/B", true); err != nil {
 		t.Fatal(err)
 	}
 	refused := []byte(strings.Replace(bitwardentest.Token, "C2Ig", "XXXX", 1))
@@ -357,7 +360,7 @@ func TestSetTokenKeepsTheStore(t *testing.T) {
 	if err := r.SetToken(ctx, "bitwarden", []byte(bitwardentest.Token)); err != nil {
 		t.Fatal(err)
 	}
-	backend, err := r.Backend(ctx, "bitwarden")
+	backend, err := r.Backend(ctx, "bitwarden", target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +420,7 @@ func TestRemoveEndsTheBackendARequestHolds(t *testing.T) {
 	if _, err := r.Add(ctx, bitwardenToken()); err != nil {
 		t.Fatal(err)
 	}
-	held, err := r.Backend(ctx, "bitwarden")
+	held, err := r.Backend(ctx, "bitwarden", target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +430,7 @@ func TestRemoveEndsTheBackendARequestHolds(t *testing.T) {
 	if err := r.Remove(ctx, "bitwarden"); err != nil {
 		t.Fatal(err)
 	}
-	if err := held.SetProgramAccess(ctx, "a/B", true); !store.IsKind(err, store.KindConflict) {
+	if err := storetest.SetAccess(ctx, held, "a/B", true); !store.IsKind(err, store.KindConflict) {
 		t.Errorf("a grant after the removal: %v", err)
 	}
 	if _, kept := f.local["grants/bitwarden"]; kept {

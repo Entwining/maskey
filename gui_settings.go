@@ -40,16 +40,19 @@ const adding = "+"
 const addStoreWidth = 440
 
 // changeStores runs a change to this Mac's stores off the UI thread, then
-// shows its failure, or reloads the stores for both windows.
+// shows its failure, or reloads the stores for both windows. A close or
+// quit that waited for the change then goes ahead, unless it failed.
 func (g *gui) changeStores(busy string, change func() error, done func()) {
 	s := &g.settings
 	s.busy, s.err = busy, ""
 	g.start(func() func() {
 		err := change()
 		return func() {
+			defer g.resumeExit()
 			s.busy = ""
 			if err != nil {
 				s.err = sentence(err)
+				g.exit = noExit
 			} else {
 				if done != nil {
 					done()
@@ -84,11 +87,12 @@ func (g *gui) removeStore(id string) {
 		detail:  "Its access token and its entries’ program access are removed from this Mac. The entries stay in Bitwarden.",
 		buttons: []alertButton{{title: "Remove", destructive: true}, {title: "Cancel", isDefault: true, isCancel: true}}}
 	// Closing the Settings window clears s.ask on the UI thread.
-	ask := s.ask
+	ask, target := s.ask, g.target(id)
 	g.start(func() func() {
 		button, err := ask(question)
 		return func() {
-			if err == nil && button == 0 {
+			// The question was about the connection the row showed.
+			if err == nil && button == 0 && g.target(id) == target {
 				g.changeStores(id, func() error { return g.service.ChangeStore(g.ctx, agent.OpRemoveStore, id) }, nil)
 			}
 		}

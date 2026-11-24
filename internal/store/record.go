@@ -148,8 +148,8 @@ func (b *recorded) Edit(ctx context.Context, account, to string, value []byte, d
 	return err
 }
 
-func (b *recorded) SetProgramAccess(ctx context.Context, account string, granted bool) error {
-	err := b.backend.SetProgramAccess(ctx, account, granted)
+func (b *recorded) SetProgramAccess(ctx context.Context, account, id string, granted bool) error {
+	err := b.backend.SetProgramAccess(ctx, account, id, granted)
 	op := "revoke"
 	if granted {
 		op = "grant"

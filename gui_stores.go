@@ -24,13 +24,28 @@ type storeService interface {
 	ChangeStore(ctx context.Context, op, id string) error
 }
 
-// open returns the store named id. It only builds the store's client, so
-// it runs on any goroutine.
+// open returns the store named id, as the connection the window last read
+// under that name: what the window shows of the store, and asks the user to
+// confirm, is that connection's, so its actions reach no other.
 func (g *gui) open(id string) storeAccess {
 	if id == stores.ICloud {
 		return g.icloud
 	}
-	return g.remoteStore(id)
+	connection, _ := g.stores.Find(id)
+	// The service takes a request without a store's name for iCloud
+	// Keychain's.
+	connection.ID = id
+	return g.remoteStore(connection)
+}
+
+// target is what the store named id connects to, as the window last read
+// this Mac's stores, or "" once the store left.
+func (g *gui) target(id string) string {
+	connection, ok := g.stores.Find(id)
+	if !ok {
+		return ""
+	}
+	return connection.Target()
 }
 
 // entryID names an entry: a reference in one store. Two stores can hold the
@@ -155,14 +170,20 @@ func (g *gui) refresh() {
 }
 
 // setStores takes this Mac's stores as just read. A store no longer among
-// them goes with everything the window held of it.
+// them goes with everything the window held of it, and so does one whose
+// name now means another connection: what the window held was not that
+// connection's.
 func (g *gui) setStores(config stores.Config) {
+	held := make(map[string]string, len(g.listed))
+	for id := range g.listed {
+		held[id] = g.target(id)
+	}
 	g.stores, g.storesRead, g.storesErr = config, true, ""
 	if g.settings.redraw != nil {
 		g.settings.redraw()
 	}
-	for id := range g.listed {
-		if _, ok := config.Find(id); !ok {
+	for id, target := range held {
+		if g.target(id) != target {
 			g.forget(id)
 		}
 	}
@@ -173,9 +194,10 @@ func (g *gui) setStores(config stores.Config) {
 	}
 }
 
-// forget drops the store named id, which left this Mac, with the form open
-// on it. A choice inside it counts as moved away from, so that a write
-// landing later leaves the window where this put it.
+// forget drops what the window held of the store named id, which left this
+// Mac or was connected again to something else, with the form open on it. A
+// choice inside it counts as moved away from, so that a write landing later
+// leaves the window where this put it.
 func (g *gui) forget(id string) {
 	delete(g.listed, id)
 	moved := false

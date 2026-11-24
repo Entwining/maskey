@@ -1,6 +1,7 @@
 package stores
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -44,12 +45,23 @@ type Registry struct {
 	http    *http.Client
 	regions map[string]bitwarden.Region
 
+	// mu guards backends and turns, and each change of the configuration
+	// from its reading to its writing. No request to a remote and no
+	// Keychain call runs under it, so that one store's slow exchange holds
+	// back no other store.
 	mu       sync.Mutex
-	backends map[string]*bitwarden.Backend
+	backends map[string]opened
+	turns    map[string]*sync.Mutex
+}
+
+// opened is a connection's backend and the target it was opened for.
+type opened struct {
+	target  string
+	backend *bitwarden.Backend
 }
 
 func NewRegistry(dir string, icloud store.Backend, local Local, client *http.Client) *Registry {
-	return &Registry{dir: dir, icloud: icloud, local: local, http: client, regions: bitwarden.Regions, backends: map[string]*bitwarden.Backend{}}
+	return &Registry{dir: dir, icloud: icloud, local: local, http: client, regions: bitwarden.Regions, backends: map[string]opened{}, turns: map[string]*sync.Mutex{}}
 }
 
 // cleanupTimeout bounds the removal of a token whose store was not added.
@@ -58,67 +70,122 @@ const cleanupTimeout = 30 * time.Second
 func tokenAccount(id string) string  { return "token/" + id }
 func grantsAccount(id string) string { return "grants/" + id }
 
+// turn waits until no other request opens or changes the connection named
+// id, and returns what ends this one's turn. A turn lasts through the
+// requests to the remote that adding a store or replacing its token makes,
+// which is why each name has its own.
+func (r *Registry) turn(id string) (end func()) {
+	r.mu.Lock()
+	turn := r.turns[id]
+	if turn == nil {
+		turn = new(sync.Mutex)
+		r.turns[id] = turn
+	}
+	r.mu.Unlock()
+	turn.Lock()
+	return turn.Unlock
+}
+
+// update changes the configuration as it is now, so that a change made to
+// another store since the caller read it stays.
+func (r *Registry) update(change func(*Config) error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	config, err := Load(r.dir)
+	if err != nil {
+		return err
+	}
+	if err := change(&config); err != nil {
+		return err
+	}
+	if err := config.write(r.dir); err != nil {
+		return &store.Error{Kind: store.KindPrerequisite, Message: "this Mac's store configuration could not be written"}
+	}
+	return nil
+}
+
+// Config is this Mac's stores, for a client that may not read their file.
+func (r *Registry) Config(context.Context) (Config, error) { return Load(r.dir) }
+
 // Backend returns the backend of the store named id, iCloud Keychain's for
 // "" as well: a request that names no store comes from a command that knows
-// only that one.
-func (r *Registry) Backend(ctx context.Context, id string) (store.Backend, error) {
+// only that one. A remote store's is returned only while the name still
+// means target, the connection the request was made for: the owner may have
+// confirmed a write to that project, not to one connected under the name
+// since.
+func (r *Registry) Backend(ctx context.Context, id, target string) (store.Backend, error) {
 	if id == "" || id == ICloud {
 		return r.icloud, nil
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.remote(ctx, id)
+	found, err := r.remote(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if found.target != target {
+		return nil, &store.Error{Kind: store.KindConflict, Message: "the store was connected to another project since this began; nothing was done"}
+	}
+	return found.backend, nil
 }
 
-func (r *Registry) remote(ctx context.Context, id string) (*bitwarden.Backend, error) {
-	if backend, ok := r.backends[id]; ok {
-		return backend, nil
+func (r *Registry) cached(id string) (opened, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	found, ok := r.backends[id]
+	return found, ok
+}
+
+func (r *Registry) remote(ctx context.Context, id string) (opened, error) {
+	if found, ok := r.cached(id); ok {
+		return found, nil
+	}
+	defer r.turn(id)()
+	// Another request may have opened the store while this one waited.
+	if found, ok := r.cached(id); ok {
+		return found, nil
 	}
 	config, err := Load(r.dir)
 	if err != nil {
-		return nil, err
+		return opened{}, err
 	}
 	connection, err := config.named(id)
 	if err != nil {
-		return nil, err
+		return opened{}, err
 	}
 	text, err := r.local.LocalGet(ctx, tokenAccount(id))
 	if store.IsKind(err, store.KindNotFound) {
-		return nil, &store.Error{Kind: store.KindUnauthenticated, Message: "this Mac's Keychain no longer holds the store's access token"}
+		return opened{}, &store.Error{Kind: store.KindUnauthenticated, Message: "this Mac's Keychain no longer holds the store's access token"}
 	}
 	if err != nil {
-		return nil, err
+		return opened{}, err
 	}
 	token, err := bitwarden.ParseToken(string(text))
 	if err != nil {
-		return nil, err
+		return opened{}, err
 	}
 	client := bitwarden.New(r.regions[connection.Region], token, r.http)
-	backend := bitwarden.NewBackend(client, connection.Project, snapshotPath(r.dir, id), &grants{local: r.local, account: grantsAccount(id)})
-	r.backends[id] = backend
-	return backend, nil
+	found := opened{connection.Target(), bitwarden.NewBackend(client, connection.Project, snapshotPath(r.dir, id), &grants{local: r.local, account: grantsAccount(id)})}
+	r.mu.Lock()
+	r.backends[id] = found
+	r.mu.Unlock()
+	return found, nil
 }
 
 // Sync reads the store named id from Bitwarden now, instead of when its
 // snapshot is next too old.
 func (r *Registry) Sync(ctx context.Context, id string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	if id == ICloud {
 		return &store.Error{Kind: store.KindInvalid, Message: "iCloud Keychain syncs on its own"}
 	}
-	backend, err := r.remote(ctx, id)
+	found, err := r.remote(ctx, id)
 	if err != nil {
 		return err
 	}
-	return backend.Refresh(ctx)
+	return found.backend.Refresh(ctx)
 }
 
 // Add connects a Bitwarden project. It signs in with the token before it
 // keeps anything, so a connection that exists has worked once.
 func (r *Registry) Add(ctx context.Context, addition Addition) (Connection, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	invalid := func(message string) (Connection, error) {
 		return Connection{}, &store.Error{Kind: store.KindInvalid, Message: message}
 	}
@@ -139,6 +206,9 @@ func (r *Registry) Add(ctx context.Context, addition Addition) (Connection, erro
 	case !ok:
 		return invalid("the region is us or eu")
 	}
+	// The name stays free through the turn, which no other addition of it
+	// shares.
+	defer r.turn(connection.ID)()
 	config, err := Load(r.dir)
 	if err != nil {
 		return Connection{}, err
@@ -172,10 +242,13 @@ func (r *Registry) Add(ctx context.Context, addition Addition) (Connection, erro
 		_ = r.local.LocalDelete(cleanup, tokenAccount(connection.ID))
 		return Connection{}, err
 	}
-	config.Stores = append(config.Stores, connection)
-	if err := config.write(r.dir); err != nil {
+	err = r.update(func(config *Config) error {
+		config.Stores = append(config.Stores, connection)
+		return nil
+	})
+	if err != nil {
 		_ = r.local.LocalDelete(ctx, tokenAccount(connection.ID))
-		return Connection{}, &store.Error{Kind: store.KindPrerequisite, Message: "this Mac's store configuration could not be written"}
+		return Connection{}, err
 	}
 	return connection, nil
 }
@@ -184,11 +257,10 @@ func (r *Registry) Add(ctx context.Context, addition Addition) (Connection, erro
 // old one expired, once the new one signs in and reaches the same project.
 // The store keeps its name, the default, and its entries' program access.
 func (r *Registry) SetToken(ctx context.Context, id string, text []byte) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	if id == ICloud {
 		return &store.Error{Kind: store.KindInvalid, Message: "iCloud Keychain has no access token"}
 	}
+	defer r.turn(id)()
 	config, err := Load(r.dir)
 	if err != nil {
 		return err
@@ -246,8 +318,7 @@ func chooseProject(projects []bitwarden.Project, wanted string) (bitwarden.Proje
 // Remove forgets the store named id on this Mac: its token, program access,
 // and snapshot. What Bitwarden holds stays.
 func (r *Registry) Remove(ctx context.Context, id string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	defer r.turn(id)()
 	config, err := Load(r.dir)
 	if err != nil {
 		return err
@@ -259,51 +330,60 @@ func (r *Registry) Remove(ctx context.Context, id string) error {
 		return err
 	}
 	r.close(id)
-	// The token goes first: a removal that stops halfway leaves a store
-	// that cannot sign in, not a credential without a store.
-	for _, account := range []string{tokenAccount(id), grantsAccount(id)} {
-		if err := r.local.LocalDelete(ctx, account); err != nil && !store.IsKind(err, store.KindNotFound) {
-			return err
+	// The token goes first and the store's name last: a removal that stops
+	// halfway leaves a store that cannot sign in and can be removed again,
+	// not a credential or a copy of the project that no store names.
+	if err := r.local.LocalDelete(ctx, tokenAccount(id)); err != nil && !store.IsKind(err, store.KindNotFound) {
+		return err
+	}
+	if err := r.local.LocalDelete(ctx, grantsAccount(id)); err != nil && !store.IsKind(err, store.KindNotFound) {
+		return unfinished(cmp.Or(store.KindOf(err), store.KindKeychain), "its entries' program access could not be removed")
+	}
+	if err := os.RemoveAll(filepath.Dir(snapshotPath(r.dir, id))); err != nil {
+		return unfinished(store.KindPrerequisite, "the copy of its entries kept on this Mac could not be deleted")
+	}
+	err = r.update(func(config *Config) error {
+		config.Stores = slices.DeleteFunc(config.Stores, func(c Connection) bool { return c.ID == id })
+		if config.Default == id {
+			config.Default = ICloud
 		}
+		return nil
+	})
+	if err != nil {
+		return unfinished(store.KindPrerequisite, "this Mac's store configuration could not be changed")
 	}
-	config.Stores = slices.DeleteFunc(config.Stores, func(c Connection) bool { return c.ID == id })
-	if config.Default == id {
-		config.Default = ICloud
-	}
-	if err := config.write(r.dir); err != nil {
-		return &store.Error{Kind: store.KindPrerequisite, Message: "this Mac's store configuration could not be written"}
-	}
-	_ = os.RemoveAll(filepath.Dir(snapshotPath(r.dir, id)))
 	return nil
+}
+
+// unfinished is the failure of a removal after the store's token went.
+func unfinished(kind store.Kind, step string) error {
+	return &store.Error{Kind: kind, Message: "the store's access token was removed, but " + step + "; remove the store again"}
 }
 
 // close ends the backend the store named id has, so that a request that
 // already holds it, as one waiting for the owner's approval, changes
 // nothing of the connection that comes after.
 func (r *Registry) close(id string) {
-	if backend, ok := r.backends[id]; ok {
-		backend.Close()
-		delete(r.backends, id)
+	r.mu.Lock()
+	found, ok := r.backends[id]
+	delete(r.backends, id)
+	r.mu.Unlock()
+	if ok {
+		// Closing waits for the exchange the backend is in.
+		found.backend.Close()
 	}
 }
 
 // SetDefault makes the store named id the one commands use when they name
 // none.
 func (r *Registry) SetDefault(_ context.Context, id string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	config, err := Load(r.dir)
-	if err != nil {
-		return err
-	}
-	if _, err := config.named(id); err != nil {
-		return err
-	}
-	config.Default = id
-	if err := config.write(r.dir); err != nil {
-		return &store.Error{Kind: store.KindPrerequisite, Message: "this Mac's store configuration could not be written"}
-	}
-	return nil
+	return r.update(func(config *Config) error {
+		if _, err := config.named(id); err != nil {
+			return err
+		}
+		config.Default = id
+		return nil
+	})
 }
 
 // grants keeps a store's grants as one Keychain item, a JSON list of secret

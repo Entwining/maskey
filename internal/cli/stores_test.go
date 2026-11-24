@@ -21,7 +21,7 @@ func TestCommandsUseOneStore(t *testing.T) {
 	ctx := context.Background()
 	h.backend.Add(ctx, "app/TOKEN", []byte("icloud-value"), store.Details{Kind: store.ValueToken})
 	h.work.Add(ctx, "app/TOKEN", []byte("work-value"), store.Details{Kind: store.ValueToken})
-	h.work.SetProgramAccess(ctx, "app/TOKEN", true)
+	h.work.SetProgramAccess(ctx, "app/TOKEN", "", true)
 	h.work.Add(ctx, "deploy/KEY", []byte("deploy-value"), store.Details{Kind: store.ValueToken})
 
 	if outcome, stdout, stderr := h.run(t, "", "get", "--store", "work", "app/TOKEN"); outcome.Code != 0 || stdout != "work-value" {
@@ -209,6 +209,18 @@ func TestUninstallRemovesStoresFirst(t *testing.T) {
 		t.Fatalf("%s", stderr)
 	}
 
+	// Only a service that was not reached surely removed nothing of the
+	// store: its token goes first, so another failure may have left the
+	// store partly removed.
+	h.storeErr = &store.Error{Kind: store.KindKeychain, Message: "synthetic Keychain failure"}
+	if _, _, stderr = h.run(t, "", "uninstall", "--yes"); !strings.Contains(stderr, "hint: the store zeta may be partly removed, and only 1 store was removed;") {
+		t.Fatalf("%s", stderr)
+	}
+	h.failingStore = ""
+	if _, _, stderr = h.run(t, "", "uninstall", "--yes"); !strings.Contains(stderr, "hint: the store work may be partly removed, and nothing else was removed;") {
+		t.Fatalf("%s", stderr)
+	}
+
 	// A configuration that cannot be read may name stores whose Keychain
 	// items would be left behind.
 	h.storeErr, h.storeChanges = nil, nil
@@ -219,6 +231,12 @@ func TestUninstallRemovesStoresFirst(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(h.home, ".agents", "skills", "maskey")); err != nil {
 		t.Fatalf("a skill link went: %v", err)
+	}
+	// So may one that only the service can read, when it is not reached.
+	h.configErr = &store.Error{Kind: store.KindUnavailable, Message: "the Maskey service is not reachable"}
+	outcome, stdout, stderr = h.run(t, "", "uninstall", "--yes")
+	if outcome.Code != 10 || stdout != "" || !strings.Contains(stderr, "hint: nothing was removed; run mk outside the sandbox") || len(h.storeChanges) != 0 {
+		t.Fatalf("%+v %v %q %s", outcome, h.storeChanges, stdout, stderr)
 	}
 }
 
@@ -260,6 +278,13 @@ func TestDoctorChecksStores(t *testing.T) {
 	outcome, stdout, _ = h.run(t, "", "doctor")
 	if outcome.Code != 6 || !strings.Contains(stdout, "\nerror    stores") || !strings.Contains(stdout, "until then commands need --store icloud\n") {
 		t.Fatalf("an unreadable configuration: %+v\n%s", outcome, stdout)
+	}
+	// Where mk may not read the file, the service reads it, so without the
+	// service the recovery is to reach it, not to repair the file.
+	h.configErr = &store.Error{Kind: store.KindUnavailable, Message: "the Maskey service is not reachable"}
+	outcome, stdout, _ = h.run(t, "", "doctor")
+	if outcome.Code != 10 || !strings.Contains(stdout, "service.sock; until then commands need --store icloud\n") || strings.Contains(stdout, "repair") {
+		t.Fatalf("a configuration only the service can read: %+v\n%s", outcome, stdout)
 	}
 }
 

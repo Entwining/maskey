@@ -554,10 +554,15 @@ func notReplaced() bool { return false }
 
 func startTestService(t *testing.T, backend store.Backend, recorder activity.Recorder, check func(context.Context) error, approve store.Approve, replaced func() bool) (string, context.CancelFunc, <-chan error) {
 	t.Helper()
+	return startTestRegistry(t, only{backend}, recorder, check, approve, replaced)
+}
+
+// startTestRegistry starts a service over registry's stores.
+func startTestRegistry(t *testing.T, registry Stores, recorder activity.Recorder, check func(context.Context) error, approve store.Approve, replaced func() bool) (string, context.CancelFunc, <-chan error) {
+	t.Helper()
 	path := filepath.Join(serviceTempDir(t), "service.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan error, 1)
-	registry := only{backend}
 	go func() { finished <- serve(ctx, path, registry, recorder, check, approve, replaced); close(finished) }()
 	t.Cleanup(func() {
 		cancel()

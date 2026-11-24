@@ -220,7 +220,7 @@ func TestNotes(t *testing.T) {
 // entry; the form's displayed state may be stale.
 func TestSaveKeepsProgramAccess(t *testing.T) {
 	h := newHarness(t)
-	h.backend.SetProgramAccess(context.Background(), "app/URL", true)
+	h.backend.SetProgramAccess(context.Background(), "app/URL", "", true)
 	h.choose("URL", "Edit")
 	h.typeName("ENDPOINT")
 	h.typeValue("synthetic-endpoint-5c1e")

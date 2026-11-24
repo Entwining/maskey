@@ -80,7 +80,7 @@ func TestNamespaceCase(t *testing.T) {
 	if _, stdout, _ := h.run(t, "", "__complete", "list", ""); !strings.HasPrefix(stdout, "GitHub\ngithub\n:") {
 		t.Fatalf("completion: %q", stdout)
 	}
-	h.backend.SetProgramAccess(context.Background(), "GitHub/TOKEN", true)
+	h.backend.SetProgramAccess(context.Background(), "GitHub/TOKEN", "", true)
 	if _, stdout, _ := h.run(t, "", "get", "GitHub/TOKEN"); stdout != "synthetic-upper" {
 		t.Fatalf("get GitHub/TOKEN: %q", stdout)
 	}
@@ -312,7 +312,7 @@ func TestGet(t *testing.T) {
 	h := newHarness(t)
 	h.run(t, "line 1\nline 2\n", "set", "--stdin", "app/TOKEN")
 	h.set(t, "app/OTHER")
-	h.backend.SetProgramAccess(context.Background(), "app/TOKEN", true)
+	h.backend.SetProgramAccess(context.Background(), "app/TOKEN", "", true)
 	// --json is for errors; the value stays raw.
 	for _, args := range [][]string{{"get", "app/TOKEN"}, {"get", "--json", "app/TOKEN"}} {
 		if outcome, stdout, stderr := h.run(t, "", args...); outcome.Code != 0 || stdout != "line 1\nline 2\n" || stderr != "" {

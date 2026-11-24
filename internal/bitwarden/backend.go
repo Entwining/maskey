@@ -267,6 +267,7 @@ func (b *Backend) Items(ctx context.Context) ([]store.Item, error) {
 			// reaches the entry and fails there instead of finding
 			// nothing to change.
 			ProgramAccess: slices.ContainsFunc(append([]string{e.ID}, e.others...), func(id string) bool { return slices.Contains(granted, id) }),
+			ID:            e.ID,
 			Details:       store.Details{Kind: e.kind, Notes: e.Note},
 		}})
 	}
@@ -371,13 +372,18 @@ func (b *Backend) Edit(ctx context.Context, account, to string, value []byte, de
 	return b.written(ctx, header, value, note, err)
 }
 
-// SetProgramAccess changes a grant on this Mac, which needs no network.
-func (b *Backend) SetProgramAccess(ctx context.Context, account string, granted bool) (err error) {
+// SetProgramAccess changes a grant on this Mac, which needs no network. The
+// grant is the secret's, so a secret that took the name of the one listed as
+// id, deleted or renamed since, gets none and keeps none.
+func (b *Backend) SetProgramAccess(ctx context.Context, account, id string, granted bool) (err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	e, err := b.entry(ctx, account, false)
 	if err != nil {
 		return err
+	}
+	if e.ID != id {
+		return &store.Error{Kind: store.KindConflict, Message: "another Bitwarden secret took this name since the entry was listed; its program access was not changed"}
 	}
 	return b.grants.Set(ctx, e.ID, granted)
 }

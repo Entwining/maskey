@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"slices"
 	"sync"
 	"testing"
@@ -174,5 +175,37 @@ func TestDeleteAnswerDuringWrite(t *testing.T) {
 	v, _ := h.value("app/URL")
 	if _, kept := h.value("db/PASSWORD"); !kept || v != "synthetic-url-new" {
 		t.Fatalf("PASSWORD kept %v, URL %q", kept, v)
+	}
+}
+
+// Closing the window or quitting while the Settings window changes this
+// Mac's stores waits for the change, whose result ending the process would
+// drop, and then goes ahead; a change that fails cancels the exit, so that
+// Settings shows why.
+func TestExitWaitsForAChangeToStores(t *testing.T) {
+	for _, leaving := range []exit{closeExit, quitExit} {
+		for _, failure := range []error{nil, errors.New("the Maskey service is not running")} {
+			h := newHarness(t)
+			quit := h.exits()
+			release := make(chan struct{})
+			h.g.changeStores("work", func() error {
+				<-release
+				return failure
+			}, nil)
+			if !h.g.beforeExit(leaving) || !h.g.beforeExit(closeExit) || h.g.closed {
+				t.Fatalf("the exit went ahead during the change; closed %v", h.g.closed)
+			}
+			close(release)
+			h.settle()
+			if failure != nil {
+				if h.g.closed || *quit || h.g.exit != noExit || h.g.settings.err == "" || h.g.settings.busy != "" {
+					t.Fatalf("after a failed change: closed %v, quit %v, error %q", h.g.closed, *quit, h.g.settings.err)
+				}
+				continue
+			}
+			if !h.g.closed || *quit != (leaving == quitExit) {
+				t.Fatalf("after the change: closed %v, quit %v", h.g.closed, *quit)
+			}
+		}
 	}
 }

@@ -373,9 +373,9 @@ type recordingBackend struct {
 	auths []string
 }
 
-func (b *recordingBackend) SetProgramAccess(ctx context.Context, account string, granted bool) error {
+func (b *recordingBackend) SetProgramAccess(ctx context.Context, account, id string, granted bool) error {
 	b.auths = append(b.auths, activity.AuthOf(ctx))
-	return b.Backend.SetProgramAccess(ctx, account, granted)
+	return b.Backend.SetProgramAccess(ctx, account, "", granted)
 }
 
 // One approval covers every entry a change concerns, and entries already in

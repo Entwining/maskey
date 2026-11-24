@@ -159,7 +159,7 @@ func (b reportingBackend) Get(ctx context.Context, account string) ([]byte, erro
 func TestRecordFailureWarns(t *testing.T) {
 	h := newHarness(t)
 	h.set(t, "app/TOKEN")
-	h.backend.SetProgramAccess(context.Background(), "app/TOKEN", true)
+	h.backend.SetProgramAccess(context.Background(), "app/TOKEN", "", true)
 	diskFull := errors.New("an operation was not recorded: synthetic disk failure")
 	unreachable := fmt.Errorf("%w (%w)", diskFull, &store.Error{Kind: store.KindUnavailable, Message: "the Maskey service is not reachable"})
 	hint := recoveries[store.KindUnavailable]

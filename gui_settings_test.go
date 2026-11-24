@@ -147,3 +147,24 @@ func TestSettingsChangesStores(t *testing.T) {
 		t.Fatalf("changes %v, showing %q", service.changes, window.Texts())
 	}
 }
+
+// The answer to Remove… is for the connection the row showed: a store
+// connected again under the name while the question stood stays.
+func TestRemoveAnswersForTheConnectionAsked(t *testing.T) {
+	h := newHarness(t)
+	r := h.addRemote()
+	service, window := h.openSettings(r)
+	if err := window.Click("Actions for work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := window.ChooseMenuItem("Remove…"); err != nil {
+		t.Fatal(err)
+	}
+	h.settle()
+	r.config.Stores = []stores.Connection{{ID: "work", Type: stores.Bitwarden, Region: "eu", Project: "second", ProjectName: "Other"}}
+	h.reload()
+	h.answer("Remove")
+	if len(service.changes) != 0 {
+		t.Fatalf("changes %v", service.changes)
+	}
+}

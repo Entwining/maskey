@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Entwining/maskey/internal/store"
+	"github.com/Entwining/maskey/internal/store/storetest"
 )
 
 const indexRoute = "GET /projects/" + project + "/secrets"
@@ -169,7 +170,7 @@ func TestBackendReadsOfflineFromTheSnapshot(t *testing.T) {
 			t.Errorf("the snapshot file holds %q in the clear", plain)
 		}
 	}
-	if err := s.backend.SetProgramAccess(ctx, "github/GITHUB_TOKEN", true); err != nil {
+	if err := storetest.SetAccess(ctx, s.backend, "github/GITHUB_TOKEN", true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -185,7 +186,7 @@ func TestBackendReadsOfflineFromTheSnapshot(t *testing.T) {
 	if items, err := offline.Items(ctx); err != nil || len(items) != 1 || items[0].Notes != "the-notes" {
 		t.Errorf("offline items %+v, %v", items, err)
 	}
-	if err := offline.SetProgramAccess(ctx, "github/GITHUB_TOKEN", false); err != nil || len(s.grants.ids) != 0 {
+	if err := storetest.SetAccess(ctx, offline, "github/GITHUB_TOKEN", false); err != nil || len(s.grants.ids) != 0 {
 		t.Errorf("offline revoke: %v, grants %v", err, s.grants.ids)
 	}
 	for name, err := range map[string]error{
@@ -373,7 +374,7 @@ func TestBackendClosed(t *testing.T) {
 	ctx := context.Background()
 	s.add("a/B", "value", store.Details{})
 	s.backend.Close()
-	if err := s.backend.SetProgramAccess(ctx, "a/B", true); !store.IsKind(err, store.KindConflict) || len(s.grants.ids) != 0 {
+	if err := s.backend.SetProgramAccess(ctx, "a/B", "", true); !store.IsKind(err, store.KindConflict) || len(s.grants.ids) != 0 {
 		t.Errorf("grant: %v, grants %v", err, s.grants.ids)
 	}
 	if _, err := s.read(s.backend, "a/B"); !store.IsKind(err, store.KindConflict) {
@@ -393,7 +394,7 @@ func TestBackendRefusesAmbiguousAndForeignKeys(t *testing.T) {
 	if err != nil || len(items) != 1 || items[0].Account != "github/TOKEN" {
 		t.Fatalf("items %+v, %v", items, err)
 	}
-	if err := s.backend.SetProgramAccess(ctx, "github/TOKEN", true); err != nil {
+	if err := storetest.SetAccess(ctx, s.backend, "github/TOKEN", true); err != nil {
 		t.Fatal(err)
 	}
 	if values, err := s.backend.Read(ctx, []string{"github/NO_KIND", "github/UNKNOWN"}); err != nil || len(values) != 0 {
@@ -420,7 +421,7 @@ func TestBackendRefusesAmbiguousAndForeignKeys(t *testing.T) {
 	if items, err := s.backend.Items(ctx); err != nil || len(items) != 1 || !items[0].ProgramAccess {
 		t.Errorf("items %+v, %v", items, err)
 	}
-	if err := s.backend.SetProgramAccess(ctx, "github/TOKEN", false); !store.IsKind(err, store.KindConflict) || len(s.grants.ids) != 1 {
+	if err := storetest.SetAccess(ctx, s.backend, "github/TOKEN", false); !store.IsKind(err, store.KindConflict) || len(s.grants.ids) != 1 {
 		t.Errorf("revoke of an entry two secrets name: %v, grants %v", err, s.grants.ids)
 	}
 	// The store's other entries stay usable, and the listing still shows
@@ -444,7 +445,7 @@ func TestBackendGrantsBelongToTheSecret(t *testing.T) {
 	if _, err := s.backend.Get(ctx, "a/MISSING"); !store.IsKind(err, store.KindNotFound) {
 		t.Errorf("get of a missing entry: %v", err)
 	}
-	if err := s.backend.SetProgramAccess(ctx, "a/B", true); err != nil {
+	if err := storetest.SetAccess(ctx, s.backend, "a/B", true); err != nil {
 		t.Fatal(err)
 	}
 	if value, err := s.backend.Get(ctx, "a/B"); string(value) != "value" || err != nil {

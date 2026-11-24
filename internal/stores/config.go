@@ -57,6 +57,18 @@ func Dir() (string, error) {
 	return filepath.Join(dir, store.Service), nil
 }
 
+// Target is what the connection reads and writes, whatever its name. A
+// request for a store's entries carries the target its sender resolved the
+// name to, so that it reaches no other connection given that name since.
+func (c Connection) Target() string {
+	return strings.Join([]string{c.Type, c.Region, c.Organization, c.Project}, "/")
+}
+
+// ErrDenied is why Load fails in a process that may not read the
+// configuration, as inside a sandbox: the Maskey service, which writes the
+// file, can read it for that process.
+var ErrDenied error = &store.Error{Kind: store.KindPrerequisite, Message: "this Mac's store configuration cannot be read"}
+
 func configPath(dir string) string { return filepath.Join(dir, "stores.json") }
 
 // snapshotPath is the snapshot of the store id, in a directory of its own
@@ -70,6 +82,9 @@ func Load(dir string) (Config, error) {
 	data, err := os.ReadFile(configPath(dir))
 	if errors.Is(err, fs.ErrNotExist) {
 		return config, nil
+	}
+	if errors.Is(err, fs.ErrPermission) {
+		return Config{Default: ICloud}, ErrDenied
 	}
 	if err == nil {
 		err = json.Unmarshal(data, &config)

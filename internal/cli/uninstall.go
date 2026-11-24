@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -41,8 +42,9 @@ to the Trash afterwards, or run brew uninstall --cask maskey.
 
 Print one row per item: removed, absent, kept (a file, link, or service
 that is not this Maskey's, or the service's files and the activity record
-while the service may still be loaded), or failed. A failed item does not
-stop the others; resolve it, then run uninstall again.`,
+while the service, or an earlier Maskey's, may still be loaded), or failed.
+A failed item does not stop the others; resolve it, then run uninstall
+again.`,
 		DisableFlagsInUseLine: true,
 		Args:                  noArgs("uninstall takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -121,6 +123,12 @@ func uninstall(cmd *cobra.Command, env *Env) error {
 			if i > 0 {
 				removed = "only " + count(i, "store was", "stores were") + " removed"
 			}
+			// Only a service that was not reached, or that has no such
+			// store, surely removed nothing of this one: it deletes the
+			// token before the rest.
+			if !store.IsKind(err, store.KindUnavailable) && !store.IsKind(err, store.KindNotFound) {
+				removed = "the store " + id + " may be partly removed, and " + strings.Replace(removed, "nothing was", "nothing else was", 1)
+			}
 			return withHint(err, removed+"; run mk setup if the Maskey service is not running, then run uninstall again")
 		}
 		items = append(items, removal{Item: storeItem(id), Status: "removed"})
@@ -180,6 +188,11 @@ func uninstall(cmd *cobra.Command, env *Env) error {
 // stores' access tokens in the Keychain with nothing that names them.
 func remoteStores(ctx context.Context, env *Env) ([]string, error) {
 	config, err := env.Stores(ctx)
+	if store.IsKind(err, store.KindUnavailable) {
+		// mk may not read the file here, and the service that would read
+		// it, and remove the stores, was not reached.
+		return nil, withHint(err, "nothing was removed; "+sandboxRecovery+", then run uninstall again")
+	}
 	if err != nil {
 		return nil, withHint(&store.Error{Kind: store.KindPrerequisite, Message: "this Mac's store configuration cannot be read, so mk cannot tell which stores to remove"},
 			"nothing was removed; repair ~/Library/Application Support/"+store.Service+"/stores.json, or delete it and revoke its stores' access tokens in Bitwarden, since uninstall then leaves them in this Mac's Keychain")
@@ -199,10 +212,14 @@ func storeItem(id string) string {
 // each with what removing it would do now.
 func removals(env *Env, service []agent.ServiceItem) []removal {
 	activity := removePath(env.Activity.Dir(), env.Activity.Remove)
-	// The service writes the activity record, so the record stays while the
-	// service may still be loaded, as the service's own files do.
-	if job := service[0].Status; activity.remove != nil && (job == "kept" || job == "failed") {
+	// The service writes the activity record, as the Keychain service of an
+	// earlier Maskey did, so the record stays while either job may still be
+	// loaded, as the directory they share does.
+	if job := slices.IndexFunc(service, func(item agent.ServiceItem) bool { return item.MayRun }); activity.remove != nil && job >= 0 {
 		activity = removal{Item: activity.Item, Status: "kept", Detail: "the Maskey service may still be loaded"}
+		if job > 0 {
+			activity.Detail = "the Keychain service of an earlier Maskey may still be loaded"
+		}
 	}
 	userData := filepath.Join(env.Home, "Library", "Application Support", env.App)
 	items := []removal{

@@ -327,3 +327,66 @@ func TestRetireLegacy(t *testing.T) {
 		t.Error("another job's configuration was removed")
 	}
 }
+
+// The Keychain service of an earlier Maskey writes the directory the
+// services share and the activity record, so while its job may still run
+// uninstalling keeps the directory and that job's files, and says a job may
+// run; once the job stops, everything goes.
+func TestRemoveServiceKeepsWhatAnEarlierJobWrites(t *testing.T) {
+	home := t.TempDir()
+	plist, earlier := plistPath(home), legacyPlistPath(home)
+	dir := filepath.Join(home, "Library", "Application Support", store.Service)
+	writeFile(t, plist, jobPlist("/Applications/Maskey.app/Contents/MacOS/maskey"))
+	legacy := bytes.ReplaceAll(bytes.ReplaceAll(jobPlist("/Applications/Maskey.app/Contents/MacOS/maskey"), []byte(serviceLabel), []byte(legacyLabel)), []byte(ServiceArg), []byte(LegacyArg))
+	writeFile(t, earlier, legacy)
+	shared := []string{filepath.Join(dir, "keychain.sock"), filepath.Join(dir, "stores.json")}
+	for _, file := range shared {
+		writeFile(t, file, nil)
+	}
+	legacyTarget := serviceDomain + "/" + legacyLabel
+	loaded := map[string]bool{serviceTarget: true, legacyTarget: true}
+	refuse := true
+	control := func(_ context.Context, args ...string) error {
+		target := args[1]
+		switch {
+		case args[0] == "print" && !loaded[target]:
+			return errJobNotLoaded
+		case args[0] == "bootout" && target == legacyTarget && refuse:
+			return errors.New("synthetic launchctl failure")
+		case args[0] == "bootout":
+			loaded[target] = false
+		}
+		return nil
+	}
+
+	items := removeService(context.Background(), home, control)
+	if got := statuses(items); !slices.Equal(got, []string{"removed", "removed", "kept", "absent", "failed"}) {
+		t.Fatalf("with the earlier job still loaded: %+v", items)
+	}
+	if last := items[len(items)-1]; !last.MayRun || last.Item != earlier || items[0].MayRun {
+		t.Errorf("the rows say which job may run: %+v", items)
+	}
+	for _, file := range append(shared, earlier) {
+		if _, err := os.Stat(file); err != nil {
+			t.Errorf("%s went while the earlier job may run: %v", file, err)
+		}
+	}
+	if _, err := os.Stat(plist); err == nil || loaded[serviceTarget] {
+		t.Error("the present service stayed")
+	}
+
+	refuse = false
+	items = removeService(context.Background(), home, control)
+	if got := statuses(items); !slices.Equal(got, []string{"absent", "absent", "removed", "absent", "removed"}) || loaded[legacyTarget] {
+		t.Fatalf("once the earlier job stops: %+v", items)
+	}
+	if slices.ContainsFunc(items, func(item ServiceItem) bool { return item.MayRun }) {
+		t.Errorf("a job may still run: %+v", items)
+	}
+	if _, err := os.Stat(dir); err == nil {
+		t.Error("the shared directory stayed")
+	}
+	if _, err := os.Stat(earlier); err == nil {
+		t.Error("the earlier job's configuration stayed")
+	}
+}
