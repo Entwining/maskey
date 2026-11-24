@@ -49,3 +49,7 @@ Use commands you trust. Wrap the tool that needs the credential, not a whole cod
 ## Development
 
 Maskey is written in Go with [MyGo](https://github.com/egoist/mygo). Run the [repository checks](AGENTS.md#checks) before submitting a change.
+
+## License
+
+Maskey is available under the [MIT license](LICENSE).
