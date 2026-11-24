@@ -1,7 +1,7 @@
 {
   "name": "Maskey",
   "identifier": "io.github.entwining.maskey",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "out": "build",
   "macos": {
     "icon": "icon.icns",
